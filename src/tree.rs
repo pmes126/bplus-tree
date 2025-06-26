@@ -184,8 +184,9 @@ impl<K: Ord + Clone + Default, V: Clone> BPlusTree<K, V> {
                     current_id = children[i];
                 }
                 Node::Leaf { keys, .. } => {
+                    // Find the index in the leaf node
                     let start_index = keys.binary_search(&start).unwrap_or(
-                        keys.len(),
+                        keys.len(), // If not found the iterator will skip to the next leaf node
                     );
 
                     return Some(BPlusTreeRangeIter {
