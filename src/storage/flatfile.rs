@@ -22,13 +22,15 @@ struct FlatFile<K, V> {
 impl<K, V> FlatFile<K, V> {
     fn new<P: AsRef<Path>>(path: P) -> Option<Self> {
         let file = OpenOptions::new().read(true).write(true).create(true).open(path)?;
-        Self {
-            file,
-            let next = self.file.seek(SeekFrom::End(0))?
-            index: HashMap::new(),
-            next_offset: next,
-            _marker: std::marker::PhantomData,
-        }
+        // Initialize the file and read existing entries
+        Option::from(
+            Self {
+                file,
+                next_offset: file.seek(SeekFrom::End(0))?,
+                index: HashMap::new(),
+                _marker: std::marker::PhantomData,
+            }
+        )
     }
 }
 
