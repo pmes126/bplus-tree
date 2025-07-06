@@ -32,21 +32,24 @@ impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
     V: serde::Serialize + for<'de> serde::Deserialize <'de> + Clone,
     B: NodeStorage<K, V>,
 {
-    fn read_node(&mut self, id: u64) -> io::Result<Node<K, V, NodeId>> {
+    fn read_node(&mut self, id: u64) -> io::Result<Option<Node<K, V, NodeId>>> {
         if let Some(node) = self.cache.get(&id) {
-
-            return Ok(node.clone());
+            return Ok(Some(node.clone()));
         }
         let node = self.backend.read_node(id)?;
-        self.cache.put(id, node.clone());
+        if let Some(n) = &node {
+            self.cache.put(id, n.clone());
+        } else {
+            // If the node is not found in the backend, return None
+            return Ok(None);
+        }
         Ok(node)
     }
 
     fn write_node(&mut self, id: NodeId, node: &Node<K, V, NodeId>) -> io::Result<()> {
-        self.cache.put(id, node.clone()).ok_or(io::Error::new(
-            io::ErrorKind::Other,
+        self.cache.put(id, node.clone()).ok_or(io::Error::other(
             "Cache write failed: cache is full or node already exists",
-        ));
+        ))?;
         self.backend.write_node(id, node)
     }
     
@@ -57,5 +60,4 @@ impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
     fn get_root(&self) -> io::Result<u64> {
         self.backend.get_root()
     }
-}
-            
+} 

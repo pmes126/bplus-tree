@@ -24,32 +24,35 @@ where
     V: Serialize + for<'a>Deserialize<'a> + Clone,
     S: NodeStorage<K, V>,
 {
-    pub fn new(mut storage: S, order: usize) -> Self {
+    pub fn new(mut storage: S, order: usize) -> Result<BPlusTree<K, V, S>> {
         let root_node = Node::Leaf {
             keys: vec![],
             values: vec![],
             next: None,
         };
-        storage.write_node(0, &root_node);
-        Self {
+        let init_id = 0; // Initialize the root node ID
+        storage.write_node(init_id, &root_node)?;
+
+
+        Ok(Self {
             root_id: 0,
             next_id: 1,
             storage,
             order,
             max_keys: order - 1,
-            min_keys: (order + 1) / 2,
+            min_keys: (order + 1).saturating_div(2), // Ensure min_keys is at least 1
             phantom: std::marker::PhantomData,
-        }
+        })
     }
 
     // Reads a node from the B+ tree storage, using the cache if available.
-    fn read_node(&mut self, id: NodeId) -> Result<Node<K, V, NodeId>> {
+    fn read_node(&mut self, id: NodeId) -> Result<Option<Node<K, V, NodeId>>> {
         self.storage.read_node(id)
     }
 
     // Writes a node to the B+ tree storage and updates the cache.
-    fn write_node(&mut self, id: NodeId, node: Node<K, V, NodeId>) -> Result<()> {
-        self.storage.write_node(id, &node)
+    fn write_node(&mut self, id: NodeId, node: &Node<K, V, NodeId>) -> Result<()> {
+        self.storage.write_node(id, node)
     }
 
     // Gets the value associated with a key in the B+ tree.
@@ -58,19 +61,20 @@ where
         loop {
             let node = self.read_node(id)?;
             match node {
-                Node::Internal { keys, children } => {
-                    let idx = match keys.binary_search(&key) {
-                        Ok(i) => i,
-                        Err(_) => return Ok(None), // Key not found
-                    };
+                Some(Node::Leaf { keys, values, .. }) => {
+                            match keys.binary_search(&key) {
+                                Ok(i) =>  return Ok(Some(values[i].clone())),
+                                Err(_) => return Ok(None), // Key not found
+                            };
+                }
+                Some(Node::Internal { keys, children }) => {
+                            let idx = match keys.binary_search(&key) {
+                                Ok(i) => i,
+                                Err(_) => return Ok(None), // Key not found
+                            };
                     id = children[idx];
                 }
-                Node::Leaf { keys, values, .. } => {
-                    match keys.binary_search(&key) {
-                        Ok(i) =>  return Ok(Some(values[i].clone())),
-                        Err(_) => return Ok(None), // Key not found
-                    };
-                }
+                None => return Ok(None), // Node not found
             }
         }
     }
@@ -82,9 +86,9 @@ where
 
         // Find insertion point
         loop {
-            let node = self.storage.read_node(current_id)?;
+            let node = self.read_node(current_id)?;
             match node {
-                Node::Internal { keys, children } => {
+                Some(Node::Internal { keys, children }) => {
                     let i = match keys.binary_search(&key) {
                         Ok(i) => i,
                         Err(i) => i,
@@ -92,49 +96,78 @@ where
                     path.push((current_id, i));
                     current_id = children[i];
                 }
-                Node::Leaf { .. } => break,
+                // If the node is None, we have reached a leaf node
+                Some(Node::Leaf { .. }) => {
+                    break; // We found the leaf node to insert into
+                }
+                None => {
+                    // Node not found, this should not happen as we are traversing the path
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "Node not found while inserting",
+                    ));
+                }
             }
         }
         // We have found the leaf node, update a copy of the leaf node and insert it back with a
         // new id retaining COW semantics.
-        let leaf_node = self.storage.read_node(current_id)?;
-        let mut leaf = leaf_node;
-        if let Node::Leaf { ref mut keys, ref mut values, mut next} = leaf {
-            match keys.binary_search(&key) {
-                Ok(i) => {
-                    values[i] = value; // Replace existing value
+        let mut leaf_node = self.read_node(current_id)?;
+        match leaf_node {
+            Some( Node::Leaf { ref mut keys, ref mut values, mut next}) => {
+                // If the key already exists, we replace the value
+                match keys.binary_search(&key) {
+                    Ok(i) => {
+                        values[i] = value; // Replace existing value
+                    }
+                    Err(i) => {
+                        keys.insert(i, key.clone());
+                        values.insert(i, value);
+                    }
                 }
-                Err(i) => {
-                    keys.insert(i, key.clone());
-                    values.insert(i, value);
+                if keys.len() > self.max_keys {
+                    let mid = keys.len() / 2;
+                    let right_keys = keys.split_off(mid);
+                    let right_values = values.split_off(mid);
+                    let new_leaf = Node::Leaf {
+                        keys: right_keys,
+                        values: right_values,
+                        next: next.take(), // Retain the next pointer
+                    };
+                    // Write the new leaf node to storage
+                    self.write_node(self.next_id, &new_leaf)?;
+                    self.next_id += 1;
+                    // Write the updated leaf node back to storage
+                    let new_leaf_id = self.next_id;
+                    self.write_node(new_leaf_id, &leaf_node)?;
+                    self.next_id += 1;
+                    // Propagate the split upwards.
+                    self.insert_into_parent(path, key, new_leaf_id)?;
+                } else {
+                    // Write the updated leaf node back to storage
+                    self.write_node(self.next_id, &leaf_node)?;
+                    self.next_id += 1;
                 }
             }
-            if keys.len() > self.max_keys {
-                let mid = keys.len() / 2;
-                let right_keys = keys.split_off(mid);
-                let right_values = values.split_off(mid);
+            None => {
+                // If the leaf node is None, we need to create a new leaf node
                 let new_leaf = Node::Leaf {
-                    keys: right_keys,
-                    values: right_values,
-                    next: next.take(), // Retain the next pointer
+                    keys: vec![key.clone()],
+                    values: vec![value],
+                    next: None,
                 };
-                // Write the new leaf node to storage
-                self.storage.write_node(self.next_id, &new_leaf)?;
-                self.next_id += 1;
-                // Write the updated leaf node back to storage
-                let new_leaf_id = self.next_id;
-                self.storage.write_node(new_leaf_id, &mut leaf)?;
-                self.next_id += 1;
-                // Propagate the split upwards.
-                self.insert_into_parent(path, key, new_leaf_id)?;
-            } else {
-                // Write the updated leaf node back to storage
-                self.storage.write_node(self.next_id, &leaf)?;
-                self.next_id += 1;
+                self.write_node(current_id, &new_leaf)?;
             }
-        }
+            Some(_) => {
+                // If the node is not a leaf, this should not happen
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Expected a leaf node for insertion",
+                ));
+            }
+        };
         Ok(())
     }
+
     // insert into a parent node, the path is the collection of the nodes that are parent to the
     // leaf, try inserting in a lifo manner.
     fn insert_into_parent(
@@ -146,7 +179,7 @@ where
         while let Some((parent_id, insert_pos)) = path.pop() {
             let mut node = self.read_node(parent_id)?;
             match node {
-                Node::Leaf { .. } => {
+                Some(Node::Leaf { .. }) => {
                     // We should never reach a leaf node here, as we are inserting into the parent
                     // of a leaf node.
                     return Err(std::io::Error::new(
@@ -154,12 +187,12 @@ where
                         "Reached a leaf node while trying to insert into parent",
                     ));
                 }
-                Node::Internal { ref mut keys, ref mut children  } => {
+                Some(n @ Node::Internal { ref mut keys, ref mut children }) => {
                     keys.insert(insert_pos, key.clone());
                     children.insert(insert_pos + 1, new_child_id);
 
                     if keys.len() <= self.max_keys {
-                        self.storage.write_node(self.next_id, &node)?;
+                        self.write_node(self.next_id, &n)?;
                         self.next_id += 1;
                         return Ok(())
                     } else {
@@ -179,16 +212,23 @@ where
                         };
                         // Write the new internal node to storage
                         let new_internal_id = self.next_id;
-                        self.storage.write_node(new_internal_id, &new_internal);
+                        self.write_node(new_internal_id, &new_internal)?;
                         self.next_id += 1;
                         // Write the split internal node to storage
-                        self.storage.write_node(self.next_id, &node)?;
+                        self.write_node(self.next_id, &n)?;
                         self.next_id += 1;
 
                         key = split_key_for_parent;
                         new_child_id = new_internal_id;
                         continue;
                     }
+                }
+                None => {
+                    // Node not found, this should not happen as we are traversing the path
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "Node not found while inserting into parent",
+                    ));
                 }
             }
         }
@@ -199,7 +239,7 @@ where
             children: vec![old_root, new_child_id],
         };
         // Write the new root node to storage
-        self.storage.write_node(self.next_id, &new_root);
+        self.write_node(self.next_id, &new_root)?;
         self.root_id = self.next_id;
         self.next_id += 1;
         Ok(())
@@ -209,21 +249,22 @@ where
     pub fn search(&mut self, key: &K) -> Result<Option<V>> {
         let mut current_id = self.root_id;
         loop {
-            let node = self.storage.read_node(current_id)?;
+            let node = self.read_node(current_id)?;
             match node {
-                Node::Internal { keys, children } => {
-                    let i = match keys.binary_search(&key) {
+                Some(Node::Internal { keys, children }) => {
+                    let i = match keys.binary_search(key) {
                         Ok(i) => i,
                         Err(_i) => return Ok(None), // Key not found
                     };
                     current_id = children[i];
                 }
-                Node::Leaf { keys, values, .. } => {
-                    match keys.binary_search(&key) {
+                Some(Node::Leaf { keys, values, .. }) => {
+                    match keys.binary_search(key) {
                         Ok(i) => return Ok(Some(values[i].clone())),
                         Err(_i) => return Ok(None), // Key not found
                     };
                 }
+                None => return Ok(None), // Node not found
             }
         }
     }
@@ -234,14 +275,14 @@ where
         if start > end {
             return Ok(None); // Invalid range
         }
-        let mut current_id = self.root_id.clone();
+        let mut current_id = self.root_id;
 
         loop {
-            let node = self.storage.read_node(current_id)?;
+            let node = self.read_node(current_id)?;
 
             match node {
                 Node::Internal { keys, children } => {
-                    let i = match keys.binary_search(&start) {
+                    let i = match keys.binary_search(start) {
                         Ok(i) => i + 1,
                         Err(i) => i,
                     };
@@ -249,12 +290,12 @@ where
                 }
                 Node::Leaf { keys, .. } => {
                     // Find the index in the leaf node
-                    let start_index = keys.binary_search(&start).unwrap_or(
+                    let start_index = keys.binary_search(start).unwrap_or(
                         keys.len(), // If not found the iterator will skip to the next leaf node
                     );
 
                     return Ok(Some(BPlusTreeRangeIter {
-                        storage: self.storage,
+                        storage: &mut self.storage,
                         current_id: Some(current_id),
                         index: start_index,
                         start: start.clone(),
@@ -273,10 +314,10 @@ where
         let mut parent_stack: Vec<(u64, usize)> = vec![];
 
         loop {
-            let node = self.storage.read_node(current_id)?;
+            let node = self.read_node(current_id)?;
             match node {
                 Node::Internal { keys, children } => {
-                    let i = match keys.binary_search(&key) {
+                    let i = match keys.binary_search(key) {
                         Ok(i) => i,
                         Err(_) => return Ok(None), // Key not found
                     };
@@ -284,7 +325,7 @@ where
                     current_id = children[i];
                 }
                 Node::Leaf {mut keys, mut values, .. } => {
-                    match keys.binary_search(&key) {
+                    match keys.binary_search(key) {
                         Ok(i) => {
                             let ret_val = Some(values[i].clone());
                             keys.remove(i);

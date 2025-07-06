@@ -5,6 +5,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::{fs::{File, OpenOptions}, io::{Read, Write, Seek, SeekFrom, Result}, collections::HashMap};
 
 const PAGE_SIZE: usize = 4096;
+const WORD_SIZE: usize = 8; // Assuming a word size of 8 bytes for u64
 
 #[derive(Debug)]
 struct OffSetEntry {
@@ -23,7 +24,7 @@ pub struct FlatFile<K, V> {
 // Implement a constructor for FlatFile
 impl<K, V> FlatFile<K, V> {
     fn new<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
-        let mut file = OpenOptions::new().read(true).write(true).create(true).open(path)?;
+        let mut file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
         // Initialize the file and read existing entries
         Ok(
             Self {
@@ -42,20 +43,36 @@ where K: Serialize + DeserializeOwned + Ord + Clone,
       V: Serialize + DeserializeOwned + Clone,
 {
     // Read a node from the flat file by its ID
-    fn read_node(&mut self, id: NodeId) -> Result<Node<K, V, NodeId>> {
-        let entry = self.index.get(&id).expect("Missing offset entry");
-        self.file.seek(SeekFrom::Start(entry.offset)).unwrap();
+    fn read_node(&mut self, id: NodeId) -> Result<Option<Node<K, V, NodeId>>> {
+        if let Some(entry) = self.index.get(&id) {
+            // If the offest is invalid, return an error
+            if entry.offset >= self.next_offset {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid offset"));
+            }
+            // If the entry exists, seek to the offset
+            self.file.seek(SeekFrom::Start(entry.offset))?;
+            // Read the length of the serialized data
+            let mut len_buf = [0u8; WORD_SIZE];
+            self.file.read_exact(&mut len_buf)?;
+            let length = u64::from_le_bytes(len_buf);
+            if length == 0 {
+                // If the length is zero, return None
+                return Ok(None);
+            }
+            if length != entry.length {
+                // If the length does not match the index, return an error
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Length mismatch"));
+            }
+            // Read the serialized data
+            let mut buf = vec![0u8; length as usize];
+            self.file.read_exact(&mut buf)?;
+            let val = bincode::deserialize(&buf);
+            val.map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+       } else {
+           // If the entry does not exist, return None
+           return Ok(None);
+       }
 
-        // Read the length of the serialized data
-        let mut len_buf = [0u8; 4];
-        self.file.read_exact(&mut len_buf).unwrap();
-        let length = u32::from_le_bytes(len_buf);
-
-        // Read the serialized data
-        let mut buf = vec![0u8; length as usize];
-        self.file.read_exact(&mut buf)?;
-        let val = bincode::deserialize(&buf);
-        return val.map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e));
     }
 
     // Write a node to the flat file and update the index
@@ -68,18 +85,18 @@ where K: Serialize + DeserializeOwned + Ord + Clone,
         // Write the length of the serialized data
         self.file.write_all(&length.to_le_bytes())?;
         // Pad data to next multiple of PAGE_SIZE
-        let mut padded_data = data;
-        let total_len = padded_data.len() + 4; // include length prefix
-        // Calculate padding length - this handles the case where total_len is already a multiple
-        // of PAGE_SIZE
-        let pad_len = (PAGE_SIZE - (total_len % PAGE_SIZE)) % PAGE_SIZE;
-        padded_data.extend(vec![0u8; pad_len]);
+        let total_len = data.len() + 4; // include length prefix
+        if offset + total_len as u64 > PAGE_SIZE as u64 {
+            // If the current offset plus data exceeds PAGE_SIZE, we need to seek to the next page
+            let next_page = offset + PAGE_SIZE as u64 - (offset % PAGE_SIZE as u64);
+            self.file.seek(SeekFrom::Start(next_page))?;
+        }
         // Write the serialized data
-        self.file.write_all(&padded_data)?;
+        self.file.write_all(&data)?;
         self.file.flush()?;
 
         self.index.insert(id, OffSetEntry { offset, length });
-        self.next_offset += length + pad_len as u64; // Update the next offset
+        self.next_offset += total_len as u64; // Update the next offset
         Ok(())
     }
 
