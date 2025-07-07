@@ -112,59 +112,60 @@ where
         // We have found the leaf node, update a copy of the leaf node and insert it back with a
         // new id retaining COW semantics.
         let mut leaf_node = self.read_node(current_id)?;
-        match leaf_node {
-            Some( Node::Leaf { ref mut keys, ref mut values, mut next}) => {
-                // If the key already exists, we replace the value
-                match keys.binary_search(&key) {
-                    Ok(i) => {
-                        values[i] = value; // Replace existing value
-                    }
-                    Err(i) => {
-                        keys.insert(i, key.clone());
-                        values.insert(i, value);
+        match leaf_node.take() {
+            Some(mut node) => {
+                match &mut node {
+                    Node::Leaf { keys, values, next} => {
+                        // If the key already exists, we replace the value
+                        match keys.binary_search(&key) {
+                            Ok(i) => {
+                                values[i] = value; // Replace existing value
+                            }
+                            Err(i) => {
+                                keys.insert(i, key.clone());
+                                values.insert(i, value);
+                            }
+                        }
+                        if keys.len() > self.max_keys {
+                            let mid = keys.len() / 2;
+                            let right_keys = keys.split_off(mid);
+                            let right_values = values.split_off(mid);
+                            let new_leaf = Node::Leaf {
+                                keys: right_keys,
+                                values: right_values,
+                                next: next.take(), // Retain the next pointer
+                            };
+                            // Write the new leaf node to storage
+                            self.write_node(self.next_id, &new_leaf)?;
+                            self.next_id += 1;
+                            // Write the updated leaf node back to storage
+                            let new_leaf_id = self.next_id;
+                            self.write_node(new_leaf_id, &node)?;
+                            self.next_id += 1;
+                            // Propagate the split upwards.
+                            self.insert_into_parent(path, key, new_leaf_id)?;
+                        } else {
+                            // Write the updated leaf node back to storage
+                            self.write_node(self.next_id, &node)?;
+                            self.next_id += 1;
+                        }
+                    },
+                    _ => {
+                        // If the node is not a leaf, this should not happen
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Expected a leaf node for insertion",
+                        ));
                     }
                 }
-                if keys.len() > self.max_keys {
-                    let mid = keys.len() / 2;
-                    let right_keys = keys.split_off(mid);
-                    let right_values = values.split_off(mid);
-                    let new_leaf = Node::Leaf {
-                        keys: right_keys,
-                        values: right_values,
-                        next: next.take(), // Retain the next pointer
-                    };
-                    // Write the new leaf node to storage
-                    self.write_node(self.next_id, &new_leaf)?;
-                    self.next_id += 1;
-                    // Write the updated leaf node back to storage
-                    let new_leaf_id = self.next_id;
-                    self.write_node(new_leaf_id, &leaf_node)?;
-                    self.next_id += 1;
-                    // Propagate the split upwards.
-                    self.insert_into_parent(path, key, new_leaf_id)?;
-                } else {
-                    // Write the updated leaf node back to storage
-                    self.write_node(self.next_id, &leaf_node)?;
-                    self.next_id += 1;
-                }
-            }
+            } 
             None => {
-                // If the leaf node is None, we need to create a new leaf node
-                let new_leaf = Node::Leaf {
-                    keys: vec![key.clone()],
-                    values: vec![value],
-                    next: None,
-                };
-                self.write_node(current_id, &new_leaf)?;
-            }
-            Some(_) => {
-                // If the node is not a leaf, this should not happen
                 return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Expected a leaf node for insertion",
+                    std::io::ErrorKind::NotFound,
+                    "Leaf node not found while inserting",
                 ));
             }
-        };
+        }
         Ok(())
     }
 
@@ -178,51 +179,53 @@ where
     ) -> Result<()> {
         while let Some((parent_id, insert_pos)) = path.pop() {
             let mut node = self.read_node(parent_id)?;
-            match node {
-                Some(Node::Leaf { .. }) => {
-                    // We should never reach a leaf node here, as we are inserting into the parent
-                    // of a leaf node.
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "Reached a leaf node while trying to insert into parent",
-                    ));
-                }
-                Some(n @ Node::Internal { ref mut keys, ref mut children }) => {
-                    keys.insert(insert_pos, key.clone());
-                    children.insert(insert_pos + 1, new_child_id);
-
-                    if keys.len() <= self.max_keys {
-                        self.write_node(self.next_id, &n)?;
-                        self.next_id += 1;
-                        return Ok(())
-                    } else {
-                        // Node is overflowed, we need to split it
-                        let mid = keys.len() / 2;
-                        let right_keys = keys.split_off(mid + 1);
-                        let right_children = children.split_off(mid + 1);
-                        let split_key_for_parent = keys.pop().unwrap_or_else(|| {
-                                // If the split key is None, it means we are splitting the root node
-                                // and we need to create a new root.
-                                key.clone()
-                            });
-
-                        let new_internal = Node::Internal {
-                            keys: right_keys,
-                            children: right_children,
-                        };
-                        // Write the new internal node to storage
-                        let new_internal_id = self.next_id;
-                        self.write_node(new_internal_id, &new_internal)?;
-                        self.next_id += 1;
-                        // Write the split internal node to storage
-                        self.write_node(self.next_id, &n)?;
-                        self.next_id += 1;
-
-                        key = split_key_for_parent;
-                        new_child_id = new_internal_id;
-                        continue;
+            match node.take() {
+                Some(mut node) => match &mut node {
+                    Node::Leaf { .. } => {
+                        // We should never reach a leaf node here, as we are inserting into the parent
+                        // of a leaf node.
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Reached a leaf node while trying to insert into parent",
+                        ));
                     }
-                }
+                    Node::Internal { keys, children } => {
+                        keys.insert(insert_pos, key.clone());
+                        children.insert(insert_pos + 1, new_child_id);
+
+                        if keys.len() <= self.max_keys {
+                            self.write_node(self.next_id, &node)?;
+                            self.next_id += 1;
+                            return Ok(())
+                        } else {
+                            // Node is overflowed, we need to split it
+                            let mid = keys.len() / 2;
+                            let right_keys = keys.split_off(mid + 1);
+                            let right_children = children.split_off(mid + 1);
+                            let split_key_for_parent = keys.pop().unwrap_or_else(|| {
+                                    // If the split key is None, it means we are splitting the root node
+                                    // and we need to create a new root.
+                                    key.clone()
+                                });
+
+                            let new_internal = Node::Internal {
+                                keys: right_keys,
+                                children: right_children,
+                            };
+                            // Write the new internal node to storage
+                            let new_internal_id = self.next_id;
+                            self.write_node(new_internal_id, &new_internal)?;
+                            self.next_id += 1;
+                            // Write the split internal node to storage
+                            self.write_node(self.next_id, &node)?;
+                            self.next_id += 1;
+
+                            key = split_key_for_parent;
+                            new_child_id = new_internal_id;
+                            continue;
+                        }
+                    }
+                },
                 None => {
                     // Node not found, this should not happen as we are traversing the path
                     return Err(std::io::Error::new(
@@ -281,14 +284,14 @@ where
             let node = self.read_node(current_id)?;
 
             match node {
-                Node::Internal { keys, children } => {
+                Some(Node::Internal { keys, children }) => {
                     let i = match keys.binary_search(start) {
                         Ok(i) => i + 1,
                         Err(i) => i,
                     };
                     current_id = children[i];
                 }
-                Node::Leaf { keys, .. } => {
+                Some(Node::Leaf { keys, .. }) => {
                     // Find the index in the leaf node
                     let start_index = keys.binary_search(start).unwrap_or(
                         keys.len(), // If not found the iterator will skip to the next leaf node
@@ -303,6 +306,7 @@ where
                         phantom: std::marker::PhantomData,
                     }));
                 }
+                None => return Ok(None), // Node not found
             }
         }
     }
@@ -316,7 +320,7 @@ where
         loop {
             let node = self.read_node(current_id)?;
             match node {
-                Node::Internal { keys, children } => {
+                Some(Node::Internal { keys, children }) => {
                     let i = match keys.binary_search(key) {
                         Ok(i) => i,
                         Err(_) => return Ok(None), // Key not found
@@ -324,7 +328,7 @@ where
                     parent_stack.push((current_id, i));
                     current_id = children[i];
                 }
-                Node::Leaf {mut keys, mut values, .. } => {
+                Some(Node::Leaf {mut keys, mut values, .. }) => {
                     match keys.binary_search(key) {
                         Ok(i) => {
                             let ret_val = Some(values[i].clone());
@@ -342,6 +346,7 @@ where
                         }
                     }
                 }
+                None => return Ok(None), // Node not found
             }
         }
     }
