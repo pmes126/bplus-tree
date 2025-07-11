@@ -35,8 +35,8 @@ where
 
 
         Ok(Self {
-            root_id: 0,
-            next_id: 1,
+            root_id: init_id,
+            next_id: init_id + 1, // Next ID for new nodes
             storage,
             order,
             max_keys: order - 1,
@@ -146,6 +146,10 @@ where
                             self.insert_into_parent(path, key, new_leaf_id)?;
                         } else {
                             // Write the updated leaf node back to storage
+                            if current_id == self.root_id {
+                                // If this is the root node, we need to update the root_id
+                                self.root_id = self.next_id;
+                            }
                             self.write_node(self.next_id, &node)?;
                             self.next_id += 1;
                         }
@@ -386,7 +390,8 @@ mod tests {
         let mut tree_root = BPlusTree::<u64, String, FlatFile<u64, String>>::new(storage, 4)?;
         let key = 1u64;
         let value = "a".to_string();
-        tree_root.insert(key, value.clone())?;
+        let res = tree_root.insert(key, value.clone());
+        assert!(res.is_ok(), "Node should be inserted successfully");
         let res = tree_root.search(&key)?;
         assert!(res.is_some(), "Node should be read successfully");
         assert_eq!(res.unwrap(), value, "Value should match the inserted value");

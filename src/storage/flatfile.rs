@@ -67,8 +67,10 @@ impl<K, V> NodeStorage<K, V> for FlatFile<K, V>
             // Read the serialized data
             let mut buf = vec![0u8; length as usize];
             self.file.read_exact(&mut buf)?;
-            let val = bincode::deserialize(&buf);
-            val.map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            // Deserialize the data into a Node and return it
+            bincode::deserialize::<Node<K, V, NodeId>>(&buf)
+                .map(Some)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
        } else {
            // If the entry does not exist, return None
            Ok(None)
@@ -84,15 +86,15 @@ impl<K, V> NodeStorage<K, V> for FlatFile<K, V>
         let offset = self.next_offset;
 
         self.file.seek(SeekFrom::Start(offset))?;
-        // Write the length of the serialized data
-        self.file.write_all(&length.to_le_bytes())?;
         // Pad data to next multiple of PAGE_SIZE
         let total_len = data.len() + 4; // include length prefix
-        if offset + total_len as u64 > PAGE_SIZE as u64 {
-            // If the current offset plus data exceeds PAGE_SIZE, we need to seek to the next page
-            let next_page = offset + PAGE_SIZE as u64 - (offset % PAGE_SIZE as u64);
-            self.file.seek(SeekFrom::Start(next_page))?;
-        }
+        //if offset + total_len as u64 > PAGE_SIZE as u64 {
+        //    // If the current offset plus data exceeds PAGE_SIZE, we need to seek to the next page
+        //    let next_page = offset + PAGE_SIZE as u64 - (offset % PAGE_SIZE as u64);
+        //    self.file.seek(SeekFrom::Start(next_page))?;
+        //}
+        // Write the length of the serialized data
+        self.file.write_all(&length.to_le_bytes())?;
         // Write the serialized data
         self.file.write_all(&data)?;
         self.file.flush()?;
