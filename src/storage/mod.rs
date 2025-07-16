@@ -19,13 +19,15 @@ pub trait PageStorage {
     fn write_page(&mut self, data: &[u8]) -> Result<u64>;
     
     /// Writes a full 4KB page to disk at the given offset
-    fn write_page_to_offset(&mut self, offset: u64, data: &[u8]) -> Result<u64>;
+    fn write_page_at_offset(&mut self, offset: u64, data: &[u8]) -> Result<u64>;
 
     /// Ensures all writes are flushed to disk
     fn flush(&mut self) -> Result<()>;
 
     /// Optional: allocates a new, unused page ID
     fn allocate_page(&mut self) -> Result<u64>;
+    
+    fn free_page(&mut self, page_id: u64) -> Result<()>;
 }
 
 /// Trait for node storage operations

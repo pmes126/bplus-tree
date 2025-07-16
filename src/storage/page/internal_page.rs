@@ -1,0 +1,119 @@
+use crate::storage::page::INTERNAL_NODE_TAG;
+use crate::layout::PAGE_SIZE;
+use crate::layout::MAX_ENTRIES;
+use std::io::{Error, ErrorKind};
+use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use bytemuck;
+
+#[repr(C)]
+#[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
+pub struct InternalPageHeader {
+    pub is_leaf:        u64, // always 0
+    pub entry_count:    u64,    // number of keys
+    pub free_start:     u64,
+    pub leftmost_child: u64, // leftmost child pointer, k keys for k+1 children
+    pub key_offsets: [u16; MAX_ENTRIES],
+}
+
+const HEADER_SIZE_BYTES: usize = std::mem::size_of::<InternalPageHeader>();
+const DATA_SIZE: usize = PAGE_SIZE - HEADER_SIZE_BYTES;
+const LEN_KEY_SIZE: usize = std::mem::size_of::<u16>();
+const CHILD_ID_SIZE: usize = std::mem::size_of::<u64>();
+
+#[repr(C)]
+#[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
+pub struct Data {
+    pub blob: [u8; DATA_SIZE],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
+pub struct InternalPage {
+    pub header: InternalPageHeader,
+    pub data : Data,
+}
+
+impl InternalPage {
+    pub fn new() -> Self {
+        InternalPage {
+            header: InternalPageHeader {
+                is_leaf: INTERNAL_NODE_TAG as u64,
+                entry_count: 0,
+                key_offsets: [0; MAX_ENTRIES],
+                free_start: 0,
+                leftmost_child: 0, // Initially no leftmost child
+            },
+            data: Data {
+                blob: [0u8; DATA_SIZE],
+            },
+        }
+    }
+
+    pub fn from_bytes(buf: &[u8; PAGE_SIZE]) -> Result<&Self, Error> {
+        InternalPage::ref_from(buf).ok_or(Error::new(ErrorKind::Other,"Invalid InternalPageRaw layout or alignment"))
+    }
+
+    // Store according to the layout => [klen][key][ptr] 
+    pub fn insert_entry(&mut self, key: &[u8], child: u64) -> Result<(), Error> {
+        if self.header.entry_count as usize >= MAX_ENTRIES {
+            return Err(Error::new(ErrorKind::Other, "Internal page full"));
+        }
+
+        let required_space = key.len() + LEN_KEY_SIZE +  CHILD_ID_SIZE; // key_len +
+        if self.header.free_start + required_space as u64 > DATA_SIZE as u64 {
+            return Err(Error::new(ErrorKind::Other, "Not enough space in page"));
+        }
+
+        let data = &mut self.data.blob[..];
+        
+        // Current entry index of entry_count has offset at the free_start position
+        self.header.key_offsets[self.header.entry_count as usize] = self.header.free_start as u16;
+
+        let key_len_offset = self.header.free_start as usize;
+        let key_len = key.len() as u16;
+        let raw = key_len.to_le_bytes();
+        let end = key_len_offset + raw.len();
+
+        data[key_len_offset..end].copy_from_slice(raw.as_ref());
+        self.header.free_start += raw.len() as u64;
+
+        // Write the key
+        let key_offset = self.header.free_start as usize;
+        let raw = key.as_ref();
+        let end = key_offset + raw.len();
+
+        data[key_offset..end].copy_from_slice(raw);
+        self.header.free_start += raw.len() as u64;
+
+        // Write the child pointer
+        let child_offset = self.header.free_start as usize;
+        let raw = child.to_le_bytes();
+        let end = child_offset + raw.len();
+
+        data[child_offset..end].copy_from_slice(raw.as_ref());
+        self.header.free_start += raw.len() as u64;
+
+        // Adjust count
+        self.header.entry_count += 1;
+        Ok(())
+    }
+
+    pub fn get_entry(&self, idx: usize) -> Result<(&[u8], u64), Error> {
+        let key_len_offset = self.header.key_offsets[idx] as usize;
+
+        let arr: [u8; LEN_KEY_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_KEY_SIZE)].try_into().map_err(|_| Error::new(ErrorKind::Other, "Invalid key length slice"))?;
+
+        let key_length = u16::from_le_bytes(arr);
+
+        let key_offset = key_len_offset + LEN_KEY_SIZE; // Move to the start of the key
+        let key = &self.data.blob[key_offset..(key_offset + key_length as usize)];
+        let child_offset = self.header.free_start as usize + (key_length as usize + LEN_KEY_SIZE);
+        let arr: [u8; CHILD_ID_SIZE] = self.data.blob[child_offset..(child_offset + CHILD_ID_SIZE)].try_into().map_err(|_| Error::new(ErrorKind::Other, "Invalid child id length slice"))?;
+        let child_ptr = u64::from_le_bytes(arr);
+        Ok((key, child_ptr))
+    }
+
+    pub fn to_bytes(&self) -> Result<&[u8; PAGE_SIZE], std::array::TryFromSliceError> {
+        <&[u8; 4096]>::try_from(self.as_bytes())
+    }
+}

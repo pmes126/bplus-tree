@@ -1,8 +1,7 @@
 use crate::bplustree::Node;
 use crate::storage::ValueCodec;
 use crate::storage::KeyCodec;
-use crate::storage::{NodeStorage, MetadataStorage, metadata::{METADATA_PAGE_1, METADATA_PAGE_2}};
-use crate::storage::metadata::Metadata;
+use crate::storage::{NodeStorage, MetadataStorage, metadata, metadata::{MetadataPage, Metadata, METADATA_PAGE_1, METADATA_PAGE_2}};
 use crate::bplustree::BPlusTreeRangeIter;
 use std::io::Result;
 
@@ -43,18 +42,18 @@ where
         } 
         // Initialize the root node ID
         let init_id = storage.write_node(&root_node)?;
-        let metadata_1 = Metadata {
-            root_node_id: init_id,
-            txn_id: 1, // Initial transaction ID
-            checksum: 0, // Placeholder for checksum
-            order: order as u8,
-        };
-        let metadata_2 = Metadata {
-            root_node_id: init_id,
-            txn_id: 0, // Initial transaction ID
-            checksum: 0, // Placeholder for checksum
-            order: order as u8,
-        };
+        let metadata_1 = metadata::new_metadata_page(
+            init_id,
+            1, // Initial transaction ID
+            0, // Placeholder for checksum
+            order as u8,
+        );
+        let metadata_2 = metadata::new_metadata_page(
+            init_id,
+            0, // Initial transaction ID
+            0, // Placeholder for checksum
+            order as u8,
+        );
         storage.write_meta(METADATA_PAGE_1, &metadata_1)?;
         storage.write_meta(METADATA_PAGE_2, &metadata_2)?;
 

@@ -1,8 +1,9 @@
 use crate::bplustree::node::{Node};
+use crate::storage::{KeyCodec, ValueCodec, NodeStorage};
 
 pub struct BPlusTreeRangeIter<'a, K, V, S>
-    where K: Ord + Clone,
-          V: Clone,
+    where K: KeyCodec + Ord,
+          V: ValueCodec,
           S: NodeStorage<K, V>,
 {
     pub(super) storage: &'a mut S,
@@ -14,7 +15,7 @@ pub struct BPlusTreeRangeIter<'a, K, V, S>
 }
 
 // Implementation of the BPlusTreeRangeIter
-impl<'a, K: Ord + Clone, V: Clone, S> Iterator for BPlusTreeRangeIter<'a, K, V, S> 
+impl<'a, K: Ord + KeyCodec, V: ValueCodec, S> Iterator for BPlusTreeRangeIter<'a, K, V, S> 
     where S: NodeStorage<K, V>,
 {
     type Item = Result<(K, V), std::io::Error>;
