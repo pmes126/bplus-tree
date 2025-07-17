@@ -1,11 +1,16 @@
 use lru::LruCache;
 use crate::bplustree::{Node, NodeId};
-use crate::storage::{KeyCodec, ValueCodec, PageStorage, NodeStorage};
+use crate::storage::{KeyCodec, ValueCodec, NodeStorage};
 use std::io;
 use std::num::NonZeroUsize;
+use anyhow::Error;
 
 // CacheLayer is a decorator around a backend storage that caches nodes in memory.
-pub struct CacheLayer<K, V, B: PageStorage> {
+pub struct CacheLayer<K, V, B: NodeStorage<K, V>> 
+where
+    K: KeyCodec + Clone,
+    V: ValueCodec + Clone,
+{
     backend: B,
     cache: LruCache<NodeId, Node<K, V>>,
 }
@@ -14,8 +19,8 @@ pub struct CacheLayer<K, V, B: PageStorage> {
 impl<K, V, B> CacheLayer<K, V, B>
 where
     K: KeyCodec + Clone,
-    V: KeyCodec + Clone,
-    B: PageStorage,
+    V: ValueCodec + Clone,
+    B: NodeStorage<K, V>,
 {
     fn new(capacity: usize, backend: B) -> Self {
         Self {
@@ -28,31 +33,33 @@ where
 // Implement the NodeStorage trait
 impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
     where
-    K: KeyCodec,
-    V: ValueCodec,
-    B: PageStorage,
+    K: KeyCodec + Clone,
+    V: ValueCodec + Clone,
+    B: NodeStorage<K, V>,
 {
-    fn read_node(&mut self, id: u64) -> io::Result<Option<Node<K, V>>> {
+    fn read_node(&mut self, id: u64) -> Result<Option<Node<K, V>>, anyhow::Error> {
         if let Some(node) = self.cache.get(&id) {
+            // If the node is found in the cache, we return a deep copy of it.
             return Ok(Some(node.clone()));
         }
         let node = self.backend.read_node(id)?;
-        if let Some(n) = &node {
-            self.cache.put(id, n.clone());
+        if let Some(n) = node {
+            self.cache.put(id, n);
+            Ok(node)
         } else {
             // If the node is not found in the backend, return None
             return Ok(None);
         }
-        Ok(node)
     }
 
-    fn write_node(&mut self, node: &Node<K, V>) -> io::Result<u64> {
+    fn write_node(&mut self, node: &Node<K, V>) -> Result<u64, anyhow::Error> {
         // Write the node to the backend storage
         let id = self.backend.write_node(node)?;
         self.cache.put(id, node.clone()).ok_or(io::Error::other(
             "Cache write failed: cache is full or node already exists", // TODO rethink this error
             // message
-        ))?;
+        ));
+        Ok(id)
     }
     
     fn flush(&mut self) -> io::Result<()> {

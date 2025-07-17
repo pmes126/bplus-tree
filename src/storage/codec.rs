@@ -1,10 +1,10 @@
 use crate::layout::PAGE_SIZE;
 use crate::storage::page::LeafPage;
 use crate::storage::page::InternalPage;
-use crate::storage::{KeyCodec, ValueCodec, NodeCodec};
+use crate::storage::page::PageCodecError;
+use crate::storage::{KeyCodec, ValueCodec, NodeCodec, CodecError};
 use crate::bplustree::Node;
 
-use std::io::{Error};
 pub struct DefaultNodeCodec;
 
 impl KeyCodec for u64 {
@@ -78,57 +78,61 @@ where
     K: KeyCodec + Copy + Ord,
     V: ValueCodec + Copy,
 {
-    fn decode(buf: &[u8; PAGE_SIZE]) -> Node<K, V> {
+    fn decode(buf: &[u8; PAGE_SIZE]) -> Result<Node<K, V>, CodecError> {
         match buf[0] {
         1 => {
             // Leaf node
-            let page = LeafPage::from_bytes(buf)?
+            let page = LeafPage::from_bytes(buf).map_err(|e| CodecError::DecodeFailure("Failed to get LeafPage from bytes".to_string()))?;
             let mut leaf = Node::Leaf {
                     keys: Vec::with_capacity(page.len() as usize),
                     values: Vec::with_capacity(page.len() as usize),
                     next: None,
             };
 
-            for i in 0..page.header.entry_count as usize {
-                let (key_bytes, value_bytes) = page.get_entry(i);
-                leaf.keys.push(K::decode_key(key_bytes));
-                leaf.values.push(V::decode_value(value_bytes));
+            if let Node::Leaf { keys, values, next } = &mut leaf {
+                for i in 0..page.header.entry_count as usize {
+                    let (key_bytes, value_bytes) = page.get_entry(i).map_err(|e| CodecError::DecodeFailure(e.to_string()))?;
+                    keys.push(K::decode_key(key_bytes));
+                    values.push(V::decode_value(value_bytes));
+                }
+                next.replace(page.header.next_node_id);
             }
-            leaf
+            Ok(leaf)
         }
         0 => {
             // Internal node
             let page = unsafe { &*(buf.as_ptr() as *const InternalPage) };
             let mut internal = Node::Internal {
-                keys: Vec::with_capacity(page.header.len as usize),
-                children: Vec::with_capacity(page.header.len as usize + 1), // +1 for rightmost child
+                keys: Vec::with_capacity(page.header.entry_count as usize),
+                children: Vec::with_capacity(page.header.entry_count as usize + 1), // +1 for rightmost child
             };
-            for i in 0..page.header.len as usize {
-                let (key_bytes, child_ptr) = page.get_entry(i);
-                internal.keys.push(K::decode_key(key_bytes));
-                internal.children.push(child_ptr);
+            if let Node::Internal { keys, children } = &mut internal {
+                for i in 0..page.header.entry_count as usize {
+                    let (key_bytes, child_ptr) = page.get_entry(i).map_err(|e| CodecError::DecodeFailure(e.to_string()))?;
+                    keys.push(K::decode_key(key_bytes));
+                    children.push(child_ptr);
+                }
             }
-            internal
+            Ok(internal)
         }
-        _ => panic!("Invalid node type tag in page"),
+        _ => Err(CodecError::DecodeFailure("Invalid node type tag in page".to_string())),
         }    
     }
 
-    fn encode(node: &Node<K, V>) -> Result<[u8; PAGE_SIZE], Error> {
+    fn encode(node: &Node<K, V>) -> Result<[u8; PAGE_SIZE], CodecError> {
         match node {
             Node::Leaf { keys, values, .. } =>  {
                 let mut page = LeafPage::new();
-                let entries = keys.iter().zip(values.iter());
-    
-                for (key_ref, value_ref) in entries {
+                { 
+                for (key_ref, value_ref) in keys.iter().zip(values.iter()) {
                     let key = key_ref.encode_key();
                     let value = value_ref.encode_value();
-                    if let Err(e) = page.insert_entry(key, value) {
-                        panic!("LeafPage overflow during encode: {}", e);
-                    }
+                    page.insert_entry(key.as_ref(), value.as_ref()).map_err(|e| CodecError::EncodeFailure(e.to_string()))?;
                 }
-    
-                page.to_bytes()
+                }
+                page.to_bytes().map_err(|e| CodecError::EncodeFailure(e.to_string())).copied()
+                //page.to_bytes()
+                //page.to_bytes().map_err(|e| PageCodecError::EncodeFailure(&e.to_string()))
             }
             Node::Internal { keys, children } => {
                 let mut page = InternalPage::new();
@@ -138,12 +142,9 @@ where
     
                 for (key_ref, child_ref) in entries {
                     let key = key_ref.encode_key();
-                    if let Err(e) = page.insert_entry(key, *child_ref) {
-                        panic!("InternalPage overflow during encode: {}", e);
-                    }
+                    page.insert_entry(key, *child_ref).map_err(|e| CodecError::EncodeFailure(e.to_string()))?;
                 }
-
-                page.to_bytes()
+                page.to_bytes().map_err(|e| CodecError::EncodeFailure(e.to_string())).copied()
             }   
         }
     }

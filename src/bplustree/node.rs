@@ -1,6 +1,7 @@
 pub type NodeId = u64;
 
 /// In-memory representation of a node
+#[derive(Debug, Clone)]
 pub enum Node<K, V> {
     Internal {
         keys: Vec<K>,
