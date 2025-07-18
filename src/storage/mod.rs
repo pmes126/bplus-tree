@@ -89,9 +89,6 @@ where
     K: KeyCodec,
     V: ValueCodec,
 {
-    fn new<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error>
-    where
-        Self: Sized;
     /// Reads a node from storage by its ID
     fn read_node(&mut self, id: u64) -> Result<Option<Node<K, V>>, anyhow::Error>;
 

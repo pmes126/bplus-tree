@@ -8,6 +8,15 @@ pub struct FileStore<S: PageStorage> {
     store: S,
 }
 
+impl<S: PageStorage> FileStore<S> {
+    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> {
+        Ok(Self {
+            store: S::init(path)?
+        })
+    }
+
+}
+
 impl<S: PageStorage> MetadataStorage for FileStore<S> {
     fn read_meta(&mut self, slot: u8) -> Result<MetadataPage, std::io::Error> {
         if slot > METADATA_PAGE_2 {
@@ -72,12 +81,6 @@ impl<S: PageStorage, K, V> NodeStorage<K, V> for FileStore<S>
         K: KeyCodec + Ord,
         V: ValueCodec,
 {
-    fn new<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> {
-        Ok(Self {
-            store: S::init(path)?
-        })
-    }
-
     fn read_node(&mut self, page_id: u64) -> Result<Option<Node<K, V>>, anyhow::Error>
     where
         K: KeyCodec,

@@ -38,12 +38,6 @@ impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
     V: ValueCodec + Clone,
     B: NodeStorage<K, V>,
 {
-    // Create a new CacheLayer with the specified capacity and backend storage.
-    fn new<P: AsRef<std::path::Path>>(path: P) -> Result<Self, std::io::Error> {
-        let backend = B::new(path)?;
-        Ok(Self::new(CACHE_CAPACITY, backend)) // Default cache size of 100
-    }
-
     fn read_node(&mut self, id: u64) -> Result<Option<Node<K, V>>, anyhow::Error> {
         if let Some(node) = self.cache.get(&id) {
             // If the node is found in the cache, we return a deep copy of it.
