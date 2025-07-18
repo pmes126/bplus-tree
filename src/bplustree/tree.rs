@@ -1,7 +1,7 @@
 use crate::bplustree::{Node, TreeError};
 use crate::storage::ValueCodec;
 use crate::storage::KeyCodec;
-use crate::storage::{NodeStorage, MetadataStorage, metadata, metadata::{METADATA_PAGE_1, METADATA_PAGE_2}};
+use crate::storage::{NodeStorage, PageStorage, MetadataStorage, metadata, metadata::{METADATA_PAGE_1, METADATA_PAGE_2}};
 use crate::bplustree::BPlusTreeRangeIter;
 use anyhow::Result;
 
@@ -396,9 +396,8 @@ mod tests {
     #[test]
     fn write_and_read_node() -> Result<(), anyhow::Error> {
         let file_path = "test_flatfile.bin";
-        let page_store = PageStore::init(file_path)?;
-        let storage = FileStore::new(page_store)?;
-        let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(storage, 3)?;
+        let store = FileStore::<PageStore>::new(file_path)?;
+        let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, 3)?;
         let key = 1u64;
         let value = "a".to_string();
         let res = tree_root.insert(key, value.clone());
