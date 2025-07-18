@@ -17,17 +17,20 @@ pub struct BPlusTreeRangeIter<'a, K, V, S>
 // Implementation of the BPlusTreeRangeIter
 impl<'a, K: Ord + KeyCodec, V: ValueCodec, S> Iterator for BPlusTreeRangeIter<'a, K, V, S> 
     where S: NodeStorage<K, V>,
+            K: Clone + Ord,
+            V: Clone,
 {
-    type Item = Result<(K, V), std::io::Error>;
+    type Item = Result<(K, V), anyhow::Error>;
 
+    // Returns the next item in the iteration, it returns a deep copy value of the Key and Value pair if it is within the range
     fn next(&mut self) ->Option<Self::Item> {
         while let Some(node_id) = &self.current_id {
-            let node = match self.storage.read_node(*node_id) {
+            let mut node = match self.storage.read_node(*node_id) {
                 Ok(node) => node,
                 Err(e) => return Some(Err(e)), // If we can't read the node, we stop iterating
             };
 
-            match node {
+            match node.take() {
                 Some(Node::Leaf { keys, values, next }) => {
                     // If the node is a leaf, we can iterate over its keys and values
                     while self.index < keys.len() {
@@ -38,8 +41,8 @@ impl<'a, K: Ord + KeyCodec, V: ValueCodec, S> Iterator for BPlusTreeRangeIter<'a
                         self.index += 1;
                         if key >= &self.start { // Return the key-value pair if it is within the
                             // range
-                            let val = &values[self.index];
-                            let res = Ok((key.clone(), val.clone()));
+                            let val = values[self.index].clone();
+                            let res = Ok(((*key).clone() , val));
                             return Some(res);
                         }
                     }

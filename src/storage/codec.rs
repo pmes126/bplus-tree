@@ -74,8 +74,8 @@ impl KeyCodec for Vec<u8> {
 
 impl<K, V> NodeCodec<K, V> for DefaultNodeCodec
 where
-    K: KeyCodec + Copy + Ord,
-    V: ValueCodec + Copy,
+    K: KeyCodec + Ord,
+    V: ValueCodec,
 {
     fn decode(buf: &[u8; PAGE_SIZE]) -> Result<Node<K, V>, CodecError> {
         match buf[0] {

@@ -76,8 +76,8 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
 
 impl<S: PageStorage, K, V> NodeStorage<K, V> for FileStore<S>
     where
-        K: KeyCodec + Ord + Copy,
-        V: ValueCodec + Copy,
+        K: KeyCodec + Ord,
+        V: ValueCodec,
 {
     fn new<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> {
         Ok(Self {

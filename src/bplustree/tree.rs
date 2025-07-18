@@ -1,7 +1,7 @@
 use crate::bplustree::{Node, TreeError};
 use crate::storage::ValueCodec;
 use crate::storage::KeyCodec;
-use crate::storage::{NodeStorage, MetadataStorage, metadata, metadata::{METADATA_PAGE_1, METADATA_PAGE_2}};
+use crate::storage::{NodeStorage, MetadataStorage, PageStorage, metadata, metadata::{METADATA_PAGE_1, METADATA_PAGE_2}};
 use crate::bplustree::BPlusTreeRangeIter;
 use anyhow::Result;
 
@@ -385,35 +385,20 @@ where
         self.root_id = root;
         //self.storage.set_root(root);
     }
-
-    //pub fn create_from_storage(storage: S) -> Result<Self> {
-    //    let root = storage.get_root()?;
-
-    //    //Ok(Self {
-    //    //    root_id: root,
-    //    //    next_id: storage.get_next_id()?,
-    //    //    order: storage.get_order()?,
-    //    //    max_keys : storage.get_order()? - 1,
-    //    //    min_keys : (storage.get_order()? + 1) / 2,
-    //    //    storage,
-    //    //})
-    //}
-    //
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Result;
     use crate::storage::file_store::FileStore;
     use crate::storage::page_store::PageStore;
 
     #[test]
-    fn write_and_read_node() -> Result<()> {
+    fn write_and_read_node() -> Result<(), anyhow::Error> {
         let file_path = "test_flatfile.bin";
         let page_store = PageStore::init(file_path)?;
-        let storage = FileStore::<u64, String>::new(page_store)?;
-        let mut tree_root = BPlusTree::<u64, String, FileStore<u64, String>>::new(file_path)?;
+        let storage = FileStore::new(page_store);
+        let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(storage, 3)?;
         let key = 1u64;
         let value = "a".to_string();
         let res = tree_root.insert(key, value.clone());

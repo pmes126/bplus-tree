@@ -91,8 +91,8 @@ pub trait ValueCodec {
 
 pub trait NodeCodec<K, V>
 where
-    K: KeyCodec + Copy + Ord,
-    V: ValueCodec + Copy,
+    K: KeyCodec + Ord,
+    V: ValueCodec,
 {
     fn encode(node: &Node<K, V>) -> Result<[u8; PAGE_SIZE], CodecError>;
     fn decode(buf: &[u8; PAGE_SIZE]) -> Result<Node<K, V>, CodecError>;
