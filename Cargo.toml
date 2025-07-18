@@ -12,6 +12,7 @@ lru = "0.8"
 bytemuck = { version = "1.14", features = ["derive"] }
 zerocopy = { version = "0.7", features = ["derive"] }
 anyhow = "1.0"
+thiserror = "1.0"
 
 [profile.dev]
 opt-level = 0

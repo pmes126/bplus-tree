@@ -1,8 +1,9 @@
-use crate::bplustree::Node;
+use crate::bplustree::{Node, TreeError};
 use crate::storage::ValueCodec;
 use crate::storage::KeyCodec;
-use crate::storage::{NodeStorage, MetadataStorage, metadata, metadata::{MetadataPage, Metadata, METADATA_PAGE_1, METADATA_PAGE_2}};
+use crate::storage::{NodeStorage, MetadataStorage, metadata, metadata::{METADATA_PAGE_1, METADATA_PAGE_2}};
 use crate::bplustree::BPlusTreeRangeIter;
+use anyhow::Result;
 
 pub type NodeId = u64; // Type for node IDs
 
@@ -23,24 +24,23 @@ where
 // BPlusTree implementation
 impl<K, V, S> BPlusTree<K, V, S>
 where
-    K: KeyCodec + Ord,
-    V: ValueCodec,
+    K: KeyCodec + Clone + Ord,
+    V: ValueCodec + Clone,
     S: NodeStorage<K, V> + MetadataStorage,
 {
-    pub fn new(mut storage: S, order: usize) -> Result<BPlusTree<K, V, S>> {
+    pub fn new(mut storage: S, order: usize) -> Result<BPlusTree<K, V, S>, TreeError> {
         let root_node = Node::Leaf {
             keys: vec![],
             values: vec![],
             next: None,
         };
         if order < 2 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Order must be at least 2",
+            return Err(TreeError::BadInput(
+                "Order must be at least 2".to_string()
             ));
         } 
         // Initialize the root node ID
-        let init_id = storage.write_node(&root_node)?;
+        let init_id = storage.write_node(&root_node).map_err(|e| TreeError::BackendAny(e.to_string()))?;
         let metadata_1 = metadata::new_metadata_page(
             init_id,
             1, // Initial transaction ID
@@ -66,11 +66,12 @@ where
         })
     }
 
-    pub fn load(file_path: &str) -> Result<BPlusTree<K, V, S>> {
-        let storage = S::new(file_path)?;
-        let root_id = storage.get_current_root()?;
-        let order = storage.get_order()?;
-        //let order = storage.get_order()?;
+    pub fn load(file_path: &str) -> Result<BPlusTree<K, V, S>, TreeError> {
+        let mut storage = S::new(file_path)?;
+        let md = storage.get_metadata()?;
+        let root_id = md.root_node_id;
+        let order = md.order as usize;
+        
         let max_keys = order - 1;
         let min_keys = (order + 1).saturating_div(2); // Ensure min_keys is at least 1
 
@@ -90,7 +91,7 @@ where
     }
 
     // Writes a node to the B+ tree storage and updates the cache.
-    fn write_node(&mut self, node: &Node<K, V>) -> Result<()> {
+    fn write_node(&mut self, node: &Node<K, V>) -> Result<u64> {
         self.storage.write_node(node)
     }
 
@@ -141,10 +142,9 @@ where
                 }
                 None => {
                     // Node not found, this should not happen as we are traversing the path
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "Node not found while inserting",
-                    ));
+                   return Err(TreeError::BackendAny(
+                       "Node not found while inserting".to_string(),
+                   ).into());
                 }
             }
         }
@@ -190,18 +190,16 @@ where
                     },
                     _ => {
                         // If the node is not a leaf, this should not happen
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "Expected a leaf node for insertion",
-                        ));
+                        return Err(TreeError::BackendAny(
+                            "Expected a leaf node for insertion".to_string(),
+                        ).into());
                     }
                 }
             } 
             None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Leaf node not found while inserting",
-                ));
+               return Err(TreeError::BackendAny(
+                "Leaf node not found while inserting".to_string(),
+               ).into());
             }
         }
         Ok(())
@@ -223,10 +221,9 @@ where
                     Node::Leaf { .. } => {
                         // We should never reach a leaf node here, as we are inserting into the parent
                         // of a leaf node.
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "Reached a leaf node while trying to insert into parent",
-                        ));
+                       return Err(TreeError::BackendAny(
+                           "Reached a leaf node while trying to insert into parent".to_string(),
+                       ).into());
                     }
                     Node::Internal { keys, children } => {
                         keys.insert(insert_pos, key.clone());
@@ -262,10 +259,9 @@ where
                 },
                 None => {
                     // Node not found, this should not happen as we are traversing the path
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "Node not found while inserting into parent",
-                    ));
+                    return Err(TreeError::NodeNotFound(
+                     "Node not found while inserting into parent".to_string(),
+                    ).into());
                 }
             }
         }
@@ -410,12 +406,14 @@ mod tests {
     use super::*;
     use std::io::Result;
     use crate::storage::file_store::FileStore;
+    use crate::storage::page_store::PageStore;
 
     #[test]
     fn write_and_read_node() -> Result<()> {
         let file_path = "test_flatfile.bin";
-        let storage = FileStore::<u64, String>::new(file_path)?;
-        let mut tree_root = BPlusTree::<u64, String, FileStore<u64, String>>::new(storage, 4)?;
+        let page_store = PageStore::init(file_path)?;
+        let storage = FileStore::<u64, String>::new(page_store)?;
+        let mut tree_root = BPlusTree::<u64, String, FileStore<u64, String>>::new(file_path)?;
         let key = 1u64;
         let value = "a".to_string();
         let res = tree_root.insert(key, value.clone());

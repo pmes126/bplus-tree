@@ -1,7 +1,3 @@
-// A design for storing leaf nodes based on a Page-Local Heap
-// [HEADER (fixed)]
-// [RECORD OFFSETS: N * u16]
-// [RECORD AREA: N × [klen][vlen][key][value]]
 use crate::layout::PAGE_SIZE;
 use crate::layout::MAX_ENTRIES;
 use crate::storage::page::LEAF_NODE_TAG;
@@ -11,6 +7,10 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 pub const LEAF_NODE_VERSION: u8 = 0;
 pub const HEADER_SIZE: usize = 12;
 
+// A design for storing leaf nodes based on a Page-Local Heap
+// [HEADER (fixed)]
+// [RECORD OFFSETS: N * u16]
+// [RECORD AREA: N × [klen][vlen][key][value]]
 #[repr(C)]
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
 pub struct LeafPageHeader {
@@ -160,7 +160,7 @@ impl LeafPage {
 
     pub fn to_bytes(&self) -> Result<&[u8; PAGE_SIZE], std::array::TryFromSliceError> {
     let bytes: &[u8] = self.as_bytes(); // borrow lives for the function scope
-    let array: &[u8; 4096] = bytes.try_into()?; // also scoped
+    let array: &[u8; PAGE_SIZE] = bytes.try_into()?; // also scoped
     Ok(array)
     }
 }

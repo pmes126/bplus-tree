@@ -1,7 +1,8 @@
 use crate::bplustree::Node;
-use crate::storage::{PageStorage, NodeStorage, MetadataStorage, codec::DefaultNodeCodec, { KeyCodec, ValueCodec, NodeCodec, CodecError, metadata, metadata::{MetadataPage, METADATA_PAGE_1, METADATA_PAGE_2}}};
+use crate::storage::{PageStorage, NodeStorage, MetadataStorage, Metadata, codec::DefaultNodeCodec, { KeyCodec, ValueCodec, NodeCodec, CodecError, metadata, metadata::{MetadataPage, METADATA_PAGE_1, METADATA_PAGE_2}}};
 use crate::layout::{PAGE_SIZE};
 use anyhow::Result;
+use std::path::Path;
 
 pub struct FileStore<S: PageStorage> {
     store: S,
@@ -61,6 +62,16 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
 
         Ok(())
     }
+    fn get_metadata(&mut self) -> Result<Metadata, std::io::Error> {
+        let meta0 = self.read_meta(METADATA_PAGE_1)?;
+        let meta1 = self.read_meta(METADATA_PAGE_2)?;
+        let root_node_id = if meta0.data.txn_id > meta1.data.txn_id {
+            meta0.data.root_node_id
+        } else {
+            meta1.data.root_node_id
+        };
+        Ok(meta0.data.clone())
+    }
 }
 
 impl<S: PageStorage, K, V> NodeStorage<K, V> for FileStore<S>
@@ -68,6 +79,12 @@ impl<S: PageStorage, K, V> NodeStorage<K, V> for FileStore<S>
         K: KeyCodec + Ord + Copy,
         V: ValueCodec + Copy,
 {
+    fn new<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> {
+        Ok(Self {
+            store: S::init(path)?
+        })
+    }
+
     fn read_node(&mut self, page_id: u64) -> Result<Option<Node<K, V>>, anyhow::Error>
     where
         K: KeyCodec,

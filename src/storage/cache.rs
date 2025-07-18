@@ -1,10 +1,11 @@
-use lru::LruCache;
 use crate::bplustree::{Node, NodeId};
 use crate::storage::{KeyCodec, ValueCodec, NodeStorage};
+use lru::LruCache;
 use std::io;
 use std::num::NonZeroUsize;
-use anyhow::Error;
 
+const CACHE_CAPACITY: usize = 100; // Default cache capacity
+//
 // CacheLayer is a decorator around a backend storage that caches nodes in memory.
 pub struct CacheLayer<K, V, B: NodeStorage<K, V>> 
 where
@@ -37,13 +38,19 @@ impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
     V: ValueCodec + Clone,
     B: NodeStorage<K, V>,
 {
+    // Create a new CacheLayer with the specified capacity and backend storage.
+    fn new<P: AsRef<std::path::Path>>(path: P) -> Result<Self, std::io::Error> {
+        let backend = B::new(path)?;
+        Ok(Self::new(CACHE_CAPACITY, backend)) // Default cache size of 100
+    }
+
     fn read_node(&mut self, id: u64) -> Result<Option<Node<K, V>>, anyhow::Error> {
         if let Some(node) = self.cache.get(&id) {
             // If the node is found in the cache, we return a deep copy of it.
             return Ok(Some(node.clone()));
         }
         let node = self.backend.read_node(id)?;
-        if let Some(n) = node {
+        if let Some(n) = node.clone() { // Clone the node into the cache
             self.cache.put(id, n);
             Ok(node)
         } else {
@@ -56,8 +63,7 @@ impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
         // Write the node to the backend storage
         let id = self.backend.write_node(node)?;
         self.cache.put(id, node.clone()).ok_or(io::Error::other(
-            "Cache write failed: cache is full or node already exists", // TODO rethink this error
-            // message
+            "Cache write failed: cache is full or node already exists", // TODO rethink this error message
         ));
         Ok(id)
     }

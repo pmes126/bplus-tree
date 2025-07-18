@@ -7,11 +7,16 @@ pub mod metadata;
 
 use crate::bplustree::Node;
 use crate::layout::PAGE_SIZE;
-use crate::storage::metadata::MetadataPage;
+use crate::storage::metadata::{ Metadata, MetadataPage};
+use std::path::{Path};
 use anyhow::Result;
 
 /// Unified storage interface for B+ tree logic
 pub trait PageStorage {
+    /// Initializes the storage, creating necessary files or structures
+    fn init<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> where
+        Self: Sized;
+
     /// Reads a page by ID into a fixed 4KB buffer
     fn read_page(&mut self, page_id: u64) -> Result<[u8; PAGE_SIZE], std::io::Error>;
 
@@ -61,11 +66,13 @@ impl std::error::Error for CodecError {
         }
     }
 }
+
 impl From<std::io::Error> for CodecError {
     fn from(err: std::io::Error) -> CodecError {
         CodecError::Io(err)
     }
 }
+
 /// Trait for node storage operations
 pub trait KeyCodec {
     fn encode_key(&self) -> &[u8];
@@ -96,6 +103,9 @@ where
     K: KeyCodec,
     V: ValueCodec,
 {
+    fn new<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error>
+    where
+        Self: Sized;
     /// Reads a node from storage by its ID
     fn read_node(&mut self, id: u64) -> Result<Option<Node<K, V>>, anyhow::Error>;
 
@@ -118,4 +128,7 @@ pub trait MetadataStorage {
 
     /// Commits a new root node ID to the metadata
     fn commit_root(&mut self, new_root: u64) -> Result<(), std::io::Error>;
+
+    // Get the current metadata
+    fn get_metadata(&mut self) -> Result<Metadata, std::io::Error>;
 }

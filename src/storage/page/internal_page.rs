@@ -117,7 +117,7 @@ impl InternalPage {
 
     pub fn to_bytes(&self) -> Result<&[u8; PAGE_SIZE], std::array::TryFromSliceError> {
     let bytes: &[u8] = self.as_bytes(); // borrow lives for the function scope
-    let array: &[u8; 4096] = bytes.try_into()?; // also scoped
+    let array: &[u8; PAGE_SIZE] = bytes.try_into()?; // also scoped
     Ok(array)
     }
 }

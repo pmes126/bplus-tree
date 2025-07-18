@@ -3,7 +3,6 @@ use std::io::{Read, Write, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::storage::PageStorage;
-use crate::storage::page::PageCodecError;
 use crate::storage::metadata::INITIAL_PAGE_ID;
 use crate::layout::PAGE_SIZE;
 
@@ -14,16 +13,6 @@ pub struct PageStore {
 }
 
 impl PageStore {
-    pub fn open(path: &Path) -> Result<Self, std::io::Error> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(path)?;
-        file.set_len(0)?; // Clear the file if it exists
-        Ok(Self { file, freed_pages: Vec::new(), next_page_id: INITIAL_PAGE_ID as u64 })
-    }
-
     pub fn flush(&mut self) -> Result<(), std::io::Error> {
         self.file.sync_data()
     }
@@ -43,6 +32,16 @@ impl Drop for PageStore {
 }
 
 impl PageStorage for PageStore {
+    fn init<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(path)?;
+        file.set_len(0)?; // Clear the file if it exists
+        Ok(Self { file, freed_pages: Vec::new(), next_page_id: INITIAL_PAGE_ID as u64 })
+    }
+
     fn read_page(&mut self, page_id: u64) -> Result<[u8; PAGE_SIZE], std::io::Error> {
         let mut buf = [0u8; PAGE_SIZE];
         let offset = page_id * PAGE_SIZE as u64;
