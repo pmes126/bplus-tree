@@ -1,6 +1,8 @@
 use crate::layout::PAGE_SIZE;
 use crate::storage::page::LeafPage;
 use crate::storage::page::InternalPage;
+use crate::storage::page::INTERNAL_NODE_TAG;
+use crate::storage::page::LEAF_NODE_TAG;
 use crate::storage::{KeyCodec, ValueCodec, NodeCodec, CodecError};
 use crate::bplustree::Node;
 
@@ -78,8 +80,10 @@ where
     V: ValueCodec,
 {
     fn decode(buf: &[u8; PAGE_SIZE]) -> Result<Node<K, V>, CodecError> {
-        match buf[0] {
-        1 => {
+        let node_type =  u64::from_le_bytes(buf[0..8].try_into()
+            .map_err(|e| CodecError::FromSliceError { source: e })?);
+        match node_type {
+        LEAF_NODE_TAG => {
             // Leaf node
             let page = LeafPage::from_bytes(buf).
                 map_err(|e| CodecError::DecodeFailure {
@@ -104,7 +108,7 @@ where
             }
             Ok(leaf)
         }
-        0 => {
+        INTERNAL_NODE_TAG => {
             // Internal node
             let page = InternalPage::from_bytes(buf).
                 map_err(|e| CodecError::DecodeFailure {

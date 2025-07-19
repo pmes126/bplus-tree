@@ -41,6 +41,7 @@ where
         } 
         // Initialize the root node ID
         let init_id = storage.write_node(&root_node).map_err(|e| TreeError::BackendAny(e.to_string()))?;
+        println!("Initialized root node with ID: {}", init_id);
         let metadata_1 = metadata::new_metadata_page(
             init_id,
             1, // Initial transaction ID
@@ -126,14 +127,17 @@ where
         // Find insertion point
         loop {
             let node = self.read_node(current_id)?;
+            println!("Current Node ID: {}", current_id);
             match node {
                 Some(Node::Internal { keys, children }) => {
                     let i = match keys.binary_search(&key) {
                         Ok(i) => i,
                         Err(i) => i,
                     };
+                    println!("Node is Internal, inserting at position: {}", i);
                     path.push((current_id, i));
                     current_id = children[i];
+                    println!("Changed current ID to: {}", current_id);
                 }
                 // If the node is None, we have reached a leaf node
                 Some(Node::Leaf { .. }) => {

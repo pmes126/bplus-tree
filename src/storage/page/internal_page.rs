@@ -7,7 +7,7 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 #[repr(C)]
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
 pub struct InternalPageHeader {
-    pub is_leaf:        u64, // always 0
+    pub node_type: u64,       // Node type (LEAF_NODE_TAG)
     pub entry_count:    u64,    // number of keys
     pub free_start:     u64,
     pub leftmost_child: u64, // leftmost child pointer, k keys for k+1 children
@@ -36,7 +36,7 @@ impl InternalPage {
     pub fn new() -> Self {
         InternalPage {
             header: InternalPageHeader {
-                is_leaf: INTERNAL_NODE_TAG as u64,
+                node_type : INTERNAL_NODE_TAG as u64,
                 entry_count: 0,
                 key_offsets: [0; MAX_ENTRIES],
                 free_start: 0,
