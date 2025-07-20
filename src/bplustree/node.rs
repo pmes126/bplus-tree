@@ -4,13 +4,13 @@ pub type NodeId = u64;
 #[derive(Debug, Clone)]
 pub enum Node<K, V> {
     Internal {
-        keys: Vec<K>,
-        children: Vec<NodeId>,
+        keys: Vec<K>,          // Sorted n keys
+        children: Vec<NodeId>, // n+1 children
     },
     Leaf {
         keys: Vec<K>,
         values: Vec<V>,
-        next: Option<NodeId>,
+        next: Option<NodeId>, // for in order traversal
     },
 }
 

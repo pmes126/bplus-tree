@@ -7,6 +7,22 @@ use anyhow::Result;
 
 pub type NodeId = u64; // Type for node IDs
 
+/// Result of inserting into a B+ tree node
+pub enum InsertResult<K, N> {
+    /// Node was updated in-place (no split)
+    Updated(N),
+
+    /// Node was split, promote this key to the parent
+    Split {
+        left: N,        // Left half (including inserted key)
+        right: N,       // Right half
+        split_key: K,      // First key of right, to push into parent
+    },
+
+    /// Insert was skipped (e.g., duplicate key policy)
+    Unchanged,
+}
+
 #[derive(Debug)]
 pub struct BPlusTree<K, V, S: NodeStorage<K, V>> 
 where
@@ -119,102 +135,160 @@ where
         }
     }
 
-    // Inserts a key-value pair into the B+ tree.
-    pub fn insert(&mut self, key: K, value: V) -> Result<()> {
+    // Gets the insertion path for a key, returning the path and the leaf node ID where the key
+    pub fn get_insertion_path(&mut self, key: &K) -> Result<(Vec<(NodeId, usize)>, Node<K, V>)> {
         let mut path = vec![];
         let mut current_id = self.root_id;
 
         // Find insertion point
         loop {
-            let node = self.read_node(current_id)?;
-            println!("Current Node ID: {}", current_id);
-            match node {
-                Some(Node::Internal { keys, children }) => {
-                    let i = match keys.binary_search(&key) {
-                        Ok(i) => i,
-                        Err(i) => i,
-                    };
-                    println!("Node is Internal, inserting at position: {}", i);
-                    path.push((current_id, i));
-                    current_id = children[i];
-                    println!("Changed current ID to: {}", current_id);
-                }
-                // If the node is None, we have reached a leaf node
-                Some(Node::Leaf { .. }) => {
-                    break; // We found the leaf node to insert into
-                }
+            let mut node = self.read_node(current_id)?;
+            match node.take() {
+                Some(node_res) => match &node_res {
+                    Node::Leaf { .. } => {
+                        return Ok((path, node_res)); // Found the leaf node
+                    }
+                    Node::Internal { keys, children } => {
+                        let i = match keys.binary_search(key) {
+                            Ok(i) => i,
+                            Err(i) => i,
+                        };
+                        path.push((current_id, i));
+                        current_id = children[i];
+                    }
+                },
                 None => {
                     // Node not found, this should not happen as we are traversing the path
                    return Err(TreeError::BackendAny(
-                       "Node not found while inserting".to_string(),
+                       "Node not found while getting insertion path".to_string(),
                    ).into());
                 }
             }
         }
+   }
+
+    // Inserts a key-value pair into the B+ tree.
+    pub fn insert(&mut self, key: K, value: V) -> Result<()> {
+        // Get the insertion path and the leaf node ID where the key should be inserted
+        let (mut path, leaf_node) = self.get_insertion_path(&key)?;
         // We have found the leaf node, update a copy of the leaf node and insert it back with a
         // new id retaining COW semantics.
-        let mut leaf_node = self.read_node(current_id)?;
-        match leaf_node.take() { // take the node so that it is accessible in the context below
-            Some(mut node) => {
-                match &mut node {
-                    Node::Leaf { keys, values, next} => {
-                        // If the key already exists, we replace the value
-                        match keys.binary_search(&key) {
-                            Ok(i) => {
-                                values[i] = value; // Replace existing value
-                            }
-                            Err(i) => {
-                                keys.insert(i, key.clone());
-                                values.insert(i, value);
-                            }
-                        }
-                        if keys.len() > self.max_keys {
-                            let mid = keys.len() / 2;
-                            let right_keys = keys.split_off(mid);
-                            let right_values = values.split_off(mid);
-                            let new_leaf = Node::Leaf {
-                                keys: right_keys,
-                                values: right_values,
-                                next: next.take(), // Retain the next pointer
-                            };
-                            // Write the new leaf node to storage
-                            let new_leaf_id = self.write_node(&new_leaf)?;
-                            // Write the updated leaf node back to storage
-                            let updated_node_id = self.write_node(&node)?;
-                            // Propagate the split upwards.
-                            self.insert_into_parent(path, key, new_leaf_id)?;
-                        } else {
-                            let new_leaf_id = self.write_node(&node)?;
-                            if self.root_id == current_id {
-                                // If we are inserting into the root, we need to update the root ID
-                                self.root_id = new_leaf_id;
-                            }
-                        }
-                    },
-                    _ => {
-                        // If the node is not a leaf, this should not happen
-                        return Err(TreeError::BackendAny(
-                            "Expected a leaf node for insertion".to_string(),
-                        ).into());
+        match &mut leaf_node {
+             Node::Leaf { keys, values, next} => {
+                 // If the key already exists, we replace the value
+                match keys.binary_search(&key) {
+                    Ok(i) => {
+                        values[i] = value; // Replace existing value
+                    }
+                    Err(i) => {
+                        keys.insert(i, key.clone());
+                        values.insert(i, value);
                     }
                 }
-            } 
-            None => {
-               return Err(TreeError::BackendAny(
-                "Leaf node not found while inserting".to_string(),
-               ).into());
-            }
-        }
+                // Check if the leaf node is overflowed
+                if keys.len() > self.max_keys {
+
+                    let leaf_split = self.split_leaf_node(&mut leaf_node)?;
+
+                    let new_node = leaf_split.right;
+                    let updated_node = leaf_split.left;
+                    let split_key = leaf_split.split_key;
+                    // Write the new leaf node to storage
+                    let new_leaf_id = self.write_node(&new_node)?;
+                    // Write the updated leaf node back to storage
+                    let updated_node_id = self.write_node(&updated_node)?;
+                    let node_split = InsertResult::Split {
+                        left: updated_node_id,
+                        right: new_leaf_id,
+                        split_key: split_key.clone(),
+                    };
+                    // Propagate the split upwards.
+                    self.insert_into_parent(path, &node_split)?;
+                } else { // Insert and update path.
+                    let new_leaf_id = self.write_node(&leaf)?;
+                    self.insert_into_parent(path, key, new_leaf_id)?;
+                    if self.root_id == current_id {
+                        // If we are inserting into the root, we need to update the root ID
+                        self.root_id = new_leaf_id;
+                    }
+                }
+             },
+             _ => {
+                // If the node is not a leaf, this should not happen
+                return Err(TreeError::BackendAny(
+                    "Expected a leaf node for insertion".to_string(),
+                ).into());
+             }
+         }
         Ok(())
     }
+
+    fn insert_into_leaf(
+        &mut self,
+        leaf_node: &mut Node<K, V>,
+        key: K,
+        value: V,
+    ) -> Result<InsertResult<K, Node<K, V>>> {
+        if let Node::Leaf { keys, values, next } = leaf_node {
+            match keys.binary_search(&key) {
+                Ok(i) => {
+                    // Key already exists, update the value
+                    values[i] = value;
+                }
+                Err(i) => {
+                    // Insert the key and value at the correct position
+                    keys.insert(i, key);
+                    values.insert(i, value);
+                }
+            }
+            if keys.len() > self.max_keys {
+                // Leaf node is overflowed, we need to split it
+                self.split_leaf_node(leaf_node)
+            } else {
+                // Leaf node is not overflowed, just return the updated leaf node
+                Ok(InsertResult::Updated(leaf_node.clone()))
+            }
+        } else {
+            Err(TreeError::BackendAny(
+                "Expected a leaf node for insertion".to_string(),
+            ).into())
+        }
+    }
+
+    fn split_leaf_node (
+        &mut self,
+        leaf_node: &mut Node<K, V>,
+    ) -> Result<InsertResult<K, Node<K, V>>> {
+        if let Node::Leaf { keys, values, next } = leaf_node {
+            let mid = keys.len() / 2;
+            let right_keys = keys.split_off(mid);
+            let right_values = values.split_off(mid);
+            let split_key = right_keys.first().ok_or_else(|| { TreeError::BackendAny("Leaf node has no keys to split".to_string()) })?;
+            let right_leaf = Node::Leaf {
+                keys: right_keys.to_vec(),
+                values: right_values,
+                next: next.take(), // Retain the next pointer
+            };
+            let left_leaf = Node::Leaf {
+                keys: keys.to_vec(),
+                values: values.to_vec(),
+                next: Some(self.write_node(&right_leaf)?), // Link to the new right leaf
+            };
+            Ok( InsertResult::Split { right: right_leaf, left: left_leaf, split_key: split_key.clone()})
+        } else {
+            Err(TreeError::BackendAny(
+                "Expected a leaf node for splitting".to_string(),
+            ).into())
+        }
+    }
+
 
     // insert into a parent node, the path is the collection of the nodes that are parent to the
     // leaf, try inserting in a lifo manner.
     fn insert_into_parent(
         &mut self,
         mut path: Vec<(u64, usize)>,
-        mut key: K,
-        mut new_child_id: u64,
+        node_split: &NodeSplit<K>,
     ) -> Result<()> {
         while let Some((parent_id, insert_pos)) = path.pop() {
             let mut node = self.read_node(parent_id)?;
@@ -269,8 +343,7 @@ where
             }
         }
 
-        // If we reach here, it means we have an empty path, which means we need to create a new
-        // root node.
+        // If we reach here we need to create a new root node (internal).
         let old_root = self.root_id;
         let new_root = Node::Internal {
             keys: vec![key],
