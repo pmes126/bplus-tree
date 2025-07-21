@@ -36,7 +36,7 @@ impl InternalPage {
     pub fn new() -> Self {
         InternalPage {
             header: InternalPageHeader {
-                node_type : INTERNAL_NODE_TAG as u64,
+                node_type : INTERNAL_NODE_TAG,
                 entry_count: 0,
                 key_offsets: [0; MAX_ENTRIES],
                 free_start: 0,
@@ -101,27 +101,72 @@ impl InternalPage {
         Ok(())
     }
 
+
+    // Read the fo key_offset->[key_len][key][ptr]
     pub fn get_entry(&self, idx: usize) -> Result<(&[u8], u64), PageCodecError> {
+        // Read and decode the length of the key
         let key_len_offset = self.header.key_offsets[idx] as usize;
-
-        let arr: [u8; LEN_KEY_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_KEY_SIZE)].try_into().
+        let mut end = key_len_offset + LEN_KEY_SIZE;
+        let arr: [u8; LEN_KEY_SIZE] = self.data.blob[key_len_offset..end].try_into().
             map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to read bytes as slice".to_string() })?;
-
         let key_length = u16::from_le_bytes(arr);
 
+        // Read the key
         let key_offset = key_len_offset + LEN_KEY_SIZE; // Move to the start of the key
-        let key = &self.data.blob[key_offset..(key_offset + key_length as usize)];
-        let child_offset = self.header.free_start as usize + (key_length as usize + LEN_KEY_SIZE);
-        let arr: [u8; CHILD_ID_SIZE] = self.data.blob[child_offset..(child_offset + CHILD_ID_SIZE)].try_into().
+        end = key_offset + key_length as usize;
+        let key = &self.data.blob[key_offset..end];
+        
+        // Read and decode the child pointer
+        let child_offset = key_offset + key_length as usize;
+        end = child_offset + CHILD_ID_SIZE;
+        let arr: [u8; CHILD_ID_SIZE] = self.data.blob[child_offset..end].try_into().
             map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to read bytes as slice".to_string() })?;
-
-        let child_ptr = u64::from_le_bytes(arr);
-        Ok((key, child_ptr))
+        let child = u64::from_le_bytes(arr);
+        Ok((key, child))
     }
 
     pub fn to_bytes(&self) -> Result<&[u8; PAGE_SIZE], std::array::TryFromSliceError> {
-    let bytes: &[u8] = self.as_bytes(); // borrow lives for the function scope
-    let array: &[u8; PAGE_SIZE] = bytes.try_into()?; // also scoped
-    Ok(array)
+        let bytes: &[u8] = self.as_bytes(); // borrow lives for the function scope
+        let array: &[u8; PAGE_SIZE] = bytes.try_into()?; // also scoped
+        Ok(array)
+    }
+
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_internal_page() {
+        let mut page = InternalPage::new();
+        let key = b"test_key";
+        let child = 42;
+
+        // Insert an entry
+        assert!(page.insert_entry(key, child).is_ok());
+
+        // Retrieve the entry
+        let (retrieved_key, retrieved_child) = page.get_entry(0).unwrap();
+        assert_eq!(retrieved_key, key);
+        assert_eq!(retrieved_child, child);
+    }
+
+    #[test]
+    fn test_internal_page_multiples() {
+        let mut page = InternalPage::new();
+        let keys = ["key1", "key2key2", "key3key3key3"];
+        let children = vec![1, 2, 3];
+
+        // Insert multiple entries
+        for (&key, &child) in keys.iter().zip(&children) {
+            assert!(page.insert_entry(key.as_bytes(), child).is_ok());
+        }
+
+        // Retrieve the entries
+        for (i, key) in keys.iter().enumerate() {
+            let (retrieved_key, retrieved_child) = page.get_entry(i).unwrap();
+            assert_eq!(retrieved_key, key.as_bytes());
+            assert_eq!(retrieved_child, children[i]);
+        }
     }
 }

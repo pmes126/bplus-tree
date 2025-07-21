@@ -119,6 +119,7 @@ where
                 children: Vec::with_capacity(page.header.entry_count as usize + 1), // +1 for rightmost child
             };
             if let Node::Internal { keys, children } = &mut internal {
+                children.push(page.header.leftmost_child); // Add the leftmost child pointer
                 for i in 0..page.header.entry_count as usize {
                     let (key_bytes, child_ptr) = page.get_entry(i).
                         map_err(|e| CodecError::DecodeFailure {

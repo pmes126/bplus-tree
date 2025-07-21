@@ -164,8 +164,46 @@ impl LeafPage {
     }
 
     pub fn to_bytes(&self) -> Result<&[u8; PAGE_SIZE], std::array::TryFromSliceError> {
-    let bytes: &[u8] = self.as_bytes(); // borrow lives for the function scope
-    let array: &[u8; PAGE_SIZE] = bytes.try_into()?; // also scoped
-    Ok(array)
+        let bytes: &[u8] = self.as_bytes(); // borrow lives for the function scope
+        let array: &[u8; PAGE_SIZE] = bytes.try_into()?; // also scoped
+        Ok(array)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_leaf_page() {
+        let mut page = LeafPage::new();
+        let key = b"test_key";
+        let val = b"test_value";
+
+        // Insert an entry
+        assert!(page.insert_entry(key, val).is_ok());
+
+        // Retrieve the entry
+        let (retrieved_key, retrieved_value) = page.get_entry(0).unwrap();
+        assert_eq!(retrieved_key, key);
+        assert_eq!(retrieved_value, val);
+    }
+
+    #[test]
+    fn test_internal_page_multiples() {
+        let mut page = LeafPage::new();
+        let keys = ["key1", "key2key2", "key3key3key3"];
+        let values = ["value1", "value2value2", "value3value3value3"];
+
+        // Insert multiple entries
+        for (&key, &value) in keys.iter().zip(&values) {
+            assert!(page.insert_entry(key.as_bytes(), value.as_bytes()).is_ok());
+        }
+
+        // Retrieve the entries
+        for (i, key) in keys.iter().enumerate() {
+            let (retrieved_key, retrieved_value) = page.get_entry(i).unwrap();
+            assert_eq!(retrieved_key, key.as_bytes());
+            assert_eq!(retrieved_value, values[i].as_bytes());
+        }
     }
 }
