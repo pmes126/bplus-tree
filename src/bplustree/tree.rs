@@ -29,6 +29,21 @@ pub enum InsertResult<K, N> {
     Unchanged,
 }
 
+/// Result of deleting from a B+ tree node
+pub enum DeleteResult {
+    /// Node was updated in-place (no underflow)
+    Updated,
+    /// Node was merged with a sibling
+    Merged {
+        left: NodeId,        // Left half (including deleted key)
+        right: NodeId,       // Right half
+    },
+    /// Node was underflowed and needs to be handled
+    Underflowed,
+    /// Key was not found in the node
+    NotFound,
+}
+
 pub enum SplitResult<K, N> {
     SplitNodes {
         left_node: N,        // Left half (including inserted key)
@@ -498,97 +513,142 @@ where
     }
 
     // Delete and handle underflow of leaf nodes
-    pub fn delete(&mut self, key: &K) -> Result<Option<V>> {
+    pub fn delete(&mut self, key: &K) -> Result<DeleteResult> {
         // Stack to keep track of parent nodes and the index of the child in the parent
-        let (path, node) = self.get_insertion_path(key)?;
+        let (path, mut node) = self.get_insertion_path(key)?;
+        //let (path, mut leaf_node) = self.get_insertion_path(&key)?;
 
-        match node {
-            Node::Leaf { keys, values, next } => {
+        match &mut node {
+            Node::Leaf {keys, values, .. } => {
                 // If the key exists, remove it
                 if let Ok(index) = keys.binary_search(key) {
-                    let value = values.remove(index);
+                    values.remove(index);
                     keys.remove(index);
                     // Write the updated leaf node back to storage
-                    let new_node_id = self.storage.write_node(&node)?;
+                    //let new_node_id = self.storage.write_node(&node)?;
                     // Check if the leaf node is underflowed
                     if keys.len() < self.min_keys {
                         // Handle underflow
-                        self.handle_leaf_underflow(path, next, &keys, &values)?;
-                        self.propagate_node_update(path, new_node_id)?;
+                        let (parent_id, pidx) = path.last().ok_or_else(|| {
+                            TreeError::BackendAny("Path is empty while handling underflow".to_string())
+                        })?;
+
+                        let mut parent_node = self.read_node(*parent_id)?;
+                        match parent_node {
+                            Some(Node::Internal { keys: ref mut parent_keys, ref mut children }) => {
+                                // Check if we can borrow from a sibling
+                                let idx = *pidx;
+                                if idx > 0 {
+                                    // Check left sibling
+                                    let left_sibling_id = children[idx - 1];
+                                    let mut left_sibling = self.read_node(left_sibling_id)?;
+                                    match left_sibling {
+                                        Some( Node::Leaf { keys: ref mut  left_keys, values: ref mut left_values, next: _ }) => {
+                                            // Check if the left sibling has enough keys to borrow
+                                            // If it does, we can borrow a key and value from it
+                                            if left_keys.len() > self.min_keys {
+                                                // Borrow from the left sibling
+                                                let borrowed_key = left_keys.pop().ok_or_else(|| {
+                                                    TreeError::BackendAny("Left sibling has no keys to borrow".to_string())
+                                                })?;
+                                                let borrowed_value = left_values.pop().ok_or_else(|| {
+                                                    TreeError::BackendAny("Left sibling has no values to borrow".to_string())
+                                                })?;
+                                                keys.insert(0, borrowed_key);
+                                                values.insert(0, borrowed_value);
+
+                                                // Write the updated leaf nodes back to storage
+                                                let new_node_id = self.write_node(&node)?;
+                                                let left = left_sibling.ok_or_else(|| {
+                                                    TreeError::BackendAny("Left sibling is None".to_string())
+                                                })?;
+                                                let new_left_node_id = self.write_node(&left)?;
+                                    
+                                                children[idx - 1] = new_left_node_id;
+                                                children[idx] = new_node_id;
+
+                                                // Update the parent node
+                                                self.propagate_node_update(path.clone(), *parent_id)?;
+                                                return Ok(DeleteResult::Updated); // Key deleted successfully
+                                            }
+                                        }
+                                        _ => return Err(TreeError::BackendAny(
+                                            "Expected a leaf node for left sibling".to_string(),
+                                        ).into()),
+                                    }
+                                }
+                                // Check right sibling
+                                if idx < children.len() - 1 {
+                                    let right_sibling_id = children[idx + 1];
+                                    let mut right_sibling = self.read_node(right_sibling_id)?;
+                                    if let Some(Node::Leaf { keys: ref mut right_keys, values: ref mut right_values, next: _ }) = right_sibling {
+                                        if right_keys.len() > self.min_keys {
+                                            // Borrow from the right sibling
+                                            let borrowed_key = right_keys.remove(0);
+                                            let borrowed_value = right_values.remove(0);
+                                            keys.insert(*pidx, borrowed_key);
+                                            values.push(borrowed_value);
+
+                                            // Write the updated leaf nodes back to storage
+                                            let new_node_id = self.write_node(&node)?;
+                                            let new_right_node_id = self.write_node(&right_sibling.unwrap())?;
+                                            children[idx + 1] = new_right_node_id;
+                                            children[idx] = new_node_id;
+
+                                            // Update the parent node
+                                            self.propagate_node_update(path.clone(), *parent_id)?;
+                                            return Ok(DeleteResult::Updated); // Key deleted successfully
+                                        }
+                                    }
+                                }
+                                // If we reach here, we need to merge with a sibling
+                                // Merge with left sibling if possible
+                                if idx > 0 {
+                                    let left_sibling_id = children[idx - 1];
+                                    let left_sibling = self.read_node(left_sibling_id)?;
+                                    if let Some(mut left) = left_sibling {
+                                        // Merge the current node with the left sibling
+                                        let merged_node_id = self.merge_leaf_nodes(&mut left, &mut node)?;
+                                        // Update the parent node
+                                        children[idx - 1] = merged_node_id;
+                                        children.remove(idx);
+                                        parent_keys.remove(*pidx);
+                                        let new_node_id = self.write_node(&parent_node.unwrap())?;
+                                        self.propagate_node_update(path.clone(), new_node_id)?;
+                                        return Ok(DeleteResult::Merged { left: merged_node_id, right: *parent_id });
+                                    }
+                                }
+                                // Merge with right sibling if possible
+                                // If we reach here, we need to merge with a sibling
+                                // Merge with right sibling if possible
+                                if idx < children.len() - 1 {
+                                    let right_sibling_id = children[idx + 1];
+                                    let right_sibling = self.read_node(right_sibling_id)?;
+                                    if let Some(mut right) = right_sibling {
+                                        // Merge the current node with the right sibling
+                                        let merged_node_id = self.merge_leaf_nodes(&mut node, &mut right)?;
+                                        // Update the parent node
+                                        children[idx] = merged_node_id;
+                                        children.remove(idx + 1);
+                                        parent_keys.remove(*pidx);
+                                        let new_node_id = self.write_node(&parent_node.unwrap())?;
+                                        self.propagate_node_update(path.clone(), new_node_id)?;
+                                        return Ok(DeleteResult::Merged { left: merged_node_id, right: *parent_id });
+                                    }
+                                }
+                            }
+                            _ => return Err(TreeError::BackendAny(
+                                "Expected an internal parent node for handling underflow".to_string(),
+                            ).into()),
+                        }
                     }
-                    return Ok(Some(value));
                 }
-                Ok(None) // Key not found
             }
-            _ => Err(TreeError::BackendAny(
-                "Expected a leaf node for deletion".to_string(),
+            _ => return Err(TreeError::BackendAny(
+                "Expected an internal node for handling underflow".to_string(),
             ).into()),
         }
-        
-    }
-
-    fn handle_leaf_underflow(&mut self, path: Vec<PathNode>, next: Option<NodeId>) -> Result<()> {
-        // Handle underflow in a leaf node, this may involve borrowing from a sibling or merging
-        // with a sibling node.
-        // If the leaf node is underflowed, we need to check the siblings
-        // Get the parent node and the index of the current node in the parent
-        if let Some((parent_id, index)) = path.last() {
-            let mut parent_node = self.read_node(*parent_id)?;
-            match parent_node {
-                Some(Node::Internal { keys, children }) => {
-                    // Check if we can borrow from the left sibling
-                    let idx = *index;
-                    if idx > 0 {
-                        let left_sibling_id = children[idx - 1];
-                        let left_sibling = self.read_node(left_sibling_id)?;
-                        if let Some(Node::Leaf { keys: left_keys, values: left_values, next: _ }) = left_sibling {
-                            if left_keys.len() > self.min_keys {
-                                // Borrow from the left sibling
-                                let borrowed_key = left_keys.pop().unwrap();
-                                let borrowed_value = left_values.pop().unwrap();
-                                keys.insert(index - 1, borrowed_key);
-                                values.push(borrowed_value);
-                                return Ok(());
-                            }
-                        }
-                    }
-                    // Check if we can borrow from the right sibling
-                    if index < children.len() - 1 {
-                        let right_sibling_id = children[index + 1];
-                        let right_sibling = self.read_node(right_sibling_id)?;
-                        if let Some(Node::Leaf { keys: right_keys, values: right_values, next: _ }) = right_sibling {
-                            if right_keys.len() > self.min_keys {
-                                // Borrow from the right sibling
-                                let borrowed_key = right_keys.remove(0);
-                                let borrowed_value = right_values.remove(0);
-                                keys.insert(index, borrowed_key);
-                                values.push(borrowed_value);
-                                return Ok(());
-                            }
-                        }
-                    }
-                    // If we cannot borrow from siblings, we need to merge with a sibling
-                    let merged_id = self.merge_leaf_nodes(path, next)?;
-                    if merged_id.is_some() {
-                        // If the merge was successful, we need to update the parent node
-                        self.propagate_node_update(path, new_node_id)?;
-                    } else {
-                        // If the merge failed, we need to handle the underflow in the parent node
-                        return Err(TreeError::BackendAny(
-                            "Failed to merge leaf nodes while handling underflow".to_string(),
-                        ).into());
-                    }
-                    Ok(())
-                }
-                _ => return Err(TreeError::BackendAny(
-                    "Expected an internal node for handling underflow".to_string(),
-                ).into()),
-            }
-        } else {
-            return Err(TreeError::BackendAny(
-                "Path is empty while handling underflow".to_string(),
-            ).into());
-        }
+        Ok(DeleteResult::NotFound) // Key not found
     }
 
     pub fn merge_leaf_nodes (
