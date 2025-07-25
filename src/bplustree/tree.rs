@@ -10,7 +10,6 @@ use anyhow::Result;
 pub type NodeId = u64; // Type for node IDs
 pub type PathNode = (NodeId, usize); // Type for path nodes (node ID and index in parent)
 
-
 fn print_vec<T: std::fmt::Debug>(vec: &Vec<T>, msg: &str) {
     println!("{}: {:?}", msg, vec);
 }
@@ -138,31 +137,6 @@ where
         self.storage.write_node(node)
     }
 
-    // Gets the value associated with a key in the B+ tree.
-    fn get(&mut self, key: &K) -> Result<Option<V>> {
-        let mut id = self.root_id;
-        loop {
-            let node = self.read_node(id)?;
-            match node {
-                Some(Node::Leaf { keys, values, .. }) => {
-                            match keys.binary_search(key) {
-                                Ok(i) =>  return Ok(Some(values[i].clone())),
-                                Err(_) => return Ok(None), // Key not found
-                            };
-                }
-                Some(Node::Internal { keys, children }) => {
-                            let idx = match keys.binary_search(key) {
-                                Ok(i) => i,
-                                Err(_) => return Ok(None), // Key not found
-                            };
-                    id = children[idx];
-                }
-                None => return Ok(None), // Node not found
-            }
-        }
-    }
-
-    // Gets the insertion path for a key, returning the path and the leaf node where the key
     // should be inserted.
     pub fn get_insertion_path(&mut self, key: &K) -> Result<(Vec<PathNode>, Node<K, V>)> {
         let mut path = vec![];
@@ -193,57 +167,50 @@ where
                 }
             }
         }
-   }
+    }
 
     // Inserts a key-value pair into the B+ tree.
     pub fn insert(&mut self, key: K, value: V) -> Result<()> {
-        // Get the insertion path and the leaf node ID where the key should be inserted
         let (path, mut leaf_node) = self.get_insertion_path(&key)?;
-        // We have found the leaf node, update a copy of the leaf node and insert it back with a
-        // new id retaining COW semantics.
-        match &mut leaf_node {
-             Node::Leaf { keys, values, .. } => {
-                 // If the key already exists, we replace the value
-                match keys.binary_search(&key) {
-                    Ok(i) => {
-                        values[i] = value; // Replace existing value
-                    }
-                    Err(i) => {
-                        keys.insert(i, key.clone());
-                        values.insert(i, value);
-                    }
-                }
-                // Check if the leaf node is overflowed
-                if keys.len() > self.max_keys {
-                    let split_res = self.split_leaf_node(leaf_node)?;
-                    match split_res {
-                        SplitResult::SplitNodes { left_node, right_node, split_key } => {
-                            // We have a split, we need to insert the new leaf node into the parent
-                            let updated_node_id = self.write_node(&left_node)?;
-                            let new_leaf_id = self.write_node(&right_node)?;
-                            println!("Split leaf node with left: {}, right: {}", updated_node_id, new_leaf_id);
-                            // Propagate the split upwards.
-                            self.propagate_split(path, updated_node_id, new_leaf_id, split_key)?;
-                        }
-                    }
-                } else { // Insert and update path.
-                    let new_leaf_id = self.write_node(&leaf_node)?;
-                    if path.is_empty() {
-                        // If the path is empty, we are inserting into the root node
-                        self.root_id = new_leaf_id;
-                    } else {
-                        // Otherwise, we need to propagate the update to the parent nodes
-                        self.propagate_node_update(path, new_leaf_id)?;
-                    }
-                }
-             },
-             _ => {
-                // If the node is not a leaf, this should not happen
-                return Err(TreeError::BackendAny(
-                    "Expected a leaf node for insertion".to_string(),
-                ).into());
-             }
-         }
+    
+        let Node::Leaf { keys, values, .. } = &mut leaf_node else {
+            return Err(TreeError::BackendAny(
+                "Expected a leaf node for insertion".to_string(),
+            ).into());
+        };
+    
+        match keys.binary_search(&key) {
+            Ok(i) => {
+                values[i] = value; // Replace existing value
+            }
+            Err(i) => {
+                keys.insert(i, key.clone());
+                values.insert(i, value);
+            }
+        }
+    
+        if keys.len() > self.max_keys {
+            self.handle_leaf_split(path, leaf_node)
+        } else {
+            self.write_and_propagate(path, &leaf_node)
+        }
+    }
+
+    fn handle_leaf_split(
+        &mut self,
+        path: Vec<(NodeId, usize)>,
+        leaf_node: Node<K, V>,
+    ) -> Result<()> {
+        let SplitResult::SplitNodes {
+            left_node,
+            right_node,
+            split_key,
+        } = self.split_leaf_node(leaf_node)?;    
+        let left_id = self.write_node(&left_node)?;
+        let right_id = self.write_node(&right_node)?;
+        println!("Split leaf node with left: {}, right: {}", left_id, right_id);
+    
+        self.propagate_split(path, left_id, right_id, split_key)?;
         Ok(())
     }
 
@@ -308,131 +275,107 @@ where
         }
     }
 
-    // Propagate an update to the parent nodes in the path, this is used when we insert into a leaf
-    // node and we need to update the parent nodes with the new leaf node ID.
-    fn propagate_node_update (
+    fn propagate_node_update(
         &mut self,
-        mut path: Vec<(u64, usize)>,
-        new_node_id: NodeId,
+        mut path: Vec<(NodeId, usize)>,
+        mut updated_child_id: NodeId,
     ) -> Result<()> {
-        let mut node_id = new_node_id;
         if path.is_empty() {
-            // If the path is empty, we are inserting into the root node
-            self.root_id = node_id;
+            self.root_id = updated_child_id;
             return Ok(());
         }
-        // We need to update the parent nodes with the new leaf node ID
+
         while let Some((parent_id, insert_pos)) = path.pop() {
             println!("Updating parent node ID: {}, insert position: {}", parent_id, insert_pos);
-            let mut node = self.read_node(parent_id)?;
-            match node.take() { // with take the node belongs to the context below, so we can modify it
-                Some(mut node) => match &mut node {
-                    Node::Internal { children, .. } => {
-                        // Replace the original child id with the new node id
-                        children[insert_pos] = node_id;
-                        // If there is no overflow we can just write the node and return
-                        node_id = self.write_node(&node)?;
-                        if parent_id == self.root_id {
-                            // If we are at the root update the root ID
-                            self.root_id = node_id;
-                            return Ok(());
-                        }
-                    }
-                    Node::Leaf { .. } => {
-                        // We should never reach a leaf node here, as we are updating parent nodes
-                        return Err(TreeError::BackendAny(
-                            "Reached a leaf node while trying to insert into parent".to_string(),
-                        ).into());
-                    
-                    }
-                },
-                None => {
-                    // Node not found, this should not happen as we are traversing a path in the
-                    // tree
-                    return Err(TreeError::NodeNotFound(
-                     "Node not found while inserting into parent".to_string(),
-                    ).into());
-                }
+
+            let mut parent_node = self
+                .read_node(parent_id)?
+                .ok_or_else(|| TreeError::NodeNotFound("Parent node not found".to_string()))?;
+
+            let Node::Internal { ref mut children, .. } = parent_node else {
+                return Err(TreeError::BackendAny(
+                    "Expected internal node while updating parents".to_string(),
+                )
+                .into());
+            };
+
+            if insert_pos >= children.len() {
+                return Err(TreeError::BackendAny(
+                    format!(
+                        "Insert position {} out of bounds for children in node {}",
+                        insert_pos, parent_id
+                    ),
+                )
+                .into());
+            }
+
+            children[insert_pos] = updated_child_id;
+            updated_child_id = self.write_node(&parent_node)?;
+
+            if parent_id == self.root_id {
+                self.root_id = updated_child_id;
+                return Ok(());
             }
         }
-        println!("All parent nodes updated, new node ID: {}", node_id);
+
+        println!("All parent nodes updated. Final node ID: {}", updated_child_id);
         Ok(())
     }
 
+
     // insert into a parent node, the path is the collection of the nodes that are parent to the
     // leaf, try inserting in a lifo manner.
-    fn propagate_split (
-        &mut self,
-        mut path: Vec<(u64, usize)>,
-        mut left: NodeId,
-        mut right: NodeId,
-        split_key: K,
-    ) -> Result<()> {
-       let mut key = split_key;
-       // For each parent node in the path, we need to insert the split key and the new nodes
-       while let Some((parent_id, insert_pos)) = path.pop() {
-           let mut node = self.read_node(parent_id)?;
-           match node.take() { // with take the node belongs to the context below, so we can
-               // modify it
-               Some(mut node) => match &mut node {
-                   Node::Leaf { .. } => {
-                       // We should never reach a leaf node here, as we are inserting into the parent node.
-                      return Err(TreeError::BackendAny(
-                          "Reached a leaf node while trying to insert into parent".to_string(),
-                      ).into());
-                   }
-                   Node::Internal { keys, children } => {
-                       keys.insert(insert_pos, key);
-                       // Replace the original child id with the new left child id,
-                       children[insert_pos] = left;
-                       // insert the split key right after
-                       children.insert(insert_pos + 1, right);
-                       // if there is no further overflow we can just propagate the update and return
-                       if keys.len() <= self.max_keys {
-                           let new_node_id = self.write_node(&node)?;
-                           if parent_id == self.root_id {
-                               // If we are at the root update the root ID
-                               self.root_id = new_node_id;
-                           } else {
-                               // Otherwise propagate the update to the parent
-                               self.propagate_node_update(path, new_node_id)?;
-                           }
-                           return Ok(())
-                       } else {
-                           // Node is overflowed, we need to split it
-                           let split_res = self.split_internal_node(node)?;
-                           match split_res {
-                               SplitResult::SplitNodes { left_node, right_node, split_key } => {
-                                   // We have a split, we need to insert the new internal node into the parent
-                                   let new_left_id = self.write_node(&left_node)?;
-                                   let new_right_id = self.write_node(&right_node)?;
-                                   right = new_right_id;
-                                   left = new_left_id;
-                                   key = split_key.clone();
-                               }
-                           }
-                           continue;
-                       }
-                   }
-               },
-               None => {
-                   // Node not found, this should not happen as we are traversing the path
-                   return Err(TreeError::NodeNotFound(
+    fn propagate_split(&mut self,
+          mut path: Vec<(NodeId, usize)>,
+          mut left: NodeId,
+          mut right: NodeId,
+          mut key: K,
+        ) -> Result<()> {
+        while let Some((parent_id, insert_pos)) = path.pop() {
+            let Some(mut node) = self.read_node(parent_id)? else {
+                return Err(TreeError::NodeNotFound(
                     "Node not found while inserting into parent".to_string(),
-                   ).into());
-               }
-           }
-       }
-       // If we reach here there have been node splits up to the root need to create a new root node (internal) and increase the height.
-       let new_root = Node::Internal {
-           keys: vec![key.clone()],
-           children: vec![left, right],
-       };
-       // Write the new root node to storage
-       let new_root_id = self.write_node(&new_root)?;
-       println!("Creating new root node with id: {:?}", new_root_id);
-       self.root_id = new_root_id;
-       self.height += 1; // Increase the height of the tree
+                ).into());
+            };
+
+            let Node::Internal { keys, children } = &mut node else {
+                return Err(TreeError::BackendAny(
+                    "Expected internal node in propagation path".to_string(),
+                ).into());
+            };
+
+            // Insert the split key and adjust children
+            keys.insert(insert_pos, key);
+            children[insert_pos] = left;
+            children.insert(insert_pos + 1, right);
+
+            // if there is no further overflow we can just propagate the update and return
+            if keys.len() <= self.max_keys {
+                self.write_and_propagate(path, &node)?;
+                return Ok(());
+            }
+
+            // Handle internal node split
+            let SplitResult::SplitNodes {
+                left_node,
+                right_node,
+                split_key,
+            } = self.split_internal_node(node)?;
+
+            left = self.write_node(&left_node)?;
+            right = self.write_node(&right_node)?;
+            key = split_key;
+        }
+
+        // We reached the root: create a new root node
+        let new_root = Node::Internal {
+            keys: vec![key],
+            children: vec![left, right],
+        };
+
+        self.root_id = self.write_node(&new_root)?;
+        self.height += 1;
+        println!("Created new root node: {:?}", self.root_id);
 
         Ok(())
     }
@@ -534,7 +477,7 @@ where
             return Ok(DeleteResult::Updated);
         }
 
-        self.handle_leaf_underflow(path, parent_id, idx, node)
+        self.handle_underflow(path, parent_id, idx, node)
     }
 
     fn write_and_propagate(&mut self, path: Vec<(u64, usize)>, node: &Node<K, V>) -> Result<()> {
@@ -547,7 +490,21 @@ where
         Ok(())
     }
 
-    fn handle_leaf_underflow(
+    fn write_and_propagate_merge(
+        &mut self,
+        path: Vec<(NodeId, usize)>,
+        node: &Node<K, V>,
+    ) -> Result<DeleteResult> {
+        let new_node_id = self.write_node(node)?;
+        if path.is_empty() {
+            self.root_id = new_node_id;
+            return Ok(DeleteResult::Updated);
+        }
+        self.propagate_node_update(path, new_node_id)?;
+        Ok(DeleteResult::Updated)
+    }
+
+    fn handle_underflow(
         &mut self,
         path: Vec<(NodeId, usize)>,
         parent_id: NodeId,
@@ -580,6 +537,7 @@ where
 
         Err(TreeError::BackendAny("Leaf underflow couldn't be resolved".to_string()).into())
     }
+
 
     fn try_borrow_from_left(
         &mut self,
