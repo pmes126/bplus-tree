@@ -82,7 +82,6 @@ where
         } 
         // Initialize the root node ID
         let init_id = storage.write_node(&root_node).map_err(|e| TreeError::BackendAny(e.to_string()))?;
-        println!("Initialized root node with ID: {}", init_id);
         let metadata_1 = metadata::new_metadata_page(
             init_id,
             1, // Initial transaction ID
@@ -201,6 +200,7 @@ where
         }
     }
 
+    // Handles the split of a leaf node when it exceeds the maximum number of keys.
     fn handle_leaf_split(
         &mut self,
         path: Vec<(NodeId, usize)>,
@@ -213,7 +213,6 @@ where
         } = self.split_leaf_node(leaf_node)?;    
         let left_id = self.write_node(&left_node)?;
         let right_id = self.write_node(&right_node)?;
-        println!("Split leaf node with left: {}, right: {}", left_id, right_id);
     
         self.propagate_split(path, left_id, right_id, split_key)?;
         Ok(())
@@ -226,17 +225,10 @@ where
         mut leaf_node: Node<K, V>,
     ) -> Result<SplitResult<K, Node<K, V>>> {
         if let Node::Leaf { keys, values, next } = &mut leaf_node {
-            //print_vec(keys, "Keys before split");
-            //print_vec(values, "Values before split");
             let mid = keys.len() / 2;
             let right_keys = keys.split_off(mid);
             let right_values = values.split_off(mid);
-            //print_vec(&right_keys, "Right Keys after split");
-            //print_vec(&right_values, "Right values after split");
-            //print_vec(keys, "Left Keys after split");
-            //print_vec(values, "Left Values after split");
             let split_key = right_keys.first().ok_or_else(|| { TreeError::BackendAny("Leaf node has no keys to split".to_string()) })?;
-            //println!("Split key: {:?}", split_key);
             let right_leaf = Node::Leaf {
                 keys: right_keys.to_vec(),
                 values: right_values,
@@ -255,6 +247,8 @@ where
         }
     }
 
+    // Splits an internal node into two nodes and returns the new right node, the left node, and
+    // the first key of the right node to be pushed up to the parent.
     fn split_internal_node(
         &mut self,
         mut internal_node: Node<K, V>,
@@ -280,6 +274,7 @@ where
         }
     }
 
+    // Propagates an update to the parent nodes after a node has been updated or split.
     fn propagate_node_update(
         &mut self,
         mut path: Vec<(NodeId, usize)>,
@@ -289,10 +284,7 @@ where
             self.root_id = updated_child_id;
             return Ok(());
         }
-
         while let Some((parent_id, insert_pos)) = path.pop() {
-            //println!("Updating parent node ID: {}, insert position: {}", parent_id, insert_pos);
-
             let mut parent_node = self
                 .read_node(parent_id)?
                 .ok_or_else(|| TreeError::NodeNotFound("Parent node not found".to_string()))?;
@@ -303,7 +295,6 @@ where
                 )
                 .into());
             };
-
             if insert_pos >= children.len() {
                 return Err(TreeError::BackendAny(
                     format!(
@@ -322,13 +313,11 @@ where
                 return Ok(());
             }
         }
-
-        //println!("All parent nodes updated. Final node ID: {}", updated_child_id);
         Ok(())
     }
 
 
-    // insert into a parent node, the path is the collection of the nodes that are parent to the
+    // Insert into a parent node, the path is the collection of the nodes that are parent to the
     // leaf, try inserting in a lifo manner.
     fn propagate_split(&mut self,
           mut path: Vec<(NodeId, usize)>,
@@ -342,24 +331,20 @@ where
                     "Node not found while inserting into parent".to_string(),
                 ).into());
             };
-
             let Node::Internal { keys, children } = &mut node else {
                 return Err(TreeError::BackendAny(
                     "Expected internal node in propagation path".to_string(),
                 ).into());
             };
-
             // Insert the split key and adjust children
             keys.insert(insert_pos, key);
             children[insert_pos] = left;
             children.insert(insert_pos + 1, right);
-
             // if there is no further overflow we can just propagate the update and return
             if keys.len() <= self.max_keys {
                 self.write_and_propagate(path, &node)?;
                 return Ok(());
             }
-
             // Handle internal node split
             let SplitResult::SplitNodes {
                 left_node,
@@ -380,22 +365,16 @@ where
 
         self.root_id = self.write_node(&new_root)?;
         self.height += 1;
-        //println!("Created new root node: {:?}", self.root_id);
 
         Ok(())
     }
 
     // Search for a key and return the value if exists
     pub fn search(&mut self, key: &K) -> Result<Option<V>> {
-        println!("Searching for key: {:?}", key);
         let mut current_id = self.root_id;
         loop {
-            let node = self.read_node(current_id)?;
-            match node {
+            match self.read_node(current_id)? {
                 Some(Node::Internal { keys, children }) => {
-                    println!("Searching in internal node with ID: {}", current_id);
-                    print_vec(&keys, "Internal Node Keys in search");
-                    print_vec(&children, "Internal Node Children in search");
                     // target >= keys[i] means we should go to the (i+1)-th child
                     // target < keys[i]  (not found) means we should go to the i-th child - descent
                     // where it would be inserted
@@ -406,9 +385,8 @@ where
                     current_id = children[i];
                 }
                 Some(Node::Leaf { keys, values, .. }) => {
-                    println!("Searching in leaf node with ID: {}", current_id);
                     match keys.binary_search(key) {
-                        Ok(i) => { println!("found at idx {}", i); return Ok(Some(values[i].clone()))},
+                        Ok(i) => return Ok(Some(values[i].clone())),
                         Err(_i) => return Ok(None), // Key not found
                     };
                 }
@@ -424,11 +402,8 @@ where
             return Ok(None); // Invalid range
         }
         let mut current_id = self.root_id;
-
         loop {
-            let node = self.read_node(current_id)?;
-
-            match node {
+            match self.read_node(current_id)? {
                 Some(Node::Internal { keys, children }) => {
                     let i = match keys.binary_search(start) {
                         Ok(i) => i + 1,
@@ -459,39 +434,31 @@ where
     // Delete and handle underflow of leaf nodes
     pub fn delete(&mut self, key: &K) -> Result<DeleteResult> {
         let (path, mut node) = self.get_insertion_path(key)?;
-
         let Node::Leaf { keys, values, .. } = &mut node else {
             return Err(TreeError::BackendAny("Expected leaf node".to_string()).into());
         };
-
         let Ok(index) = keys.binary_search(key) else {
-            println!("Key {:?} not found in leaf node {:?}", key, keys);
             return Ok(DeleteResult::NotFound);
         };
 
-        println!("Deleting key: {:?} at index: {} at node_id {} ", key, index, path.last().map_or(0, |(id, _)| *id));
         keys.remove(index);
         values.remove(index);
 
         // This is the root node
         if path.is_empty() {
-            println!("We are at the root node");
             self.root_id = self.write_node(&node)?;
             return Ok(DeleteResult::Updated);
         };
-
         // no underflow if the node has enough keys
         if keys.len() >= self.min_leaf_keys {
-            println!("No underflow, writing node back to storage");
             self.write_and_propagate(path, &node)?;
             return Ok(DeleteResult::Updated);
         }
-
-        println!("Keys {:?}, need to handle underflow", keys);
         // handle underflow
         self.handle_underflow(path, node)
     }
 
+    // Writes a node and propagates the update to the parent nodes.
     fn write_and_propagate(&mut self, path: Vec<(u64, usize)>, node: &Node<K, V>) -> Result<()> {
         let new_node_id = self.write_node(node)?;
         if path.is_empty() {
@@ -503,13 +470,13 @@ where
     }
 
 
+    // Handles underflow of a node after deletion, trying to borrow from siblings or merge with them.
     fn handle_underflow(
         &mut self,
         mut path: Vec<(NodeId, usize)>,
         mut node: Node<K, V>,
     ) -> Result<DeleteResult> {
         while let Some((parent_id, idx)) = path.pop() {
-            println!("Current parent ID: {}, index: {}", parent_id, idx);
             let Some(mut parent_node) = self.read_node(parent_id)? else {
                 return Err(TreeError::NodeNotFound("Parent node not found".to_string()).into());
             };
@@ -517,7 +484,6 @@ where
                 let Node::Internal { keys: ref mut parent_keys, ref mut children } = parent_node else {
                     return Err(TreeError::BackendAny("Expected internal node as parent".to_string()).into());
                 };
-                println!("Children in underflow: {:?}, len {}", children, children.len());
                 if idx > 0 && self.try_borrow_from_left(&mut node, children, idx)? {
                         return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
                 }
@@ -526,7 +492,6 @@ where
                 }
                 // Try merging with the left sibling
                 if let Some(merged_id) = self.try_merge_with_left(&mut node, parent_keys, children, idx)? {
-                    println!("merged with left new id: {}", merged_id);
                     // If the merge resulted in an underflow and we are not at the root, we need to continue handling it
                     if children.len() < self.min_internal_keys {
                          // we are at the root node
@@ -534,11 +499,9 @@ where
                             if self.shrink_to_root(children)? {
                                 return Ok(DeleteResult::Underflowed);
                             } else {
-                                println!("did not shrink root: ");
                                 return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
                             }
                         } else {
-                            println!("Merge with left sibling resulted in underflow, revisiting parent node {}", parent_id);
                             node = parent_node; // Revisit the parent node
                             continue;
                         }
@@ -549,22 +512,14 @@ where
                 // Try merging with right sibling
                 if let Some(merged_id) = self.try_merge_with_right(&mut node, parent_keys, children, idx)? {
                     // If the merge resulted in an underflow and we are not at the root, we need to continue handling it
-                        println!("merged with right new id: {}", merged_id);
-                        println!("children {:?}", children);
-                        println!("Remaining Path {:?}", path);
                     if children.len() < self.min_internal_keys {
-                        println!("Merge with right sibling resulted in underflow, revisiting parent node {}", parent_id);
                         if path.is_empty() {
-                           println!("We are at the root node {}", self.root_id);
                            if self.shrink_to_root(children)? {
-                               println!("shrunk root: new id: {}", self.root_id);
                                return Ok(DeleteResult::Underflowed);
                            } else {
-                               println!("did not shrink root: ");
                                return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
                            }
                         } else {
-                            println!("children are underflowed and the path is not empty");
                             node = parent_node; // Revisit the parent node
                             continue;
                         }
@@ -577,6 +532,7 @@ where
         Err(TreeError::BackendAny("Leaf underflow couldn't be resolved".to_string()).into())
     }
 
+    // Shrinks the tree to the root if it has only one child and the height is greater than 1.
     fn shrink_to_root(&mut self, children: &Vec<NodeId>) -> Result<bool> {
         // shrink the tree if we have only one child at the root and the height is greater than 1
         if children.len() == 1 && self.height > 1 {
@@ -588,32 +544,26 @@ where
     }
 
 
+    // Tries to borrow a key from the left sibling of the current node.
     fn try_borrow_from_left(
         &mut self,
         node: &mut Node<K, V>,
         children: &mut [NodeId],
         idx: usize,
     ) -> Result<bool> {
-        println!("Trying to borrow from left sibling at index: {}", idx);
         if idx == 0 {
             return Ok(false);
         }
-
         let left_sibling_id = children[idx - 1];
         let Some(mut left_sibling) = self.read_node(left_sibling_id)? else {
             return Err(TreeError::NodeNotFound("Left sibling not found".to_string()).into());
         };
-
         match (&mut left_sibling, &mut *node) {
             (
                 Node::Leaf { keys: left_keys, values: left_values, .. },
                 Node::Leaf { keys: right_keys, values: right_values, .. },
             ) => {
-                println!("Trying to borrow from left sibling leaf node");
-                println!("Left sibling keys: {:?}", left_keys);
-                println!("Right sibling keys: {:?}", right_keys);
                 if left_keys.len() > self.min_leaf_keys {
-                    println!("Left sibling has enough keys to borrow from");
                     let borrowed_key = left_keys.pop().ok_or_else(|| {
                         TreeError::BackendAny("Left sibling has no keys to borrow".to_string())
                     })?;
@@ -623,7 +573,6 @@ where
                     right_keys.insert(0, borrowed_key);
                     right_values.insert(0, borrowed_value);
                 } else {
-                    println!("Left sibling has not enough keys to borrow from");
                     return Ok(false);
                 }
             }
@@ -631,11 +580,7 @@ where
                 Node::Internal { keys: left_keys, children: left_children },
                 Node::Internal { keys: right_keys, children: right_children },
             ) => {
-                println!("Trying to borrow from left internal node");
-                println!("Left sibling keys: {:?}", left_keys);
-                println!("Right sibling keys: {:?}", right_keys);
                 if left_keys.len() > self.min_internal_keys {
-                    println!("internal Left sibling has enough keys to borrow from");
                     let borrowed_key = left_keys.pop().ok_or_else(|| {
                         TreeError::BackendAny("Left sibling has no keys to borrow".to_string())
                     })?;
@@ -645,7 +590,6 @@ where
                     right_keys.insert(0, borrowed_key);
                     right_children.insert(0, borrowed_child);
                 } else {
-                    println!("Left sibling has not enough keys to borrow from");
                     return Ok(false);
                 }
             }
@@ -664,13 +608,13 @@ where
         Ok(true)
     }
 
+    // Tries to borrow a key from the right sibling of the current node.
     fn try_borrow_from_right(
         &mut self,
         node: &mut Node<K, V>,
         children: &mut [NodeId],
         idx: usize,
     ) -> Result<bool> {
-        println!("trying to borrow from right sibling at index: {}", idx);
         if idx >= children.len() {
             return Ok(false); // No right sibling to borrow from
         }   
@@ -683,11 +627,7 @@ where
                 Node::Leaf { keys: left_keys, values: left_values, .. },
                 Node::Leaf { keys: right_keys, values: right_values, .. },
             ) => {
-                println!("Trying to borrow from right leaf node");
-                println!("Left sibling keys: {:?}", left_keys);
-                println!("Right sibling keys: {:?}", right_keys);
                 if right_keys.len() > self.min_leaf_keys {
-                    println!("internal right sibling has enough keys to borrow from");
                     // Borrow from the right sibling
                     let borrowed_key = right_keys.remove(0);
                     let borrowed_value = right_values.remove(0);
@@ -707,11 +647,7 @@ where
                 Node::Internal { keys: left_keys, children: left_children },
                 Node::Internal { keys: right_keys, children: right_children },
             ) => {
-                println!("Trying to borrow from right internal node");
-                println!("Left sibling keys: {:?}", left_keys);
-                println!("Right sibling keys: {:?}", right_keys);
                 if right_keys.len() > self.min_internal_keys {
-                    println!("internal right sibling has enough keys to borrow from");
                     // Borrow from the right sibling
                     let borrowed_key = right_keys.remove(0);
                     let borrowed_child = right_children.remove(0);
@@ -735,6 +671,7 @@ where
         }
     }
 
+    // Tries to merge the current node with its left sibling if possible.
     fn try_merge_with_left(
         &mut self,
         node: &mut Node<K, V>,
@@ -742,7 +679,6 @@ where
         children: &mut Vec<NodeId>,
         idx: usize,
     ) -> Result<Option<NodeId>> {
-        println!("Trying to merge with left sibling at index: {}", idx);
         if idx > 0 {
             let left_sibling_id = children[idx - 1];
             let left_sibling = self.read_node(left_sibling_id)?;
@@ -758,6 +694,8 @@ where
                 } else {
                     // If there is only one key left in the parent, we need to remove the parent node
                     self.root_id = merged_node_id; // Update root ID
+                    self.height = self.height.saturating_sub(1); // Decrease height if we merged
+                    // the root
                 }
                 return Ok(Some(merged_node_id));
             }
@@ -765,6 +703,7 @@ where
         Ok(None)
     }
 
+    // Tries to merge the current node with its right sibling if possible.
     fn try_merge_with_right(
         &mut self,
         node: &mut Node<K, V>,
@@ -772,8 +711,6 @@ where
         children: &mut Vec<NodeId>,
         idx: usize,
     ) -> Result<Option<NodeId>> {
-        println!("Trying to merge with right sibling at index: {}", idx);
-        println!("children: {:?}", children);
         let right_idx = idx + 1;
         if right_idx >= children.len() {
             return Ok(None);
@@ -791,12 +728,14 @@ where
             } else {
                 // If there is only one key left in the parent, we need to remove the parent node
                 self.root_id = merged_node_id; // Update root ID
+                self.height = self.height.saturating_sub(1); // Decrease height if we merged
             }
             return Ok(Some(merged_node_id));
         }
         Ok(None)
     }
 
+    // Merges two nodes (left and right) into a single node, returning the new node ID.
     pub fn merge_nodes (
         &mut self,
         left_node: &mut Node<K, V>,
@@ -842,7 +781,6 @@ where
         ).into()),
         }
     }
-
     // Set the root of the B+ tree
     pub fn set_root(&mut self, root: NodeId) {
         self.root_id = root;
@@ -959,6 +897,27 @@ mod tests {
             let res = tree_root.search(&key)?;
             assert!(res.is_none(), "Node should be deleted successfully");
         }
+        Ok(())
+    }
+    #[test]
+    fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
+        let file_path = "test_flatfile_5.bin";
+        
+        let order = 20; // B+ tree order
+        let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
+        let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
+        for i in 0..order-1 {
+            let key = i as u64;
+            let value = format!("value_{}", i);
+            let res = tree_root.insert(key, value.clone());
+            assert!(res.is_ok(), "Node should be inserted successfully");
+        }
+        assert_eq!(tree_root.height, 1, "Height should be 1 after inserting {} nodes", order-1);
+        for i in 0..order {
+            let key = i as u64;
+            tree_root.delete(&key)?;
+        }
+        assert_eq!(tree_root.height, 1, "Height should remain 1 after deleting all nodes");
         Ok(())
     }
 }
