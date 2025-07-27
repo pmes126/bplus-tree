@@ -58,6 +58,7 @@ where
     min_leaf_keys: usize,
     storage: S,
     height: usize, // Height of the B+ tree
+    // Phantom data to hold the types of keys and values
     phantom: std::marker::PhantomData<(K, V)>,
 }
 
@@ -71,8 +72,8 @@ where
 {
     pub fn new(mut storage: S, order: usize) -> Result<BPlusTree<K, V, S>, TreeError> {
         let root_node = Node::Leaf {
-            keys: vec![],
-            values: vec![],
+            keys: Vec::with_capacity(order),
+            values: Vec::with_capacity(order),
             next: None,
         };
         if order < 2 {
@@ -148,8 +149,7 @@ where
 
         // Find insertion point
         loop {
-            let mut node = self.read_node(current_id)?;
-            match node.take() {
+            match self.read_node(current_id)? {
                 Some(node_res) => match &node_res {
                     Node::Leaf { .. } => {
                         return Ok((path, node_res)); // Found the leaf node
@@ -234,9 +234,13 @@ where
                 values: right_values,
                 next: next.take(), // Retain the next pointer
             };
+            let mut new_keys: Vec<K> = Vec::with_capacity(self.order);
+            new_keys.extend_from_slice(keys);
+            let mut new_values: Vec<V> = Vec::with_capacity(self.order);
+            new_values.extend_from_slice(values);
             let left_leaf = Node::Leaf {
-                keys: keys.to_vec(),
-                values: values.to_vec(),
+                keys: new_keys,
+                values: new_values,
                 next: Some(self.write_node(&right_leaf)?), // Link to the new right leaf
             };
             Ok( SplitResult::SplitNodes { left_node: left_leaf, right_node: right_leaf, split_key: split_key.clone()})
@@ -262,9 +266,13 @@ where
                 keys: right_keys.to_vec(),
                 children: right_children,
             };
+            let mut new_keys: Vec<K> = Vec::with_capacity(self.order);
+            new_keys.extend_from_slice(keys);
+            let mut new_children: Vec<NodeId> = Vec::with_capacity(self.order + 1);
+            new_children.extend_from_slice(children);
             let left_internal = Node::Internal {
-                keys: keys.to_vec(),
-                children: children.to_vec(),
+                keys: new_keys,
+                children: new_children,
             };
             Ok(SplitResult::SplitNodes { right_node: right_internal, left_node: left_internal, split_key: split_key.clone() })
         } else {
@@ -315,7 +323,6 @@ where
         }
         Ok(())
     }
-
 
     // Insert into a parent node, the path is the collection of the nodes that are parent to the
     // leaf, try inserting in a lifo manner.
