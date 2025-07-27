@@ -493,7 +493,7 @@ where
                 // Try merging with the left sibling
                 if let Some(merged_id) = self.try_merge_with_left(&mut node, parent_keys, children, idx)? {
                     // If the merge resulted in an underflow and we are not at the root, we need to continue handling it
-                    if children.len() < self.min_internal_keys {
+                    if parent_keys.len() < self.min_internal_keys {
                          // we are at the root node
                          if path.is_empty() {
                             if self.shrink_to_root(children)? {
@@ -502,6 +502,8 @@ where
                                 return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
                             }
                         } else {
+                            // we are not at the root node, we need to continue handling the
+                            // underflow
                             node = parent_node; // Revisit the parent node
                             continue;
                         }
@@ -512,7 +514,7 @@ where
                 // Try merging with right sibling
                 if let Some(merged_id) = self.try_merge_with_right(&mut node, parent_keys, children, idx)? {
                     // If the merge resulted in an underflow and we are not at the root, we need to continue handling it
-                    if children.len() < self.min_internal_keys {
+                    if parent_keys.len() < self.min_internal_keys {
                         if path.is_empty() {
                            if self.shrink_to_root(children)? {
                                return Ok(DeleteResult::Underflowed);
@@ -680,6 +682,8 @@ where
         idx: usize,
     ) -> Result<Option<NodeId>> {
         if idx > 0 {
+            let separator_key_idx = idx - 1;
+            let merged_child_idx = idx - 1;
             let left_sibling_id = children[idx - 1];
             let left_sibling = self.read_node(left_sibling_id)?;
             if let Some(mut left) = left_sibling {
@@ -687,15 +691,10 @@ where
                 let merged_node_id = self.merge_nodes(&mut left, node)?;
                 // Update the parent node
                 children.remove(idx);
-                children[idx - 1] = merged_node_id;
+                children[merged_child_idx] = merged_node_id;
                 // Update the parent keys
                 if parent_keys.len() > 1 {
-                    parent_keys.remove(idx - 1); // Remove the key at idx - 1
-                } else {
-                    // If there is only one key left in the parent, we need to remove the parent node
-                    self.root_id = merged_node_id; // Update root ID
-                    self.height = self.height.saturating_sub(1); // Decrease height if we merged
-                    // the root
+                    parent_keys.remove(separator_key_idx); // Remove the separator key at idx - 1
                 }
                 return Ok(Some(merged_node_id));
             }
@@ -725,10 +724,6 @@ where
             // Update the parent keys
             if parent_keys.len() > 1 {
                 parent_keys.remove(idx); // Remove the key at idx
-            } else {
-                // If there is only one key left in the parent, we need to remove the parent node
-                self.root_id = merged_node_id; // Update root ID
-                self.height = self.height.saturating_sub(1); // Decrease height if we merged
             }
             return Ok(Some(merged_node_id));
         }
@@ -855,7 +850,7 @@ mod tests {
         let file_path = "test_flatfile_3.bin";
         
         let order = 10; // B+ tree order
-        let multiplier = 20_u64; // Number of times to insert and delete
+        let multiplier = 200_u64; // Number of times to insert and delete
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
         for i in 0..order as u64*multiplier {
@@ -878,7 +873,7 @@ mod tests {
         let file_path = "test_flatfile_4.bin";
         
         let order = 10; // B+ tree order
-        let multiplier = 10_u64; // Number of times to insert and delete
+        let multiplier = 200_u64; // Number of times to insert and delete
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
         for i in 0..order as u64*multiplier {
@@ -903,7 +898,7 @@ mod tests {
     fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
         let file_path = "test_flatfile_5.bin";
         
-        let order = 20; // B+ tree order
+        let order = 3; // B+ tree order
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
         for i in 0..order-1 {
