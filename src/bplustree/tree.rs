@@ -1,5 +1,8 @@
 use std::fmt::Debug;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
+use crate::bplustree::epoch::COMMIT_COUNT;
 use crate::bplustree::{Node, TreeError};
 use crate::bplustree::BPlusTreeRangeIter;
 use crate::bplustree::EpochManager;
@@ -61,7 +64,8 @@ where
     height: usize, // Height of the B+ tree
     staged_root_id: Option<NodeId>, // Staged root ID for transactions
     staged_height: Option<usize>, // Staged height for transactions
-    epoch_mgr: EpochManager, // Epoch manager for transaction management
+    epoch_mgr: Arc<EpochManager>, // Epoch manager for transaction management
+    commit_count: AtomicUsize, // Number of commits made to the tree
     // Phantom data to hold the types of keys and values
     phantom: std::marker::PhantomData<(K, V)>,
 }
@@ -115,7 +119,8 @@ where
             height: 1, // Start with height 1 for the root node
             staged_root_id: None, // No staged root initially
             staged_height: None, // No staged height initially
-            epoch_mgr: EpochManager::new(), // Initialize the epoch manager
+            epoch_mgr: EpochManager::new_shared(), // Initialize the epoch manager
+            commit_count: AtomicUsize::new(0), // Initialize commit count
             phantom: std::marker::PhantomData,
         })
     }
@@ -139,7 +144,8 @@ where
             height: 1, //TODO: Load the height from metadata
             staged_root_id: None, // No staged root initially
             staged_height: None, // No staged height initially
-            epoch_mgr: EpochManager::new(), // Initialize the epoch manager
+            epoch_mgr: EpochManager::new_shared(), // Initialize the epoch manager
+            commit_count: AtomicUsize::new(0), // Initialize commit count
             phantom: std::marker::PhantomData,
         })
     }
@@ -916,8 +922,12 @@ where
         self.staged_root_id = None;
         self.staged_height = None;
     
-        //self.epoch_manager.bump_epoch(); // Pin new epoch for reclamation
-        //self.epoch_manager.try_reclaim(&mut self.storage);
+        self.commit_count.fetch_add(1, Ordering::Relaxed);
+
+        if (self.commit_count.load(Ordering::Relaxed) as u64) % COMMIT_COUNT == 0 {
+            self.epoch_mgr.advance(); // Pin new epoch for reclamation
+        }
+
     
         Ok(())
     }
@@ -1074,6 +1084,37 @@ mod tests {
             let res = tree.insert(key.clone(), value_updated.clone());
             assert!(res.is_ok(), "Node should be inserted successfully");
             assert_eq!(tree.search(&(key.clone()))?, Some(value_updated), "Value should be updated for duplicate key");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn commit_and_load_tree() -> Result<()> {
+        let file_path = "test_commit_load.bin";
+        let order = 4;
+        let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
+        let mut tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
+
+        for i in 0..order * 10 {
+            let key = i as u64;
+            let value = format!("value_{}", i);
+            let res = tree.insert(key, value.clone());
+            assert!(res.is_ok(), "Node should be inserted successfully");
+        }
+
+        // Commit the changes
+        tree.commit()?;
+
+        let store_load = FileStore::<PageStore>::new(file_path)?;
+        // Load the tree from storage
+        let mut loaded_tree = BPlusTree::<u64, String, FileStore<PageStore>>::load(store_load)?;
+
+        // Verify the loaded tree
+        for i in 0..order * 10 {
+            let key = i as u64;
+            let value = format!("value_{}", i);
+            assert_eq!(loaded_tree.search(&key)?, Some(value), "Loaded tree should have the correct value for key {}", key);
         }
 
         Ok(())
