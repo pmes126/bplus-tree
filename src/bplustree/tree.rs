@@ -162,7 +162,9 @@ where
 
     // Writes a node to the B+ tree storage and updates the cache.
     fn write_node(&mut self, node: &Node<K, V>) -> Result<u64> {
-        self.storage.write_node(node)
+       let res =  self.storage.write_node(node);
+            println!("Writing node: {:?} with ID: {}", node, res.as_ref().unwrap_or(&0));
+        res
     }
 
     // should be inserted.
@@ -234,6 +236,7 @@ where
 
     // Inserts a key-value pair into the B+ tree.
     pub fn insert_internal(&mut self, key: K, value: V) -> Result<()> {
+        println!("Inserting key: {:?} value: {:?}", key, value);
         let (path, mut leaf_node) = self.get_insertion_path(&key)?;
     
         let Node::Leaf { keys, values, .. } = &mut leaf_node else {
@@ -253,6 +256,7 @@ where
         }
     
         if keys.len() > self.max_keys {
+            println!("Leaf node overflow, splitting node with keys: {:?}", keys);
             self.handle_leaf_split(path, leaf_node)
         } else {
             self.write_and_propagate(path, &leaf_node)
@@ -266,12 +270,16 @@ where
         leaf_node: Node<K, V>,
     ) -> Result<()> {
         let SplitResult::SplitNodes {
-            left_node,
+            mut left_node,
             right_node,
             split_key,
         } = self.split_leaf_node(leaf_node)?;    
-        let left_id = self.write_node(&left_node)?;
         let right_id = self.write_node(&right_node)?;
+        if let Node::Leaf { next, .. } = &mut left_node {
+            *next = Some(right_id); // Link the left node to the right node
+        }
+        let left_id = self.write_node(&left_node)?;
+        println!("Splitting leaf node into left: {:?} id: {} right: {:?} id: {}", left_node, left_id, right_node, right_id);
     
         self.propagate_split(path, left_id, right_id, split_key)?;
         Ok(())
@@ -283,10 +291,12 @@ where
         &mut self,
         mut leaf_node: Node<K, V>,
     ) -> Result<SplitResult<K, Node<K, V>>> {
+        // Equally split the keys and values between the two nodes.
         if let Node::Leaf { keys, values, next } = &mut leaf_node {
             let mid = keys.len() / 2;
-            let right_keys = keys.split_off(mid);
-            let right_values = values.split_off(mid);
+            let split_idx = mid; // Index to split the keys and values
+            let right_keys = keys.split_off(split_idx);
+            let right_values = values.split_off(split_idx);
             let split_key = right_keys.first().ok_or_else(|| { TreeError::BackendAny("Leaf node has no keys to split".to_string()) })?;
             let right_leaf = Node::Leaf {
                 keys: right_keys.to_vec(),
@@ -300,7 +310,7 @@ where
             let left_leaf = Node::Leaf {
                 keys: new_keys,
                 values: new_values,
-                next: Some(self.write_node(&right_leaf)?), // Link to the new right leaf
+                next: None, // Link to the new right leaf
             };
             Ok( SplitResult::SplitNodes { left_node: left_leaf, right_node: right_leaf, split_key: split_key.clone()})
         } else {
@@ -317,21 +327,22 @@ where
         mut internal_node: Node<K, V>,
     ) -> Result<SplitResult<K, Node<K, V>>> {
         if let Node::Internal { keys, children } = &mut internal_node {
+            // Index to split the keys and values, right node will have
+            // values past mid + 1, split node will be at mid and removed and left node will have
+            // the remaining values
             let mid = keys.len() / 2;
-            let right_keys = keys.split_off(mid + 1);
-            let right_children = children.split_off(mid + 1);
-            let split_key = right_keys.first().ok_or_else(|| { TreeError::BackendAny("Internal node has no keys to split".to_string()) })?;
+            let split_idx = mid + 1;
+            let right_keys = keys.split_off(split_idx);
+            let right_children = children.split_off(split_idx);
             let right_internal = Node::Internal {
                 keys: right_keys.to_vec(),
                 children: right_children,
             };
-            let mut new_keys: Vec<K> = Vec::with_capacity(self.order);
-            new_keys.extend_from_slice(keys);
-            let mut new_children: Vec<NodeId> = Vec::with_capacity(self.order + 1);
-            new_children.extend_from_slice(children);
+            // split key is the key at the split index, which will be  removed and pushed up to the parent
+            let split_key = keys.pop().ok_or_else(|| { TreeError::BackendAny("Internal node has no mid keys for split".to_string()) })?;
             let left_internal = Node::Internal {
-                keys: new_keys,
-                children: new_children,
+                keys: std::mem::take(keys),
+                children: std::mem::take(children),
             };
             Ok(SplitResult::SplitNodes { right_node: right_internal, left_node: left_internal, split_key: split_key.clone() })
         } else {
@@ -377,6 +388,7 @@ where
             updated_child_id = self.write_node(&parent_node)?;
 
             if parent_id == self.root_id {
+                println!("Updating root node with new child ID: {}", updated_child_id);
                 self.root_id = updated_child_id;
                 return Ok(());
             }
@@ -411,6 +423,7 @@ where
             children.insert(insert_pos + 1, right);
             // if there is no further overflow we can just propagate the update and return
             if keys.len() <= self.max_keys {
+                println!("No overflow, propagating update to parent node with keys: {:?}", keys);
                 self.write_and_propagate(path, &node)?;
                 return Ok(());
             }
@@ -421,6 +434,8 @@ where
                 split_key,
             } = self.split_internal_node(node)?;
 
+            println!("self max keys {}", self.max_keys);
+            println!("splitting node into left: {:?} right: {:?}", left_node, right_node);
             left = self.write_node(&left_node)?;
             right = self.write_node(&right_node)?;
             key = split_key;
@@ -434,10 +449,12 @@ where
 
         self.root_id = self.write_node(&new_root)?;
         self.height += 1;
+        println!("Created new root node with ID: {} {:?} and incresed height", self.root_id, new_root);
 
         Ok(())
     }
 
+    // Search for a key in the B+ tree, acquiring an epoch guard to ensure consistency.
     pub fn search(&mut self, key: &K) -> Result<Option<V>> {
         if self.root_id == 0 {
             return Ok(None); // Empty tree
@@ -449,19 +466,23 @@ where
     // Search for a key and return the value if exists
     pub fn search_internal(&mut self, key: &K) -> Result<Option<V>> {
         let mut current_id = self.root_id;
+        println!("Starting search at root: {}", current_id);
         loop {
             match self.read_node(current_id)? {
                 Some(Node::Internal { keys, children }) => {
                     // target >= keys[i] means we should go to the (i+1)-th child
                     // target < keys[i]  (not found) means we should go to the i-th child - descent
                     // where it would be inserted
+                        println!("Searching in internal node for key: {:?} in {:?}",key, keys);
                     let i = match keys.binary_search(key) {
-                        Ok(i) => i + 1,
-                        Err(i) => i, 
+                        Ok(i) => i + 1, // Go to the next child
+                        Err(i) => i, // Go to the child where it would be inserted
                     };
+                    println!("Moving to child index: {} with ID: {}", i, children[i]);
                     current_id = children[i];
                 }
                 Some(Node::Leaf { keys, values, .. }) => {
+                    println!("Searching in leaf node for key: {:?} in {:?}",key, keys);
                     match keys.binary_search(key) {
                         Ok(i) => return Ok(Some(values[i].clone())),
                         Err(_i) => return Ok(None), // Key not found
@@ -548,7 +569,10 @@ where
     // Writes a node and propagates the update to the parent nodes.
     fn write_and_propagate(&mut self, path: Vec<(u64, usize)>, node: &Node<K, V>) -> Result<()> {
         let new_node_id = self.write_node(node)?;
+        println!("write and propagate");
+        println!("Writing node with ID: {} path {:?}", new_node_id, path);
         if path.is_empty() {
+            println!("Updating root node with new ID: {}", new_node_id);
             self.root_id = new_node_id;
         } else {
             self.propagate_node_update(path, new_node_id)?;
@@ -934,6 +958,7 @@ where
             return Ok(result); // Empty tree
         }
         let _guard = self.epoch_mgr.pin();
+        println!("Starting traversal at root: {}", self.root_id);
         self.traverse_internal(self.root_id, &mut result)?;
         Ok(result)
     }
@@ -945,8 +970,9 @@ where
     ) -> Result<()> {
         match self.read_node(node_id)? {
             Some(Node::Internal { keys, children }) => {
+                println!("Traversing internal node with ID: {}, keys: {:?}", node_id, keys);
                 for (i, child_id) in children.iter().enumerate() {
-                    if i < keys.len() {
+                    if i <= keys.len() {
                         self.traverse_internal(*child_id, result)?;
                     }
                 }
@@ -970,13 +996,15 @@ mod tests {
 
     use rand::seq::SliceRandom;
     use rand::thread_rng;
+    use rand::Rng;
 
     #[test]
-    fn write_and_read_values() -> Result<(), anyhow::Error> {
+    fn write_and_read_value() -> Result<(), anyhow::Error> {
         let file_path = "test_flatfile.bin";
         
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-        let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, 3)?;
+        let order = 3; // B+ tree order
+        let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
         let key = 1u64;
         let value = "a".to_string();
         let res = tree_root.insert(key, value.clone());
@@ -991,7 +1019,7 @@ mod tests {
     fn write_and_read_values_multiple() -> Result<(), anyhow::Error> {
         let file_path = "test_flatfile.bin";
         
-        let order = 11; // B+ tree order
+        let order = 20; // B+ tree order
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
         for i in 0..order - 1 {
@@ -1010,17 +1038,50 @@ mod tests {
     fn write_and_read_values_with_overflow() -> Result<(), anyhow::Error> {
         let file_path = "test_flatfile_2.bin";
         
-        let order = 4; // B+ tree order
+        let order = 3; // B+ tree order
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
-        for i in 0..order*100 {
+        let multiplier = 100; // Number of times to insert times the order - this will cause
+        // overflows 
+        for i in 0..order*multiplier {
             let key = i as u64;
             let value = format!("value_{}", i);
             let res = tree_root.insert(key, value.clone());
-            assert!(res.is_ok(), "Node should be inserted successfully");
+            assert!(res.is_ok(), "Value should be inserted successfully");
+        }
+        for i in 0..order*multiplier {
+            let key = i as u64;
+            let value = format!("value_{}", i);
             let res = tree_root.search(&key)?;
-            assert!(res.is_some(), "Node should be read successfully");
+            assert!(res.is_some(), "Value should be read successfully");
             assert_eq!(res.unwrap(), value, "Value should match the inserted value");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn write_and_delete_lockstep() -> Result<(), anyhow::Error> {
+        let file_path = "test_flatfile_3.bin";
+        let order = 10; // B+ tree order
+        let multiplier = 10_u64; // Number of times to insert and delete
+        let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
+        let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
+        let bound = order as u64*multiplier;
+        for i in 0..bound {
+            let key = i;
+            let value = format!("value_{}", i);
+            let res = tree_root.insert(key, value.clone());
+            assert!(res.is_ok(), "Node should be inserted successfully");
+        }
+        for i in 0..bound {
+            let key = i;
+            tree_root.delete(&key)?;
+            let mut rng = thread_rng();
+            let key_rand = rng.gen_range(i..bound);
+            let res = tree_root.search(&(key_rand))?;
+            assert!(res.is_none(), "Key {} should be present res some {}", key, res.is_some());
+            let res = tree_root.search(&(key))?;
+            assert!(res.is_none(), "Key {} should be deleted successfully res none {}", key, res.is_none());
         }
         Ok(())
     }
@@ -1045,6 +1106,9 @@ mod tests {
             let res = tree_root.search(&key)?;
             assert!(res.is_none(), "Key {} should be deleted successfully res none {}", key, res.is_none());
         }
+        // Check that the tree is empty after all deletions
+        let res = tree_root.traverse()?;
+        assert!(res.is_empty(), "Tree should be empty after all deletions");
         Ok(())
     }
     
@@ -1074,6 +1138,7 @@ mod tests {
         }
         Ok(())
     }
+
     #[test]
     fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
         let file_path = "test_flatfile_5.bin";
@@ -1122,38 +1187,39 @@ mod tests {
     fn commit_and_load_tree() -> Result<()> {
         let file_path = "test_commit_load.bin";
         let order = 4;
-        println!("Initializing B+ tree with order: {}", order);
+        let multiplier = 10; // Number of times to insert
         {
-        let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-        let mut tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
+            let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
+            let mut tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
 
-        for i in 0..order * 10 {
-            let key = i as u64;
-            let value = format!("value_{}", i);
-            let res = tree.insert(key, value.clone());
-            assert!(res.is_ok(), "Node should be inserted successfully");
+            for i in 0..order * multiplier {
+                let key = i as u64;
+                let value = format!("value_{}", i);
+                let res = tree.insert(key, value.clone());
+                assert!(res.is_ok(), "Node should be inserted successfully");
+            }
+
+            // Commit the changes
+            tree.commit()?;
+            for i in 0..order * multiplier {
+                let key = i as u64;
+                let res = tree.search(&key)?;
+                assert!(res.is_some(), "Loaded tree should have the key {}", key);
+            }
         }
-
-        // Commit the changes
-        tree.commit()?;
+        {
+            let store_load = FileStore::<PageStore>::new(file_path)?;
+            // Load the tree from storage
+            let mut loaded_tree = BPlusTree::<u64, String, FileStore<PageStore>>::load(store_load)?;
+            // Verify the loaded tree
+            for i in 0..order * multiplier {
+                let key = i as u64;
+                let value = format!("value_{}", i);
+                let res = loaded_tree.search(&key)?;
+                assert!(res.is_some(), "Loaded tree should have the key {}", key);
+                assert_eq!(loaded_tree.search(&key)?, Some(value), "Loaded tree should have the correct value for key {}", key);
+            }
         }
-
-        let store_load = FileStore::<PageStore>::new(file_path)?;
-        // Load the tree from storage
-        let mut loaded_tree = BPlusTree::<u64, String, FileStore<PageStore>>::load(store_load)?;
-
-        let results = loaded_tree.traverse()?;
-        println!("Traversed {:?} nodes in the loaded tree", results);
-        // Verify the loaded tree
-        for i in 0..order * 10 {
-            let key = i as u64;
-            let value = format!("value_{}", i);
-            let res = loaded_tree.search(&key)?;
-            assert!(res.is_some(), "Loaded tree should have the key {}", key);
-            println!("Loaded value for key {}: {}", key, res.as_ref().unwrap());
-            assert_eq!(loaded_tree.search(&key)?, Some(value), "Loaded tree should have the correct value for key {}", key);
-        }
-
         Ok(())
     }
 }
