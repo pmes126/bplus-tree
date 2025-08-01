@@ -366,7 +366,6 @@ where
         mut path: Vec<(NodeId, usize)>,
         mut updated_child_id: NodeId,
     ) -> Result<()> {
-        //println!("Propagating update to parent nodes: {:?}", path);
         while let Some((parent_id, insert_pos)) = path.pop() {
             let mut parent_node = self
                 .read_node(parent_id)?
@@ -387,26 +386,11 @@ where
                 )
                 .into());
             }
-
-            //println!(
-            //    "Parent node {} before update: {:?} , {:?}",
-            //    parent_id,
-            //    keys,
-            //    children
-            //);
             // Reclaim the original child node and update the child pointer
             self.replace_node(children, insert_pos, updated_child_id)?;
-            //println!(
-            //    "Parent node {} after update: {:?} , {:?}",
-            //    parent_id,
-            //    keys,
-            //    children
-            //);
             updated_child_id = self.write_node(&parent_node)?;
 
             if parent_id == self.root_id {
-                //println!("Updating root node to: {:?}", updated_child_id);
-                //println!("New root: {:?}", parent_node);
                 self.root_id = updated_child_id;
                 return Ok(());
             }
@@ -432,7 +416,6 @@ where
         mut updated_child_id: NodeId,
         key: &K,
     ) -> Result<()> {
-        println!("Propagating update to parent nodes: {:?}", path);
         while let Some((parent_id, insert_pos)) = path.pop() {
             let mut parent_node = self
                 .read_node(parent_id)?
@@ -454,26 +437,12 @@ where
                 .into());
             }
 
-            println!(
-                "Parent node {} before update: {:?} , {:?}",
-                parent_id,
-                keys,
-                children
-            );
             keys.retain(|k| k != key); // Remove the key from the parent node
             // Reclaim the original child node and update the child pointer
             self.replace_node(children, insert_pos, updated_child_id)?;
-            println!(
-                "Parent node {} after update: {:?} , {:?}",
-                parent_id,
-                keys,
-                children
-            );
             updated_child_id = self.write_node(&parent_node)?;
 
             if parent_id == self.root_id {
-                println!("Updating root node to: {:?}", updated_child_id);
-                println!("New root: {:?}", parent_node);
                 self.root_id = updated_child_id;
                 return Ok(());
             }
@@ -547,14 +516,12 @@ where
     // Search for a key and return the value if exists
     pub fn search_internal(&mut self, key: &K) -> Result<Option<V>> {
         let mut current_id = self.root_id;
-        //println!("Searching for key: {:?} starting at node {}", key, current_id);
         loop {
             match self.read_node(current_id)? {
                 Some(Node::Internal { keys, children }) => {
                     // target >= keys[i] means we should go to the (i+1)-th child
                     // target < keys[i]  (not found) means we should go to the i-th child - descent
                     // where it would be inserted
-                    //println!("Searching at {:?} {:?}", keys, children);
                     let i = match keys.binary_search(key) {
                         Ok(i) => i + 1, // Go to the next child
                         Err(i) => i, // Go to the child where it would be inserted
@@ -562,7 +529,6 @@ where
                     current_id = children[i];
                 }
                 Some(Node::Leaf { keys, values, .. }) => {
-                    //println!("Searching at leaf {:?} {:?}", keys, values);
                     match keys.binary_search(key) {
                         Ok(i) => return Ok(Some(values[i].clone())),
                         Err(_i) => return Ok(None), // Key not found
@@ -624,30 +590,21 @@ where
     pub fn delete_internal(&mut self, key: &K) -> Result<DeleteResult> {
         let (path, mut node) = self.get_insertion_path(key)?;
         let Node::Leaf { keys, values, .. } = &mut node else {
-            println!("Node is not a leaf: {:?}", node);
             return Err(TreeError::BackendAny("Expected leaf node".to_string()).into());
         };
         let Ok(index) = keys.binary_search(key) else {
-            println!("key not found: in keys {:?}", keys);
             return Ok(DeleteResult::NotFound);
         };
 
-        println!("Deletion path {:?}", path);
-        println!("tree height {}", self.height);
-        println!("Deleting key {:?} at index {}", key, index);
         keys.remove(index);
         values.remove(index);
-        println!("Keys after deletion: {:?}", keys);
-        println!("Values after deletion: {:?}", values);
 
         // no underflow if the node has enough keys or it is the root node
         if keys.len() >= self.min_leaf_keys || path.is_empty() {
-            println!("No underflow: {:?}", values);
             self.write_and_propagate(path, &node)?;
             return Ok(DeleteResult::Updated);
         }
 
-        println!("Causing underflow");
         self.handle_underflow(path, node)
     }
 
@@ -703,9 +660,6 @@ where
                         return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
                     }
                 }
-                    
-
-                println!("No merge or borrow possible, continuing to next parent level is empty? node {:?} parent_id {}", node, parent_id);
                 return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
             }
         }
@@ -715,9 +669,7 @@ where
     // Shrinks the tree to the root if it has only one child and the height is greater than 1.
     fn shrink_to_root(&mut self, children: &[NodeId]) -> Result<bool> {
         // shrink the tree if we have only one child at the root and the height is greater than 1
-        //println!("path is empty, checking if we can shrink to root");
         if children.len() == 1 && self.height > 1 {
-            println!("Updating the root in shrink to root to node {}", children[0]);
             self.root_id = children[0];
             self.height = self.height.saturating_sub(1);
             return Ok(true);
@@ -892,7 +844,6 @@ where
                 let merged_node = self.merge_nodes(&mut left_sibling, node)?;
                 let merged_node_id = self.write_node(&merged_node)?;
                 // Update the parent node
-                println!("Merged node: {:?}", merged_node);
                 self.remove_node(children, idx)?; // remove the right sibling
                 self.replace_node(children, idx - 1, merged_node_id)?; // update the left sibling
                 // Update the parent keys
@@ -915,7 +866,6 @@ where
                 // Merge the current node with the left sibling
                 let merged_node = self.merge_nodes(&mut left_sibling, node)?;
                 let merged_node_id = self.write_node(&merged_node)?;
-                println!("Merged node: {:?}", merged_node);
                 // Update the parent node
                 self.remove_node(children, idx)?; // remove the right sibling
                 self.replace_node(children, idx - 1, merged_node_id)?; // update the left sibling
@@ -967,7 +917,6 @@ where
                 if !parent_keys.is_empty() {
                     parent_keys.remove(parent_key_idx); // Update the parent key with the first key of the merged node
                 }
-                println!("Merged node: {:?}", merged_node);
                 Ok(Some(merged_node_id))
             },
             (
@@ -980,14 +929,11 @@ where
                 }
                 let seperator_key = parent_keys.remove(parent_key_idx); // The key that separates
                 // the two children has to be removed and added to the left sibling
-                println!("left keys before merge: {:?}", left_keys);
                 left_keys.push(seperator_key); // Add the separator key to the left sibling
-                println!("left keys after pushing separator: {:?}", left_keys);
                 // Merge the current node with the right sibling
                 let merged_node = self.merge_nodes(node, &mut right_sibling)?;
                 let merged_node_id = self.write_node(&merged_node)?;
                 // Update the parent node
-                println!("Merged node: {:?}", merged_node);
                 self.remove_node(children, right_idx)?; // remove the right sibling
                 self.replace_node(children, idx, merged_node_id)?; // update the left sibling
                 Ok(Some(merged_node_id))
@@ -1129,7 +1075,6 @@ where
     ) -> Result<()> {
         match self.read_node(node_id)? {
             Some(Node::Internal { keys, children }) => {
-                println!("Traversing internal node: id: {} keys: {:?} children: {:?}", node_id, keys, children);
                 for (i, child_id) in children.iter().enumerate() {
                     if i <= keys.len() {
                         self.traverse_internal(*child_id, result)?;
@@ -1137,7 +1082,6 @@ where
                 }
             }
             Some(Node::Leaf { keys, values, .. }) => {
-                println!("Traversing leaf node: id:{} keys: {:?} values: {:?}", node_id, keys, values);
                 for (key, value) in keys.iter().zip(values.iter()) {
                     result.push((key.clone(), value.clone()));
                 }
@@ -1236,9 +1180,6 @@ mod tests {
         for i in 0..bound {
             let key = i;
             tree_root.delete(&key)?;
-            println!("Deleted key: {}", key);
-            let tree_values = tree_root.traverse()?;
-            //println!("Tree values after deletion: {:?}", tree_values);
             let res = tree_root.search(&(key))?;
             assert!(res.is_none(), "Key {} should be deleted successfully res none {}", key, res.is_none());
 
@@ -1247,7 +1188,6 @@ mod tests {
                 return Ok(()); // No more keys to search
             }
             let key_rand = rng.gen_range(i+1..bound);
-            //println!(" test -Searching for key: {}", key_rand);
             let res = tree_root.search(&(key_rand))?;
             assert!(res.is_some(), "Key {} should be present res some {}", key_rand, res.is_some());
         }
@@ -1258,10 +1198,8 @@ mod tests {
     fn write_and_delete_values() -> Result<(), anyhow::Error> {
         let file_path = "test_flatfile_3.bin";
         
-        //let order = 10; // B+ tree order
-        //let multiplier = 200_u64; // Number of times to insert and delete
-        let order = 3; // B+ tree order
-        let multiplier = 3_u64; // Number of times to insert and delete
+        let order = 10; // B+ tree order
+        let multiplier = 200_u64; // Number of times to insert and delete
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
         // Inserting values
@@ -1271,23 +1209,15 @@ mod tests {
             let res = tree_root.insert(key, value.clone());
             assert!(res.is_ok(), "Node should be inserted successfully");
         }
-        let res = tree_root.traverse()?;
-        println!("Initial Tree state: {:?}", res);
         // Deleting all values
         for i in 0..order as u64*multiplier {
             let key = i;
-            println!("Deleting key: {}", key);
             tree_root.delete(&key)?;
             let res = tree_root.search(&key)?;
             assert!(res.is_none(), "Key {} should be deleted successfully res none {}", key, res.is_none());
-            println!("Deleted key: {}", key);
-            let res = tree_root.traverse()?;
-            println!("Tree values after deletion: {:?}", res);
         }
         // Check that the tree is empty after all deletions
         let res = tree_root.traverse()?;
-        println!("Tree values after all deletions: {:?}", res);
-        println!("Tree height after all deletions: {:?}", tree_root.height);
 
         for i in 0..order as u64*multiplier {
             let key = i;
@@ -1334,14 +1264,26 @@ mod tests {
         let order = 3; // B+ tree order
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
-        for i in 0..order-1 {
+        let iterations = order * 10; // Number of times to insert
+        for i in 0..order - 1 {
             let key = i as u64;
             let value = format!("value_{}", i);
             let res = tree_root.insert(key, value.clone());
             assert!(res.is_ok(), "Node should be inserted successfully");
         }
         assert_eq!(tree_root.height, 1, "Height should be 1 after inserting {} nodes", order-1);
-        for i in 0..order * 2 {
+        for i in 0..order - 1 {
+            let key = i as u64;
+            tree_root.delete(&key)?;
+        }
+        assert_eq!(tree_root.height, 1, "Height should remain 1 after deleting all nodes");
+        for i in 0..iterations {
+            let key = i as u64;
+            let value = format!("value_{}", i);
+            let res = tree_root.insert(key, value.clone());
+            assert!(res.is_ok(), "Node should be inserted successfully");
+        }
+        for i in 0..iterations {
             let key = i as u64;
             tree_root.delete(&key)?;
         }
@@ -1376,11 +1318,12 @@ mod tests {
         let file_path = "test_commit_load.bin";
         let order = 4;
         let multiplier = 10; // Number of times to insert
+        let iterations = order * multiplier;
         {
             let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
             let mut tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
 
-            for i in 0..order * multiplier {
+            for i in 0..iterations {
                 let key = i as u64;
                 let value = format!("value_{}", i);
                 let res = tree.insert(key, value.clone());
@@ -1389,7 +1332,7 @@ mod tests {
 
             // Commit the changes
             tree.commit()?;
-            for i in 0..order * multiplier {
+            for i in 0..iterations {
                 let key = i as u64;
                 let res = tree.search(&key)?;
                 assert!(res.is_some(), "Loaded tree should have the key {}", key);
@@ -1400,7 +1343,7 @@ mod tests {
             // Load the tree from storage
             let mut loaded_tree = BPlusTree::<u64, String, FileStore<PageStore>>::load(store_load)?;
             // Verify the loaded tree
-            for i in 0..order * multiplier {
+            for i in 0..iterations {
                 let key = i as u64;
                 let value = format!("value_{}", i);
                 let res = loaded_tree.search(&key)?;
