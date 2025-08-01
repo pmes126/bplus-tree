@@ -349,11 +349,18 @@ where
         }
     }
 
+    fn replace_root(&mut self, new_root_id: NodeId) -> Result<()> {
+        // Reclaim the old root node
+        self.reclaim_node(self.root_id)?;
+        self.root_id = new_root_id;
+        Ok(())
+    }
+
     // Writes a node and propagates the update to the parent nodes.
     fn write_and_propagate(&mut self, path: Vec<(u64, usize)>, node: &Node<K, V>) -> Result<()> {
         let new_node_id = self.write_node(node)?;
         if path.is_empty() {
-            self.root_id = new_node_id;
+            self.replace_root(new_node_id)?;
         } else {
             self.propagate_node_update(path, new_node_id)?;
         }
@@ -371,7 +378,7 @@ where
                 .read_node(parent_id)?
                 .ok_or_else(|| TreeError::NodeNotFound("Parent node not found".to_string()))?;
 
-            let Node::Internal { ref mut children, ref keys } = parent_node else {
+            let Node::Internal { ref mut children, .. } = parent_node else {
                 return Err(TreeError::BackendAny(
                     "Expected internal node while updating parents".to_string(),
                 )
@@ -391,8 +398,7 @@ where
             updated_child_id = self.write_node(&parent_node)?;
 
             if parent_id == self.root_id {
-                self.root_id = updated_child_id;
-                return Ok(());
+                self.replace_root(updated_child_id)?;
             }
         }
         Ok(())
@@ -402,7 +408,7 @@ where
     fn write_and_propagate_delete(&mut self, path: Vec<(u64, usize)>, node: &Node<K, V>, key: &K) -> Result<()> {
         let new_node_id = self.write_node(node)?;
         if path.is_empty() {
-            self.root_id = new_node_id;
+            self.replace_root(new_node_id)?;
         } else {
             self.propagate_node_delete(path, new_node_id, key)?;
         }
@@ -443,8 +449,7 @@ where
             updated_child_id = self.write_node(&parent_node)?;
 
             if parent_id == self.root_id {
-                self.root_id = updated_child_id;
-                return Ok(());
+                self.replace_root(updated_child_id)?;
             }
         }
         Ok(())
@@ -498,7 +503,8 @@ where
             children: vec![left, right],
         };
 
-        self.root_id = self.write_node(&new_root)?;
+        let new_root_id = self.write_node(&new_root)?;
+        self.replace_root(new_root_id)?;
         self.height += 1;
 
         Ok(())
@@ -510,11 +516,11 @@ where
             return Ok(None); // Empty tree
         }
         let _guard = self.epoch_mgr.pin();
-        self.search_internal(key)
+        self.search_inner(key)
     }
     
     // Search for a key and return the value if exists
-    pub fn search_internal(&mut self, key: &K) -> Result<Option<V>> {
+    pub fn search_inner(&mut self, key: &K) -> Result<Option<V>> {
         let mut current_id = self.root_id;
         loop {
             match self.read_node(current_id)? {
@@ -582,12 +588,12 @@ where
     // Deletes a key from the B+ tree, acquiring an epoch guard to ensure consistency.
     pub fn delete(&mut self, key: &K) -> Result<DeleteResult> {
         let _guard = self.epoch_mgr.pin();
-        self.delete_internal(key)
+        self.delete_inner(key)
     }
 
     // Delete and handle underflow of leaf nodes
     // Every key in an internal node must match the first key in its right child
-    pub fn delete_internal(&mut self, key: &K) -> Result<DeleteResult> {
+    pub fn delete_inner(&mut self, key: &K) -> Result<DeleteResult> {
         let (path, mut node) = self.get_insertion_path(key)?;
         let Node::Leaf { keys, values, .. } = &mut node else {
             return Err(TreeError::BackendAny("Expected leaf node".to_string()).into());
@@ -670,7 +676,7 @@ where
     fn shrink_to_root(&mut self, children: &[NodeId]) -> Result<bool> {
         // shrink the tree if we have only one child at the root and the height is greater than 1
         if children.len() == 1 && self.height > 1 {
-            self.root_id = children[0];
+            self.replace_root(children[0])?;
             self.height = self.height.saturating_sub(1);
             return Ok(true);
         }
@@ -861,9 +867,9 @@ where
                     return Ok(None); // Cannot merge, total keys exceed max keys
                 }
                 let seperator_key = parent_keys.remove(parent_key_idx); // The key that separates
-                // the two children has to be removed and added to the left sibling
+                // The two children has to be removed and added to the left sibling
                 left_keys.push(seperator_key); // Add the separator key to the left sibling
-                // Merge the current node with the left sibling
+                // Merge the left sibling with the current node
                 let merged_node = self.merge_nodes(&mut left_sibling, node)?;
                 let merged_node_id = self.write_node(&merged_node)?;
                 // Update the parent node
@@ -1064,11 +1070,11 @@ where
             return Ok(result); // Empty tree
         }
         let _guard = self.epoch_mgr.pin();
-        self.traverse_internal(self.root_id, &mut result)?;
+        self.traverse_inner(self.root_id, &mut result)?;
         Ok(result)
     }
 
-    pub fn traverse_internal(
+    pub fn traverse_inner(
         &mut self,
         node_id: NodeId,
         result: &mut Vec<(K, V)>,
@@ -1077,7 +1083,7 @@ where
             Some(Node::Internal { keys, children }) => {
                 for (i, child_id) in children.iter().enumerate() {
                     if i <= keys.len() {
-                        self.traverse_internal(*child_id, result)?;
+                        self.traverse_inner(*child_id, result)?;
                     }
                 }
             }
