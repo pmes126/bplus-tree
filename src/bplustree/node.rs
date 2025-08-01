@@ -26,6 +26,20 @@ where
             Node::Leaf { keys, values, next: _ } => keys.is_empty() && values.is_empty(),
         }
     }
+    
+    pub fn is_underflowed(&self, min_keys: usize) -> bool {
+        match self {
+            Node::Internal { keys, children } => keys.len() < min_keys,
+            Node::Leaf { keys, values, next: _ } => keys.len() < min_keys,
+        }
+    }
+
+    pub fn get_keys(&self) -> &[K] {
+        match self {
+            Node::Internal { keys, .. } => keys,
+            Node::Leaf { keys, .. } => keys,
+        }
+    }
 
     pub fn is_leaf(&self) -> bool {
         matches!(self, Node::Leaf { .. })
