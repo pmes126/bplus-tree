@@ -71,8 +71,8 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
         }
     }
 
-    fn commit_metadata(&mut self, slot: u8, txn_id: u64, root: u64, height: usize, order: usize) -> Result<(), std::io::Error> {
-        let mut metadata_page = new_metadata_page(root, txn_id, 0, height, order);
+    fn commit_metadata(&mut self, slot: u8, txn_id: u64, root: u64, height: usize, order: usize, size: usize) -> Result<(), std::io::Error> {
+        let mut metadata_page = new_metadata_page(root, txn_id, 0, height, order, size);
         self.write_metadata(slot, &mut metadata_page)?;
 
         Ok(())

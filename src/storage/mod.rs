@@ -116,5 +116,5 @@ pub trait MetadataStorage {
     fn get_metadata(&mut self) -> Result<Metadata, std::io::Error>;
     
     // Commits the provided metadata to the oldest metadata slot and advances the transaction ID
-    fn commit_metadata(&mut self, slot: u8, txn_id: u64, root: u64, height: usize, order: usize) -> Result<(), std::io::Error>;
+    fn commit_metadata(&mut self, slot: u8, txn_id: u64, root: u64, height: usize, order: usize, size: usize) -> Result<(), std::io::Error>;
 }

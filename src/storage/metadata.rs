@@ -19,6 +19,7 @@ pub struct Metadata {
     pub txn_id: u64,
     pub height: usize, // Height of the B+ tree
     pub order: usize,  // Order of the B+ tree
+    pub size: usize, // Size of the B+ tree
     pub checksum: u64, // Checksum for integrity verification
 }
 
@@ -32,13 +33,14 @@ pub struct MetadataPage {
     _padding: [u8; PADDING_SIZE], // Padding to fill the rest of the page
 }
 
-pub fn new_metadata_page(root_id: u64, txn_id: u64, checksum: u64, height: usize, order: usize) -> MetadataPage {
+pub fn new_metadata_page(root_id: u64, txn_id: u64, checksum: u64, height: usize, order: usize, size: usize) -> MetadataPage {
     MetadataPage {
         data: Metadata {
             root_node_id: root_id, // Initial root node ID
             txn_id,
             height,
             order,
+            size,
             checksum,
         },
         _padding: [0; PADDING_SIZE], // Fill the rest of the page with zeros

@@ -8,7 +8,7 @@ use crate::bplustree::BPlusTreeRangeIter;
 use crate::bplustree::EpochManager;
 use crate::storage::ValueCodec;
 use crate::storage::KeyCodec;
-use crate::storage::{NodeStorage, MetadataStorage, metadata, metadata::{METADATA_PAGE_1, METADATA_PAGE_2}};
+use crate::storage::{NodeStorage, MetadataStorage, metadata, metadata::{METADATA_PAGE_1, METADATA_PAGE_2, Metadata}};
 use anyhow::Result;
 
 pub type NodeId = u64; // Type for node IDs
@@ -58,6 +58,7 @@ where
     {
     root_id: NodeId,
     order: usize,
+    size: usize,
     max_keys: usize,
     min_internal_keys: usize,
     min_leaf_keys: usize,
@@ -101,6 +102,7 @@ where
             0, // Placeholder for checksum
             1, // Initial height 
             order,
+            0,
         );
         let mut metadata_2 = metadata::new_metadata_page(
             init_id,
@@ -108,6 +110,7 @@ where
             0, // Placeholder for checksum
             1, // Initial height 
             order,
+            0,
         );
         storage.write_metadata(METADATA_PAGE_1, &mut metadata_1)?;
         storage.write_metadata(METADATA_PAGE_2, &mut metadata_2)?;
@@ -116,6 +119,7 @@ where
             root_id: init_id,
             storage,
             order,
+            size: 0, // Initial size is 0
             max_keys: order - 1,
             min_internal_keys: order.div_ceil(2) - 1, // Ensure min_internal_keys is at
             // least 2
@@ -135,6 +139,7 @@ where
         let md = storage.get_metadata()?;
         let root_id = md.root_node_id;
         let order = md.order;
+        let size = md.size;
         
         let max_keys = order - 1;
         let min_internal_keys = (order - 1).saturating_div(2); // Ensure min_internal_keys is at 
@@ -144,6 +149,7 @@ where
             root_id,
             storage,
             order,
+            size,
             max_keys,
             min_internal_keys,
             min_leaf_keys,
@@ -167,7 +173,7 @@ where
        self.storage.write_node(node)
     }
 
-    // should be inserted.
+    // Returns the path of where a key should be inserted.
     pub fn get_insertion_path(&mut self, key: &K) -> Result<(Vec<PathNode>, Node<K, V>)> {
         let mut path = vec![];
         let mut current_id = self.root_id;
@@ -198,6 +204,7 @@ where
         }
     }
 
+    // Replaces a node in a list of children with a new node ID, reclaiming the old node.
     fn replace_node(
         &mut self,
         children: &mut [NodeId],
@@ -214,6 +221,7 @@ where
         Ok(())
     }
 
+    // Removes a node from a list of children, reclaiming the node.
     fn remove_node(
         &mut self,
         children: &mut Vec<NodeId>,
@@ -228,14 +236,23 @@ where
         children.remove(idx);
         Ok(())
     }
+
     // Inserts a key-value pair into the B+ tree, acquiring an epoch guard to ensure consistency.
     pub fn insert(&mut self, key: K, value: V) -> Result<()> {
         let _guard = self.epoch_mgr.pin();
-        self.insert_internal(key, value)
+        self.insert_inner(key, value)
+    }
+    
+    // Inserts a key-value pair into the B+ tree, acquiring an epoch guard to ensure consistency,
+    // finally the result is committed.
+    pub fn insert_and_commit(&mut self, key: K, value: V) -> Result<()> {
+        let _guard = self.epoch_mgr.pin();
+        self.insert_inner(key, value)?;
+        self.commit()
     }
 
     // Inserts a key-value pair into the B+ tree.
-    pub fn insert_internal(&mut self, key: K, value: V) -> Result<()> {
+    pub fn insert_inner(&mut self, key: K, value: V) -> Result<()> {
         let (path, mut leaf_node) = self.get_insertion_path(&key)?;
     
         let Node::Leaf { keys, values, .. } = &mut leaf_node else {
@@ -255,10 +272,12 @@ where
         }
     
         if keys.len() > self.max_keys {
-            self.handle_leaf_split(path, leaf_node)
+            self.handle_leaf_split(path, leaf_node)?
         } else {
-            self.write_and_propagate(path, &leaf_node)
+            self.write_and_propagate(path, &leaf_node)?
         }
+        self.size += 1; // Increment the size of the tree
+        return Ok(());
     }
 
     // Handles the split of a leaf node when it exceeds the maximum number of keys.
@@ -305,8 +324,8 @@ where
             let mut new_values: Vec<V> = Vec::with_capacity(self.order);
             new_values.extend_from_slice(values);
             let left_leaf = Node::Leaf {
-                keys: new_keys,
-                values: new_values,
+                keys: std::mem::take(&mut new_keys),
+                values: std::mem::take(&mut new_values),
                 next: None, // Link to the new right leaf
             };
             Ok( SplitResult::SplitNodes { left_node: left_leaf, right_node: right_leaf, split_key: split_key.clone()})
@@ -332,7 +351,7 @@ where
             let right_keys = keys.split_off(split_idx);
             let right_children = children.split_off(split_idx);
             let right_internal = Node::Internal {
-                keys: right_keys.to_vec(),
+                keys: right_keys,
                 children: right_children,
             };
             // split key is the key at the split index, which will be  removed and pushed up to the parent
@@ -347,13 +366,6 @@ where
                 "Expected an internal node for splitting".to_string(),
             ).into())
         }
-    }
-
-    fn replace_root(&mut self, new_root_id: NodeId) -> Result<()> {
-        // Reclaim the old root node
-        self.reclaim_node(self.root_id)?;
-        self.root_id = new_root_id;
-        Ok(())
     }
 
     // Writes a node and propagates the update to the parent nodes.
@@ -393,57 +405,6 @@ where
                 )
                 .into());
             }
-            // Reclaim the original child node and update the child pointer
-            self.replace_node(children, insert_pos, updated_child_id)?;
-            updated_child_id = self.write_node(&parent_node)?;
-
-            if parent_id == self.root_id {
-                self.replace_root(updated_child_id)?;
-            }
-        }
-        Ok(())
-    }
-
-    // Writes a node and propagates the update to the parent nodes.
-    fn write_and_propagate_delete(&mut self, path: Vec<(u64, usize)>, node: &Node<K, V>, key: &K) -> Result<()> {
-        let new_node_id = self.write_node(node)?;
-        if path.is_empty() {
-            self.replace_root(new_node_id)?;
-        } else {
-            self.propagate_node_delete(path, new_node_id, key)?;
-        }
-        Ok(())
-    }
-
-    // Propagates an update to the parent nodes after a node has been updated or split.
-    fn propagate_node_delete(
-        &mut self,
-        mut path: Vec<(NodeId, usize)>,
-        mut updated_child_id: NodeId,
-        key: &K,
-    ) -> Result<()> {
-        while let Some((parent_id, insert_pos)) = path.pop() {
-            let mut parent_node = self
-                .read_node(parent_id)?
-                .ok_or_else(|| TreeError::NodeNotFound("Parent node not found".to_string()))?;
-
-            let Node::Internal { ref mut children, ref mut keys } = parent_node else {
-                return Err(TreeError::BackendAny(
-                    "Expected internal node while updating parents".to_string(),
-                )
-                .into());
-            };
-            if insert_pos >= children.len() {
-                return Err(TreeError::BackendAny(
-                    format!(
-                        "Insert position {} out of bounds for children in node {}",
-                        insert_pos, parent_id
-                    ),
-                )
-                .into());
-            }
-
-            keys.retain(|k| k != key); // Remove the key from the parent node
             // Reclaim the original child node and update the child pointer
             self.replace_node(children, insert_pos, updated_child_id)?;
             updated_child_id = self.write_node(&parent_node)?;
@@ -513,6 +474,7 @@ where
     // Search for a key in the B+ tree, acquiring an epoch guard to ensure consistency.
     pub fn search(&mut self, key: &K) -> Result<Option<V>> {
         if self.root_id == 0 {
+            println!("Root id {} empty", self.root_id);
             return Ok(None); // Empty tree
         }
         let _guard = self.epoch_mgr.pin();
@@ -522,6 +484,7 @@ where
     // Search for a key and return the value if exists
     pub fn search_inner(&mut self, key: &K) -> Result<Option<V>> {
         let mut current_id = self.root_id;
+        println!("Searching for key: {:?} at root id {}", key, current_id);
         loop {
             match self.read_node(current_id)? {
                 Some(Node::Internal { keys, children }) => {
@@ -535,6 +498,7 @@ where
                     current_id = children[i];
                 }
                 Some(Node::Leaf { keys, values, .. }) => {
+                    println!("Searching for key at leaf with keys {:?} values {:?}", keys, values);
                     match keys.binary_search(key) {
                         Ok(i) => return Ok(Some(values[i].clone())),
                         Err(_i) => return Ok(None), // Key not found
@@ -591,6 +555,14 @@ where
         self.delete_inner(key)
     }
 
+    // Deletes a key from the B+ tree, acquiring an epoch guard to ensure consistency.
+    pub fn delete_and_commit(&mut self, key: &K) -> Result<DeleteResult> {
+        let _guard = self.epoch_mgr.pin();
+        let res = self.delete_inner(key)?;
+        self.commit()?;
+        Ok(res)
+    }
+
     // Delete and handle underflow of leaf nodes
     // Every key in an internal node must match the first key in its right child
     pub fn delete_inner(&mut self, key: &K) -> Result<DeleteResult> {
@@ -611,7 +583,9 @@ where
             return Ok(DeleteResult::Updated);
         }
 
-        self.handle_underflow(path, node)
+        let res = self.handle_underflow(path, node)?;
+        self.size = self.size.saturating_sub(1); // Decrement the size of the tree
+        return Ok(res);
     }
 
     // Handles underflow of a node after deletion, trying to borrow from siblings or merge with them.
@@ -696,7 +670,8 @@ where
         if idx == 0 {
             return Ok(false);
         }
-        let left_sibling_id = children[idx - 1];
+        let left_child_idx = idx - 1; // The index of the left sibling in the children array
+        let left_sibling_id = children[left_child_idx];
         let parent_key_idx = idx - 1; // The key in the parent node that separates the two children
         let Some(mut left_sibling) = self.read_node(left_sibling_id)? else {
             return Err(TreeError::NodeNotFound("Left sibling not found".to_string()).into());
@@ -749,7 +724,7 @@ where
         let new_node_id = self.write_node(node)?;
         let new_left_node_id = self.write_node(&left_sibling)?;
 
-        self.replace_node(children, idx-1, new_left_node_id)?;
+        self.replace_node(children, left_child_idx, new_left_node_id)?;
         self.replace_node(children, idx, new_node_id)?;
 
         Ok(true)
@@ -1004,6 +979,15 @@ where
         }
     }
 
+    fn replace_root(&mut self, new_root_id: NodeId) -> Result<()> {
+        // Reclaim the old root node
+        //self.staged_root_id = Some(self.root_id);
+        //self.staged_height = Some(self.height);
+        self.reclaim_node(self.root_id)?;
+        self.root_id = new_root_id;
+        Ok(())
+    }
+
     // Set the root of the B+ tree
     pub fn set_root(&mut self, root: NodeId) {
         self.root_id = root;
@@ -1033,6 +1017,8 @@ where
     
         self.storage.flush()?;
 
+        //self.reclaim_node(self.root_id)?;
+        println!("Committing new root: {} at height: {}", new_root, new_height);
         // Now commit the new root
         self.root_id = new_root;
         self.height = new_height;
@@ -1048,6 +1034,7 @@ where
             new_root,
             new_height,
             self.order,
+            self.size,
         )?;
 
         self.commit_count.fetch_add(1, Ordering::Relaxed);
@@ -1100,7 +1087,23 @@ where
         }
         Ok(())
     }
+
+    fn create_leaf_node(&self) -> Node<K, V> {
+        Node::Leaf {
+            keys: Vec::with_capacity(self.max_keys),
+            values: Vec::with_capacity(self.max_keys),
+            next: None, // Next pointer for linked list of leaf nodes
+        }
+    }
+    
+    fn create_internal_node(&self) -> Node<K, V> {
+        Node::Internal {
+            keys: Vec::with_capacity(self.max_keys),
+            children: Vec::with_capacity(self.max_keys + 1), // +1 for the extra child pointer
+        }
+    }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -1118,12 +1121,12 @@ mod tests {
         
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let order = 3; // B+ tree order
-        let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
+        let mut tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
         let key = 1u64;
         let value = "a".to_string();
-        let res = tree_root.insert(key, value.clone());
+        let res = tree.insert(key, value.clone());
         assert!(res.is_ok(), "Node should be inserted successfully");
-        let res = tree_root.search(&key)?;
+        let res = tree.search(&key)?;
         assert!(res.is_some(), "Node should be read successfully");
         assert_eq!(res.unwrap(), value, "Value should match the inserted value");
         Ok(())
@@ -1139,10 +1142,11 @@ mod tests {
         for i in 0..order - 1 {
             let key = i as u64;
             let value = format!("value_{}", i);
+            //let res = tree_root.insert(key, value.clone());
             let res = tree_root.insert(key, value.clone());
-            assert!(res.is_ok(), "Node should be inserted successfully");
+            assert!(res.is_ok(), "Value should be inserted successfully");
             let res = tree_root.search(&key)?;
-            assert!(res.is_some(), "Node should be read successfully");
+            assert!(res.is_some(), "Value should be read successfully");
             assert_eq!(res.unwrap(), value, "Value should match the inserted value");
         }
         Ok(())
