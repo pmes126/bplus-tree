@@ -11,6 +11,7 @@ pub use iterator::BPlusTreeRangeIter;
 pub use epoch::EpochManager;
 pub use crate::storage::CodecError;
 pub use thiserror::Error;
+use anyhow::Result;
 
 #[derive(Debug, Error)]
 pub enum TreeError {
@@ -34,5 +35,5 @@ pub enum TreeError {
 }
 
 pub trait ReclaimSink {
-    fn retire(&mut self, node_id: NodeId) -> Result<(), TreeError>;
+    fn retire(&mut self, node_id: NodeId) -> Result<()>;
 }

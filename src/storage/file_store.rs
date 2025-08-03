@@ -84,7 +84,7 @@ impl<S: PageStorage, K, V> NodeStorage<K, V> for FileStore<S>
         K: KeyCodec + Ord,
         V: ValueCodec,
 {
-    fn read_node(&mut self, page_id: u64) -> Result<Option<Node<K, V>>, anyhow::Error>
+    fn read_node(&self, page_id: u64) -> Result<Option<Node<K, V>>, anyhow::Error>
     where
         K: KeyCodec,
         V: ValueCodec,

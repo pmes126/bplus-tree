@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::bplustree::epoch::COMMIT_COUNT;
 use crate::bplustree::{Node, TreeError};
@@ -67,6 +67,47 @@ where
     phantom: std::marker::PhantomData<(K, V)>,
 
 
+}
+
+pub struct SharedBPlusTree<K, V, S>
+where
+    K: KeyCodec + Ord,
+    V: ValueCodec,
+    S: NodeStorage<K, V> + MetadataStorage,
+{
+    inner: Arc<RwLock<BPlusTree<K, V, S>>>,
+}
+
+impl<K: Debug, V: Debug, S> SharedBPlusTree<K, V, S>
+where
+    K: KeyCodec + Clone + Ord,
+    V: ValueCodec + Clone,
+    S: NodeStorage<K, V> + MetadataStorage,
+{
+    pub fn new(tree: BPlusTree<K, V, S>) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(tree)),
+        }
+    }
+
+    pub fn insert_with_root(&self, key: K, value: V, root_id: NodeId, sink: &mut impl ReclaimSink) -> Result<NodeId> {
+        let mut tree = self.inner.write().unwrap();
+        tree.insert_inner(key, value, root_id, sink)
+    }
+
+    pub fn delete_with_root(&self, key: &K, root_id: NodeId, sink: &mut impl ReclaimSink) -> Result<DeleteResult<NodeId>> {
+        let mut tree = self.inner.write().unwrap();
+        tree.delete_inner(key, root_id, sink)
+    }
+
+    pub fn search(&self, key: &K) -> Result<Option<V>> {
+        let tree = self.inner.read().unwrap();
+        tree.search(key)
+    }
+
+    pub fn arc(&self) -> Arc<RwLock<BPlusTree<K, V, S>>> {
+        Arc::clone(&self.inner)
+    }
 }
 
 // BPlusTree implementation
@@ -158,7 +199,7 @@ where
     }
 
     // Reads a node from the B+ tree storage, using the cache if available.
-    fn read_node(&mut self, id: NodeId) -> Result<Option<Node<K, V>>> {
+    fn read_node(&self, id: NodeId) -> Result<Option<Node<K, V>>> {
         self.storage.read_node(id)
     }
 
@@ -461,7 +502,7 @@ where
     }
 
     // Search for a key in the B+ tree, acquiring an epoch guard to ensure consistency.
-    pub fn search(&mut self, key: &K) -> Result<Option<V>> {
+    pub fn search(&self, key: &K) -> Result<Option<V>> {
         if self.root_id == 0 {
             return Ok(None); // Empty tree
         }
@@ -469,8 +510,9 @@ where
         self.search_inner(key, self.root_id)
     }
     
+
     // Search for a key and return the value if exists
-    pub fn search_inner(&mut self, key: &K, root_id: NodeId) -> Result<Option<V>> {
+    pub fn search_inner(&self, key: &K, root_id: NodeId) -> Result<Option<V>> {
         let mut current_id = root_id;
         loop {
             match self.read_node(current_id)? {
@@ -544,7 +586,7 @@ where
 
     // Delete and handle underflow of leaf nodes
     // Every key in an internal node must match the first key in its right child
-    fn delete_inner(&mut self, key: &K, root_id: NodeId, sink: &mut impl ReclaimSink) -> Result<DeleteResult<NodeId>> {
+    pub fn delete_inner(&mut self, key: &K, root_id: NodeId, sink: &mut impl ReclaimSink) -> Result<DeleteResult<NodeId>> {
         let (path, mut node) = self.get_insertion_path(key, root_id)?;
         let Node::Leaf { keys, values, .. } = &mut node else {
             return Err(TreeError::BackendAny("Expected leaf node".to_string()).into());
@@ -1113,7 +1155,7 @@ mod tests {
 
     pub struct DummySink;
     impl ReclaimSink for DummySink {
-        fn retire(&mut self, _node_id: NodeId) -> Result<(), TreeError> {
+        fn retire(&mut self, _node_id: NodeId) -> Result<()> {
             Ok(())
         }
     }

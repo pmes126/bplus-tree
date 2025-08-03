@@ -19,21 +19,21 @@ pub trait PageStorage {
         Self: Sized;
 
     /// Reads a page by ID into a fixed 4KB buffer
-    fn read_page(&mut self, page_id: u64, target: &mut [u8; PAGE_SIZE]) -> Result<(), std::io::Error>;
+    fn read_page(&self, page_id: u64, target: &mut [u8; PAGE_SIZE]) -> Result<(), std::io::Error>;
 
     /// Writes a full 4KB page to disk and returns the offset
-    fn write_page(&mut self, data: &[u8]) -> Result<u64, std::io::Error>;
+    fn write_page(&self, data: &[u8]) -> Result<u64, std::io::Error>;
     
     /// Writes a full 4KB page to disk at the given offset
-    fn write_page_at_offset(&mut self, offset: u64, data: &[u8]) -> Result<u64, std::io::Error>;
+    fn write_page_at_offset(&self, offset: u64, data: &[u8]) -> Result<u64, std::io::Error>;
 
     /// Ensures all writes are flushed to disk
-    fn flush(&mut self) -> Result<(), std::io::Error>;
+    fn flush(&self) -> Result<(), std::io::Error>;
 
     /// Optional: allocates a new, unused page ID
-    fn allocate_page(&mut self) -> Result<u64, std::io::Error>;
+    fn allocate_page(&self) -> Result<u64, std::io::Error>;
     
-    fn free_page(&mut self, page_id: u64) -> Result<(), std::io::Error>;
+    fn free_page(&self, page_id: u64) -> Result<(), std::io::Error>;
 }
 
 
@@ -90,7 +90,7 @@ where
     V: ValueCodec,
 {
     /// Reads a node from storage by its ID
-    fn read_node(&mut self, id: u64) -> Result<Option<Node<K, V>>, anyhow::Error>;
+    fn read_node(&self, id: u64) -> Result<Option<Node<K, V>>, anyhow::Error>;
 
     /// Writes a node to storage
     fn write_node(&mut self, node: &Node<K, V>) -> Result<u64, anyhow::Error>;
