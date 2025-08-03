@@ -2,7 +2,9 @@ mod node;
 mod tree;
 mod iterator;
 mod epoch;
+mod transaction;
 
+pub use tree::BPlusTree;
 pub use node::Node;
 pub use node::NodeId;
 pub use iterator::BPlusTreeRangeIter;
@@ -29,4 +31,8 @@ pub enum TreeError {
     
     #[error("Node Not Found: {0}")]
     NodeNotFound(String),
+}
+
+pub trait ReclaimSink {
+    fn retire(&mut self, node_id: NodeId) -> Result<(), TreeError>;
 }
