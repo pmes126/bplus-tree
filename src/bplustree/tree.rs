@@ -1498,6 +1498,7 @@ mod tests {
             }
 
             // Commit the changes
+            assert!(tree.get_root_id() != root_id, "Root ID should be unchanged before commit {}", tree.get_root_id());
             println!("Committing tree with root ID: {}", root_id);
             tree.commit(root_id)?;
             assert!(tree.get_root_id() == root_id, "Root ID should be correct after commit {}", tree.get_root_id());
