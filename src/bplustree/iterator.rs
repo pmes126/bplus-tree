@@ -13,7 +13,6 @@ pub struct BPlusTreeIter<'a, K, V, S>
           S: NodeStorage<K, V>,
 {
     pub(super) storage: &'a mut S,
-    pub(super) current_id: Option<NodeId>,
     pub current_leaf: Option<Node<K, V>>,
     pub(super) index: usize,
     pub(super) start: K,
@@ -46,37 +45,39 @@ impl<'a, K: Debug, V: Debug, S> BPlusTreeIter<'a, K, V, S>
             current_leaf: None,
             start: start.clone(),
             end: end.clone(),
-            current_id: None,
             index: 0,
             phantom: std::marker::PhantomData,
         };
-        iter.descend_to_leaf(root_id, Some(start));
+        let _ = iter.descend_to_leaf(root_id, Some(start));
         iter
     }
 
     fn descend_to_leaf(&mut self, mut node_id: NodeId, key: Option<&K>) -> Result<(), anyhow::Error> {
         loop {
             let node = self.storage.read_node(node_id)?;
-
             match node {
                 Some(Node::Internal { keys, children }) => {
-                    let i = key.map_or(0, |k| match keys.binary_search(k) {
-                        Ok(i) => i + 1,
-                        Err(i) => i,
-                    });
-                    self.stack.push(TraversalFrame{node_id, index: i});
-                    node_id = children[i];
+                   let index = match key {
+                        Some(k) => match keys.binary_search(k) {
+                            Ok(i) => i + 1,
+                            Err(i) => i,
+                        },
+                        None => 0,
+                    };
+                    self.stack.push(TraversalFrame { node_id, index });
+                    node_id = children[index];
                 }
                 Some(Node::Leaf { ref keys, .. }) => {
-                    let pos = key.map_or(None, |k| {
-                        match keys.binary_search(k) {
-                            Ok(i) => Some(i),
-                            Err(_i) => None, // Key not found
-                        }
-                    });
-
-                    self.index = pos.unwrap_or(0);
+                    let pos = match key {
+                        Some(k) => match keys.binary_search(k) {
+                            Ok(i) => i,
+                            Err(i) => i,
+                        },
+                        None => 0,
+                    };
+                    self.index = pos;
                     self.current_leaf = node.clone();
+                    return Ok(())
                 }
                 None => {
                     // If we reach here, it means the node does not exist
@@ -96,6 +97,7 @@ impl<'a, K: Debug, V: Debug, S> Iterator for BPlusTreeIter<'a, K, V, S>
 
     // Returns the next item in the iteration, it returns a deep copy value of the Key and Value pair if it is within the range
     fn next(&mut self) -> Option<Self::Item> {
+        println!("BPlusTreeIter::next() called, current index: {}", self.index);
         loop {
             if let Some(Node::Leaf { keys, values, .. }) = &mut self.current_leaf {
                 if self.index < keys.len() {
@@ -111,9 +113,10 @@ impl<'a, K: Debug, V: Debug, S> Iterator for BPlusTreeIter<'a, K, V, S>
                 let i = frame.index;
                 match node {
                     Some(Node::Internal { keys: _, children }) => {
-                        if i + 1 < children.len() {
-                            let next_node = children[i + 1];
-                            self.stack.push(TraversalFrame { node_id: frame.node_id, index: i + 1 });
+                        let next_idx = i + 1;
+                        if next_idx < children.len() {
+                            let next_node = children[next_idx];
+                            self.stack.push(TraversalFrame { node_id: frame.node_id, index: next_idx });
                             let _ = self.descend_to_leaf(next_node, None);
                             break;
                         } 
@@ -124,6 +127,10 @@ impl<'a, K: Debug, V: Debug, S> Iterator for BPlusTreeIter<'a, K, V, S>
                         return None;
                     }
                 }
+            }
+            if self.stack.is_empty() {
+                // No more nodes to traverse
+                return None;
             }
         }
     }
