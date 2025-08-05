@@ -90,8 +90,8 @@ where
                         msg: e.to_string(),
                     })?;
             let mut leaf = Node::Leaf {
-                    keys: Vec::with_capacity(page.len()),
-                    values: Vec::with_capacity(page.len()),
+                    keys: Vec::new(),
+                    values: Vec::new(),
                     next: None,
             };
 
@@ -137,7 +137,7 @@ where
 
     fn encode(node: &Node<K, V>) -> Result<[u8; PAGE_SIZE], CodecError> {
         match node {
-            Node::Leaf { keys, values, .. } =>  {
+            Node::Leaf { keys, values, next } =>  {
                 let mut page = LeafPage::new();
                 { 
                 for (key_ref, value_ref) in keys.iter().zip(values.iter()) {
@@ -148,6 +148,7 @@ where
                                 msg: e.to_string(),
                             })?;
                 }
+                page.header.next_node_id = next.unwrap_or(0); // Set the next node pointerc
                 }
                 page.to_bytes().map_err(|e| CodecError::EncodeFailure { msg: e.to_string() }).copied()
             }

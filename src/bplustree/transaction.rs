@@ -1,8 +1,4 @@
 use std::fmt::Debug;
-use std::sync::Arc;
-use crate::bplustree::NodeId;
-use crate::bplustree::EpochManager;
-use crate::bplustree::tree::DeleteResult;
 use crate::bplustree::tree::{SharedBPlusTree};
 use crate::storage::ValueCodec;
 use crate::storage::KeyCodec;
@@ -13,6 +9,13 @@ enum WriteOp<K, V> {
     Insert(K, V),
     Delete(K),
 }
+
+enum TxnStatus {
+    Committed,
+    Aborted,
+}
+
+const MAX_COMMIT_RETRIES: usize = 10;
 
 pub struct WriteTransaction<K, V, S>
 where
@@ -64,8 +67,8 @@ where
         Ok(())
     }
 
-    pub fn commit(mut self) -> Result<()> {
-        loop {
+    pub fn commit(mut self) -> Result<TxnStatus> {
+        for _ in 0..MAX_COMMIT_RETRIES {
             let current_root = self.tree.get_root_id();
             if current_root == self.staged_root_id {
                 // Still valid — commit this transaction
@@ -81,7 +84,7 @@ where
                 // Flush all dirty nodes (metadata + node writes)
                 self.tree.flush()?;
 
-                return Ok(());
+                return Ok(TxnStatus::Committed);
             } else {
                 // Root changed — retry entire transaction
                 self.staged_root_id = current_root;
@@ -94,6 +97,7 @@ where
                 self.rebase()?;
             }
         }
+        Ok(TxnStatus::Aborted) // Too many retries, abort transaction
     }
 
     fn rebase(&mut self) -> Result<()> {
@@ -121,5 +125,18 @@ where
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_write_transaction() {
+        // This is a placeholder for actual tests.
+        // You would typically create a mock or a real BPlusTree instance,
+        // then perform insertions and deletions, and finally commit the transaction.
+        // Assertions would be made to ensure the tree's state is as expected.
     }
 }

@@ -7,7 +7,7 @@ mod transaction;
 pub use tree::BPlusTree;
 pub use node::Node;
 pub use node::NodeId;
-pub use iterator::BPlusTreeRangeIter;
+pub use iterator::BPlusTreeIter;
 pub use epoch::EpochManager;
 pub use crate::storage::CodecError;
 pub use thiserror::Error;
