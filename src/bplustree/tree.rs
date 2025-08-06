@@ -74,7 +74,7 @@ pub struct TransactionTracker {
     pub staged_size: Option<usize>,
 }
 
-impl  TransactionTracker {
+impl TransactionTracker {
     pub fn new() -> Self {
         Self {
             reclaimed: Vec::new(),
@@ -93,6 +93,12 @@ impl TxnTracker for TransactionTracker {
     fn add_new(&mut self, node_id: NodeId) -> Result<()> {
         self.added.push(node_id);
         Ok(())
+    }
+    fn record_staged_height(&mut self, height: usize) {
+        self.staged_height = Some(height);
+    }
+    fn record_staged_size(&mut self, size: usize) {
+        self.staged_size = Some(size);
     }
 }
 
@@ -526,7 +532,7 @@ where
         };
 
         let new_root_id = self.write_node(&new_root, track)?;
-        //self.staged_height = Some(self.height + 1); // Update staged height
+        track.record_staged_height(self.height + 1); // Update staged height
 
         Ok(new_root_id)
     }
@@ -585,8 +591,7 @@ where
         match res {
             DeleteResult::NotFound => Err(TreeError::BackendAny("Key not found for deletion".to_string()).into()), // Key not found, return current root
             DeleteResult::Deleted(new_root_id) => {
-                // If the root node was deleted, we need to update the root ID
-                return Ok(new_root_id);
+                Ok(new_root_id)
             }
         }
     }
@@ -603,6 +608,7 @@ where
             return Ok(DeleteResult::NotFound);
         };
 
+        // Update leaf node
         keys.remove(index);
         values.remove(index);
 
@@ -613,7 +619,7 @@ where
         }
 
         let new_root_id = self.handle_underflow(path, node, track)?;
-        self.size = self.size.saturating_sub(1); // Decrement the size of the tree
+        track.record_staged_size(self.size.saturating_sub(1));
         Ok(DeleteResult::Deleted(new_root_id))
     }
 
@@ -660,6 +666,7 @@ where
                         if path.is_empty() {
                            if children.len() == 1 {
                                track.reclaim(parent_id)?;
+                               track.record_staged_height(self.height.saturating_sub(1));
                                return Ok(children[0]); // If the root has only one child, replace the root with that child
                            } else {
                                return self.write_and_propagate(path, &parent_node, track);
@@ -669,7 +676,7 @@ where
                         node = parent_node;
                         continue;
                     } else {
-                        // Parent node didn't overflow, just write the updated parent node
+                        // Parent node didn't underflow, just write the updated parent node
                         return self.write_and_propagate(path, &parent_node, track);
                     }
                 }
@@ -1130,6 +1137,10 @@ mod tests {
         fn add_new(&mut self, _node_id: NodeId) -> Result<()> {
             Ok(())
         }
+        fn record_staged_size(&mut self, _size: usize){
+        }
+        fn record_staged_height(&mut self, _height: usize) {
+        }
     }
     #[test]
     fn write_and_read_value() -> Result<(), anyhow::Error> {
@@ -1326,39 +1337,55 @@ mod tests {
         Ok(())
     }
 
-    //#[test]
-    //fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
-    //    let file_path = "test_flatfile_5.bin";
-    //    
-    //    let order = 3;
-    //    let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-    //    let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
-    //    let iterations = order * 10;
-    //    for i in 0..order - 1 {
-    //        let key = i as u64;
-    //        let value = format!("value_{}", i);
-    //        let res = tree_root.insert_and_commit(key, value.clone());
-    //        assert!(res.is_ok(), "Node should be inserted successfully");
-    //    }
-    //    assert_eq!(tree_root.height, 1, "Height should be 1 after inserting {} nodes", order-1);
-    //    for i in 0..order - 1 {
-    //        let key = i as u64;
-    //        tree_root.delete_and_commit(&key)?;
-    //    }
-    //    assert_eq!(tree_root.height, 1, "Height should remain 1 after deleting all nodes");
-    //    for i in 0..iterations {
-    //        let key = i as u64;
-    //        let value = format!("value_{}", i);
-    //        let res = tree_root.insert_and_commit(key, value.clone());
-    //        assert!(res.is_ok(), "Node should be inserted successfully");
-    //    }
-    //    for i in 0..iterations {
-    //        let key = i as u64;
-    //        tree_root.delete_and_commit(&key)?;
-    //    }
-    //    assert_eq!(tree_root.height, 1, "Height should remain 1 after deleting all nodes");
-    //    Ok(())
-    //}
+    #[test]
+    fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
+        let file_path = "test_flatfile_5.bin";
+        let mut dummy_track = DummySink{};
+        
+        let order = 3;
+        let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
+        let mut tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
+        let mut root_id = tree.get_root_id();
+        let iterations = order * 10;
+        for i in 0..order - 1 {
+            let key = i as u64;
+            let value = format!("value_{}", i);
+            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
+            assert!(res.is_ok(), "Node should be inserted successfully");
+            root_id = res?;
+        }
+        tree.commit(root_id)?;
+        assert_eq!(tree.height, 1, "Height should be 1 after inserting {} nodes", order-1);
+        for i in 0..order - 1 {
+            let key = i as u64;
+            let res = tree.delete_inner(&key, root_id, &mut dummy_track)?;
+            let DeleteResult::Deleted(res) = res else {
+                return Err(TreeError::BackendAny("Expected DeleteResult::Deleted".to_string()).into());
+            };
+            root_id = res; // Update root_id after each delete
+            tree.commit(root_id)?;
+        }
+        assert_eq!(tree.height, 1, "Height should remain 1 after deleting all nodes");
+        for i in 0..iterations {
+            let key = i as u64;
+            let value = format!("value_{}", i);
+            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
+            assert!(res.is_ok(), "Node should be inserted successfully");
+            root_id = res?;
+        }
+        tree.commit(root_id)?;
+        for i in 0..iterations {
+            let key = i as u64;
+            let res = tree.delete_inner(&key, root_id, &mut dummy_track)?;
+            let DeleteResult::Deleted(res) = res else {
+                return Err(TreeError::BackendAny("Expected DeleteResult::Deleted".to_string()).into());
+            };
+            root_id = res; // Update root_id after each delete
+        }
+        tree.commit(root_id)?;
+        assert_eq!(tree.height, 1, "Height should remain 1 after deleting all nodes");
+        Ok(())
+    }
 
     #[test]
     fn insert_duplicate_keys_should_overwrite_value() -> Result<()> {
