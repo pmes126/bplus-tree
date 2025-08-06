@@ -15,7 +15,6 @@ pub const LEAF_NODE_VERSION: u8 = 0;
 pub struct LeafPageHeader {
     pub node_type: u64,       // Node type (LEAF_NODE_TAG)
     pub entry_count: u64,     // Number of key-value pairs
-    pub next_node_id: u64,    // Right sibling node (if any)
     pub version: u64,         // Version of the leaf node
     pub free_start: u64,      // Offset for the next free space in the data area
 }
@@ -52,7 +51,6 @@ impl LeafPage {
                 node_type: LEAF_NODE_TAG as u64,
                 entry_count : 0,
                 version: LEAF_NODE_VERSION as u64,
-                next_node_id: 0, // Initially no right sibling
                 free_start: 0,
             },
             slots: EntrySlots {

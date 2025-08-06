@@ -197,7 +197,6 @@ where
         let root_node = Node::Leaf {
             keys: Vec::with_capacity(order),
             values: Vec::with_capacity(order),
-            next: None,
         };
         if order < 2 {
             return Err(TreeError::BadInput(
@@ -360,9 +359,6 @@ where
             split_key,
         } = self.split_leaf_node(leaf_node)?;    
         let right_id = self.write_node(&right_node, track)?;
-        if let Node::Leaf { next, .. } = &mut left_node {
-            *next = Some(right_id); // Link the left node to the right node
-        }
         let left_id = self.write_node(&left_node, track)?;
     
         self.propagate_split(path, left_id, right_id, split_key, track)
@@ -375,7 +371,7 @@ where
         mut leaf_node: Node<K, V>,
     ) -> Result<SplitResult<K, Node<K, V>>> {
         // Equally split the keys and values between the two nodes.
-        if let Node::Leaf { keys, values, next } = &mut leaf_node {
+        if let Node::Leaf { keys, values } = &mut leaf_node {
             let mid = keys.len() / 2;
             let split_idx = mid; // Index to split the keys and values
             let right_keys = keys.split_off(split_idx);
@@ -384,7 +380,6 @@ where
             let right_leaf = Node::Leaf {
                 keys: right_keys.to_vec(),
                 values: right_values,
-                next: next.take(), // Retain the next pointer
             };
             let mut new_keys: Vec<K> = Vec::with_capacity(self.order);
             new_keys.extend_from_slice(keys);
@@ -393,7 +388,6 @@ where
             let left_leaf = Node::Leaf {
                 keys: std::mem::take(&mut new_keys),
                 values: std::mem::take(&mut new_values),
-                next: None, // Link to the new right leaf
             };
             Ok( SplitResult::SplitNodes { left_node: left_leaf, right_node: right_leaf, split_key: split_key.clone()})
         } else {
@@ -981,8 +975,8 @@ where
         match(&mut *left_node, right_node) { // Match on a new mutable reference to the left node 
                                              // way to pattern match on mutable references to enums or structs in Rust when you want to destructure their contents mutably.
         (
-            Node::Leaf { keys: left_keys, values: left_values, next: left_next },
-            Node::Leaf { keys: right_keys, values: right_values, next: right_next },
+            Node::Leaf { keys: left_keys, values: left_values },
+            Node::Leaf { keys: right_keys, values: right_values },
         ) => {  // Check if the total number of keys exceeds the maximum allowed
                 if left_keys.len() + right_keys.len() > self.max_keys {
                     return Err(TreeError::BackendAny(
@@ -992,11 +986,9 @@ where
                 // Merge the two leaf nodes
                 left_keys.append(right_keys); // Move keys from right to left
                 left_values.append(right_values); // Move values from right to left
-                *left_next = *right_next; // Clear the next pointer of the left node
                 Ok(Node::Leaf {
                     keys: std::mem::take(left_keys),
                     values: std::mem::take(left_values),
-                    next: *left_next,
                 })
             },
         (
@@ -1100,7 +1092,6 @@ where
         Node::Leaf {
             keys: Vec::with_capacity(self.max_keys),
             values: Vec::with_capacity(self.max_keys),
-            next: None, // Next pointer for linked list of leaf nodes
         }
     }
     

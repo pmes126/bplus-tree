@@ -92,10 +92,9 @@ where
             let mut leaf = Node::Leaf {
                     keys: Vec::new(),
                     values: Vec::new(),
-                    next: None,
             };
 
-            if let Node::Leaf { keys, values, next } = &mut leaf {
+            if let Node::Leaf { keys, values } = &mut leaf {
                 for i in 0..page.header.entry_count as usize {
                     let (key_bytes, value_bytes) = page.get_entry(i).
                         map_err(|e| CodecError::DecodeFailure {
@@ -104,7 +103,6 @@ where
                     keys.push(K::decode_key(key_bytes));
                     values.push(V::decode_value(value_bytes));
                 }
-                next.replace(page.header.next_node_id);
             }
             Ok(leaf)
         }
@@ -137,7 +135,7 @@ where
 
     fn encode(node: &Node<K, V>) -> Result<[u8; PAGE_SIZE], CodecError> {
         match node {
-            Node::Leaf { keys, values, next } =>  {
+            Node::Leaf { keys, values } =>  {
                 let mut page = LeafPage::new();
                 { 
                 for (key_ref, value_ref) in keys.iter().zip(values.iter()) {
@@ -148,7 +146,6 @@ where
                                 msg: e.to_string(),
                             })?;
                 }
-                page.header.next_node_id = next.unwrap_or(0); // Set the next node pointerc
                 }
                 page.to_bytes().map_err(|e| CodecError::EncodeFailure { msg: e.to_string() }).copied()
             }

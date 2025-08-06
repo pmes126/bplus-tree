@@ -10,7 +10,6 @@ pub enum Node<K, V> {
     Leaf {
         keys: Vec<K>,
         values: Vec<V>,
-        next: Option<NodeId>, // for in order traversal
     },
 }
 
@@ -23,14 +22,14 @@ where
     pub fn is_empty(&self) -> bool {
         match self {
             Node::Internal { keys, children } => keys.is_empty() && children.is_empty(),
-            Node::Leaf { keys, values, next: _ } => keys.is_empty() && values.is_empty(),
+            Node::Leaf { keys, values } => keys.is_empty() && values.is_empty(),
         }
     }
     
     pub fn is_underflowed(&self, min_keys: usize) -> bool {
         match self {
-            Node::Internal { keys, children } => keys.len() < min_keys,
-            Node::Leaf { keys, values, next: _ } => keys.len() < min_keys,
+            Node::Internal { keys, .. } => keys.len() < min_keys,
+            Node::Leaf { keys, .. } => keys.len() < min_keys,
         }
     }
 
