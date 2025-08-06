@@ -36,4 +36,6 @@ pub enum TreeError {
 pub trait TxnTracker {
     fn reclaim(&mut self, node_id: NodeId) -> Result<()>;
     fn add_new(&mut self, node_id: NodeId) -> Result<()>;
+    fn record_staged_height(&mut self, height: usize);
+    fn record_staged_size(&mut self, size: usize);
 }
