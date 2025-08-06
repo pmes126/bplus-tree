@@ -47,6 +47,13 @@ pub fn new_metadata_page(root_id: u64, txn_id: u64, checksum: u64, height: usize
     }
 }
 
+pub fn new_metadata_page_with_object(meta: &Metadata) -> MetadataPage {
+    MetadataPage {
+        data: *meta,
+        _padding: [0; PADDING_SIZE], // Fill the rest of the page with zeros
+    }
+}
+
 impl MetadataPage {
     pub fn from_bytes(buf: &[u8; PAGE_SIZE]) -> Result<&Self, std::io::Error> {
         MetadataPage::ref_from(buf).ok_or( io::Error::new(

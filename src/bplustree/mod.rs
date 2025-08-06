@@ -33,6 +33,24 @@ pub enum TreeError {
     NodeNotFound(String),
 }
 
+#[derive(Debug, Error)]
+pub enum CommitError {
+    #[error("Commit failed after {0} retries")]
+    MaxRetries(usize),
+
+    #[error("Commit aborted due to node not found: {0}")]
+    NodeNotFound(String),
+
+    #[error("Commit aborted due to IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Commit aborted due to codec error: {0}")]
+    Codec(#[from] CodecError),
+
+    #[error("Commit aborted due to root mismatch")]
+    RebaseRequired,
+}
+
 pub trait TxnTracker {
     fn reclaim(&mut self, node_id: NodeId) -> Result<()>;
     fn add_new(&mut self, node_id: NodeId) -> Result<()>;

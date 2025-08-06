@@ -1,5 +1,5 @@
 use crate::bplustree::Node;
-use crate::storage::{PageStorage, NodeStorage, MetadataStorage, Metadata, codec::DefaultNodeCodec, { KeyCodec, ValueCodec, NodeCodec, metadata::{MetadataPage, METADATA_PAGE_1, METADATA_PAGE_2, calculate_checksum, new_metadata_page}}};
+use crate::storage::{PageStorage, NodeStorage, MetadataStorage, Metadata, codec::DefaultNodeCodec, { KeyCodec, ValueCodec, NodeCodec, metadata::{MetadataPage, METADATA_PAGE_1, METADATA_PAGE_2, calculate_checksum, new_metadata_page, new_metadata_page_with_object }}};
 use crate::layout::{PAGE_SIZE};
 use anyhow::Result;
 use std::path::Path;
@@ -74,7 +74,12 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
     fn commit_metadata(&mut self, slot: u8, txn_id: u64, root: u64, height: usize, order: usize, size: usize) -> Result<(), std::io::Error> {
         let mut metadata_page = new_metadata_page(root, txn_id, 0, height, order, size);
         self.write_metadata(slot, &mut metadata_page)?;
-
+        Ok(())
+    }
+    
+    fn commit_metadata_with_object(&mut self, slot: u8, metadata: &Metadata) -> Result<(), std::io::Error> {
+        let mut metadata_page = new_metadata_page_with_object(metadata);
+        self.write_metadata(slot, &mut metadata_page)?;
         Ok(())
     }
 }
