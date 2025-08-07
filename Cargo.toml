@@ -16,6 +16,7 @@ thiserror = "1.0"
 rand = "0.8"
 criterion = "0.4"
 crc32fast = "1.3"
+mockall = "0.13.1"
 
 [profile.dev]
 opt-level = 0

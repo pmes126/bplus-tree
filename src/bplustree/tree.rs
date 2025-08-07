@@ -3,7 +3,6 @@ use std::sync::atomic::{AtomicUsize, AtomicU64, AtomicPtr, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::bplustree::epoch::COMMIT_COUNT;
-use crate::bplustree::epoch::ReaderGuard;
 use crate::bplustree::{Node, TreeError, CommitError};
 use crate::bplustree::BPlusTreeIter;
 use crate::bplustree::EpochManager;
@@ -55,11 +54,22 @@ pub struct MetadataSnapshot {
     pub order: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct StagedMetadata {
+    pub root_id: NodeId,
+    pub height: usize,
+    pub size: usize,
+}
+
 //pub struct PinnedMetadataSnapshot<'g> {
 //    pub snapshot: MetadataSnapshot,
 //    _guard: ReaderGuard<'g>,
 //}
 
+// Pointer to the committed metadata
+pub struct BaseVersion {
+    pub committed_ptr: *const Metadata
+}
 /// B+ tree structure with generic key and value types, and a storage backend
 pub struct BPlusTree<K, V, S: NodeStorage<K, V>> 
 where
@@ -73,7 +83,7 @@ where
     epoch_mgr: Arc<EpochManager>, // Epoch manager for transaction management
     commit_count: AtomicUsize, // Number of commits made to the tree
     txn_id: AtomicU64, // Slot of metadata storage
-    committed: AtomicPtr<Metadata>,
+    committed: AtomicPtr<Metadata>, // Pointer to the committed metadata,
     // Phantom data to hold the types of keys and values
     phantom: std::marker::PhantomData<(K, V)>,
 }
@@ -126,6 +136,8 @@ pub struct WriteResult {
     pub new_root_id: NodeId,
     pub reclaimed_nodes: Vec<NodeId>,
     pub staged_nodes: Vec<NodeId>,
+    pub new_height: usize,
+    pub new_size: usize,
 }
 
 impl<K: Debug, V: Debug, S> SharedBPlusTree<K, V, S>
@@ -148,6 +160,8 @@ where
             new_root_id,
             reclaimed_nodes: std::mem::take(&mut collector.reclaimed),
             staged_nodes: std::mem::take(&mut collector.added),
+            new_height: collector.staged_height.unwrap_or(tree.get_height()),
+            new_size: collector.staged_size.unwrap_or(tree.get_size()),
         };
         Ok(write_res)
     }
@@ -163,6 +177,8 @@ where
             new_root_id,
             reclaimed_nodes: std::mem::take(&mut collector.reclaimed),
             staged_nodes: std::mem::take(&mut collector.added),
+            new_height: collector.staged_height.unwrap_or(tree.get_height()),
+            new_size: collector.staged_size.unwrap_or(tree.get_size()),
         };
         Ok(write_res)
     }
@@ -182,12 +198,6 @@ where
         tree.txn_id.load(Ordering::SeqCst)
     }
 
-    pub fn commit(&mut self, new_root_id: NodeId) -> Result<()> {
-        let mut tree = self.inner.write().unwrap();
-        tree.commit(new_root_id)?;
-        Ok(())
-    }
-
     pub fn get_epoch_mgr(&self) -> Arc<EpochManager> {
         Arc::clone(&self.inner.read().unwrap().epoch_mgr)
     }
@@ -203,13 +213,23 @@ where
         tree.get_snapshot()
     }
 
+    pub fn try_commit(&mut self, version: &BaseVersion, new_metadata: StagedMetadata) -> Result<(), CommitError> {
+        self.inner.write().unwrap().try_commit(version, new_metadata)
+    }
 
-    pub fn try_commit(&mut self, original_root: NodeId, new_metadata: Metadata) -> Result<(), CommitError> {
-        self.inner.write().unwrap().try_commit(original_root, new_metadata)
+    pub fn get_metadata_ptr(&self) -> *const Metadata {
+        let tree = self.inner.read().unwrap();
+        tree.committed.load(Ordering::SeqCst)
     }
 
     pub fn arc(&self) -> Arc<RwLock<BPlusTree<K, V, S>>> {
         Arc::clone(&self.inner)
+    }
+
+    pub fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
     }
 }
 
@@ -258,7 +278,7 @@ where
         storage.write_metadata(METADATA_PAGE_1, &mut metadata_1)?;
         storage.write_metadata(METADATA_PAGE_2, &mut metadata_2)?;
 
-        let mut_ptr = Box::new(md1); // Convert metadata to raw pointer
+        let md_ptr = Box::new(md1); // Convert metadata to raw pointer
 
         Ok(Self {
             storage,
@@ -268,7 +288,7 @@ where
             epoch_mgr: EpochManager::new_shared(), // Initialize the epoch manager
             commit_count: AtomicUsize::new(0), // Initialize commit count
             txn_id: AtomicU64::new(init_txn_id), // Initialize transaction ID
-            committed: AtomicPtr::new(Box::into_raw(mut_ptr)), // Initialize committed pointer
+            committed: AtomicPtr::new(Box::into_raw(md_ptr)), // Initialize committed pointer
             phantom: std::marker::PhantomData,
         })
     }
@@ -366,6 +386,10 @@ where
             }
         }
     
+        track.record_staged_size(self.get_size() + 1); // Update staged size
+        track.record_staged_height(self.get_height()); // Update staged height - it maybe increased
+        // later
+
         if keys.len() > self.max_keys {
             self.handle_leaf_split(path, leaf_node, track)
         } else {
@@ -564,7 +588,6 @@ where
         self.search_inner(key, root_id)
     }
     
-
     // Search for a key and return the value if exists
     pub fn search_inner(&self, key: &K, root_id: NodeId) -> Result<Option<V>> {
         let _guard = self.epoch_mgr.pin();
@@ -607,7 +630,7 @@ where
         )))
     }
 
-    // Deletes a key from the B+ tree, acquiring an epoch guard to ensure consistency.
+    // Deletes a key from the B+ tree.
     pub fn delete(&mut self, key: &K, root_id: NodeId, track: &mut impl TxnTracker) -> Result<NodeId> {
         let res = self.delete_inner(key, root_id, track)?;
         match res {
@@ -618,8 +641,7 @@ where
         }
     }
 
-    // Delete and handle underflow of leaf nodes
-    // Every key in an internal node must match the first key in its right child
+    // Delete the key value pair and handle underflow of leaf nodes
     pub fn delete_inner(&mut self, key: &K, root_id: NodeId, track: &mut impl TxnTracker) -> Result<DeleteResult<NodeId>> {
         let _guard = self.epoch_mgr.pin();
         let (path, mut node) = self.get_insertion_path(key, root_id)?;
@@ -633,6 +655,9 @@ where
         // Update leaf node
         keys.remove(index);
         values.remove(index);
+        
+        track.record_staged_size(self.get_size().saturating_sub(1));
+        track.record_staged_height(self.get_height()); // Update staged height, it may be decreased later
 
         // no underflow if the node has enough keys or it is the root node
         if keys.len() >= self.min_leaf_keys || path.is_empty() {
@@ -641,7 +666,6 @@ where
         }
 
         let new_root_id = self.handle_underflow(path, node, track)?;
-        track.record_staged_size(self.get_size().saturating_sub(1));
         Ok(DeleteResult::Deleted(new_root_id))
     }
 
@@ -719,9 +743,9 @@ where
         if idx == 0 {
             return Ok(false);
         }
+        let parent_key_idx = idx - 1; // The key in the parent node that separates the two children
         let left_child_idx = idx - 1; // The index of the left sibling in the children array
         let left_sibling_id = children[left_child_idx];
-        let parent_key_idx = idx - 1; // The key in the parent node that separates the two children
         let Some(mut left_sibling) = self.read_node(left_sibling_id)? else {
             return Err(TreeError::NodeNotFound("Left sibling not found".to_string()).into());
         };
@@ -812,7 +836,7 @@ where
                     left_keys.push(borrowed_key);
                     left_values.push(borrowed_value);
                     // Update the separator key with the first key  of the right sibling
-                    parent_keys[parent_key_idx] = new_separator_key.clone(); // Update the parent key with the
+                    parent_keys[parent_key_idx] = new_separator_key; // Update the parent key with the new key
                 } else {
                     return Ok(false); // Not enough keys to borrow
                 }
@@ -886,8 +910,7 @@ where
                 track.reclaim(children[idx])?; // Reclaim the left sibling node
                 children.remove(idx);
                 track.reclaim(children[idx-1])?; // Reclaim the left sibling node
-                children[idx - 1] = merged_node_id; // Update the left sibling with the merged node
-// ID
+                children[idx - 1] = merged_node_id; // Update the left sibling with the merged node ID
                 // Update the parent keys
                 if !parent_keys.is_empty() {
                     parent_keys.remove(parent_key_idx); // Update the parent key with the first key of the merged node
@@ -1002,7 +1025,6 @@ where
         right_node: &mut Node<K, V>
     ) -> Result<Node<K, V>> {
         match(&mut *left_node, right_node) { // Match on a new mutable reference to the left node 
-                                             // way to pattern match on mutable references to enums or structs in Rust when you want to destructure their contents mutably.
         (
             Node::Leaf { keys: left_keys, values: left_values },
             Node::Leaf { keys: right_keys, values: right_values },
@@ -1043,6 +1065,7 @@ where
         }
     }
 
+    // Reclaims a node by adding it to the reclamation candidates for the current epoch.
     pub fn reclaim_node(&mut self, node_id: NodeId) -> Result<()> {
         let epoch = self.epoch_mgr.get_current_thread_epoch().ok_or_else(|| {
             TreeError::BackendAny("Failed to get epoch for current thread".to_string())
@@ -1083,7 +1106,7 @@ where
     //}
 
     // Version of commit to be used for single threaded commits, use for testing and debugging
-    pub fn commit(&mut self, new_root_id: NodeId) -> Result<()> {
+    pub fn commit(&mut self, new_root_id: NodeId, _height: usize, _size: usize) -> Result<()> {
         // Now commit the new root
         // 1. Write new metadata (to double-buffered slot)
         let new_txn_id = self.txn_id.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1099,17 +1122,14 @@ where
             self.get_size(),
         )?;
 
+        let current_ptr = self.committed.load(Ordering::Acquire);
+        let current = unsafe { &mut *current_ptr };
         // Flush the storage to ensure all changes are written
         self.storage.flush()?;
-
-        // 2. Atomically publish new root (this is the actual commit gate)
-        //let result = self.root_id.compare_exchange(
-        //    self.original_root_id,
-        //    self.staged_root_id,
-        //    Ordering::SeqCst,
-        //    Ordering::Relaxed,
-        //);
         
+        current.root_node_id = new_root_id;
+        current.txn_id = new_txn_id;
+
         self.commit_count.fetch_add(1, Ordering::Relaxed);
 
         let _new_epoch = self.epoch_mgr.advance(); // Bump the epoch for transaction management
@@ -1127,52 +1147,52 @@ where
     }
 
     // Attempts to commit the transaction with the given metadata.
-    pub fn try_commit(&mut self, original_root: NodeId, mut new_meta: Metadata) -> Result<(), CommitError> {
-        // SAFELY load current committed metadata
+    pub fn try_commit(&mut self, base_version: &BaseVersion, new_meta: StagedMetadata) -> Result<(), CommitError> {
+        let expected = base_version.committed_ptr;
+        // load current committed metadata
         let current_ptr = self.committed.load(Ordering::Acquire);
         let current = unsafe { &*current_ptr };
-
-        // Validate the transaction's base version
-        if current.root_node_id != original_root {
-            return Err(CommitError::RebaseRequired);
-        }
-
         // Assign new txn_id here - the current txn_id in the committed metadata is the actual
         // sequence number.
         let new_txn_id = current.txn_id + 1;
-        new_meta.txn_id = new_txn_id;
+        let metadata = Metadata {
+            root_node_id: new_meta.root_id,
+            height: new_meta.height,
+            size: new_meta.size,
+            txn_id: new_txn_id,
+            checksum: 0,
+            order: current.order,
+        };
 
-        // 1. Serialize/flush metadata if needed
-        // For disk-persisted trees:
+        // 1. Commit metadata to the double-buffered slot, if the commit fails we should return the error
         let slot = new_txn_id % 2;
         self.storage.commit_metadata_with_object(
             slot as u8,
-            &new_meta,
+            &metadata,
         )?;
-        
         // 2. Prepare new metadata box and pointer
-        let boxed = Box::new(new_meta);
+        let boxed = Box::new(metadata);
         let new_ptr = Box::into_raw(boxed);
-
         // 3. Atomically commit metadata pointer
         let result = self.committed.compare_exchange(
-            current_ptr,
+            expected as *mut Metadata,
             new_ptr,
             Ordering::SeqCst,
             Ordering::Relaxed,
         );
 
         match result {
+            // ✅ commit has succeeded 
             Ok(old_ptr) => {
-                // ✅ committed
                 self.storage.flush()?; // flush to disk
-
                 self.epoch_mgr.advance(); // make version visible
                 let safe_epoch = self.epoch_mgr.oldest_active();
                 let reclaimed = self.epoch_mgr.reclaim(safe_epoch);
-
                 for pid in reclaimed {
                     self.storage.free_node(pid)?;
+                }
+                if (self.commit_count.load(Ordering::Relaxed) as u64) % COMMIT_COUNT == 0 {
+                    self.epoch_mgr.advance(); // Pin new epoch for reclamation
                 }
 
                 unsafe {
@@ -1195,6 +1215,11 @@ where
         unsafe { &*self.committed.load(Ordering::Acquire) }
     }
     
+    // Safe accessor for current committed metadata
+    pub fn metadata_ptr(&self) -> *const Metadata {
+        unsafe { &*self.committed.load(Ordering::Acquire) }
+    }
+
     // Returns a snapshot of the current metadata, useful for read-only operations.
     pub fn snapshot(&self) -> Metadata {
         let ptr = self.committed.load(Ordering::Acquire);
@@ -1210,6 +1235,7 @@ where
         }
     }
 
+    // Traverses the B+ tree and returns all key-value pairs in a vector.
     pub fn traverse(&mut self) -> Result<Vec<(K, V)>> {
         let mut result = Vec::new();
         let root_id = self.get_root_id();
@@ -1221,6 +1247,7 @@ where
         Ok(result)
     }
 
+    // Recursive implementation of traversal.
     pub fn traverse_inner(
         &mut self,
         node_id: NodeId,
@@ -1244,6 +1271,7 @@ where
         Ok(())
     }
 
+    // Creates a new leaf node with the specified maximum number of keys.
     fn create_leaf_node(&self) -> Node<K, V> {
         Node::Leaf {
             keys: Vec::with_capacity(self.max_keys),
@@ -1251,6 +1279,7 @@ where
         }
     }
     
+    // Creates a new internal node with the specified maximum number of keys.
     fn create_internal_node(&self) -> Node<K, V> {
         Node::Internal {
             keys: Vec::with_capacity(self.max_keys),
@@ -1258,6 +1287,7 @@ where
         }
     }
 
+    // Helpers to get metadata information
     pub fn get_txn_id(&self) -> u64 {
         self.txn_id.load(Ordering::Relaxed)
     }
@@ -1513,7 +1543,7 @@ mod tests {
     #[test]
     fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
         let file_path = "test_flatfile_5.bin";
-        let mut dummy_track = DummySink{};
+        let mut track = TransactionTracker::new();
         
         let order = 3;
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
@@ -1523,39 +1553,39 @@ mod tests {
         for i in 0..order - 1 {
             let key = i as u64;
             let value = format!("value_{}", i);
-            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
+            let res = tree.insert_inner(key, value.clone(), root_id, &mut track);
             assert!(res.is_ok(), "Node should be inserted successfully");
             root_id = res?;
         }
-        tree.commit(root_id)?;
+        tree.commit(root_id, track.staged_height.unwrap(), track.staged_size.unwrap())?;
         assert_eq!(tree.get_height(), 1, "Height should be 1 after inserting {} nodes", order-1);
         for i in 0..order - 1 {
             let key = i as u64;
-            let res = tree.delete_inner(&key, root_id, &mut dummy_track)?;
+            let res = tree.delete_inner(&key, root_id, &mut track)?;
             let DeleteResult::Deleted(res) = res else {
                 return Err(TreeError::BackendAny("Expected DeleteResult::Deleted".to_string()).into());
             };
             root_id = res; // Update root_id after each delete
-            tree.commit(root_id)?;
+            tree.commit(root_id, track.staged_height.unwrap(), track.staged_size.unwrap())?;
         }
         assert_eq!(tree.get_height(), 1, "Height should remain 1 after deleting all nodes");
         for i in 0..iterations {
             let key = i as u64;
             let value = format!("value_{}", i);
-            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
+            let res = tree.insert_inner(key, value.clone(), root_id, &mut track);
             assert!(res.is_ok(), "Node should be inserted successfully");
             root_id = res?;
         }
-        tree.commit(root_id)?;
+        tree.commit(root_id, track.staged_height.unwrap(), track.staged_size.unwrap())?;
         for i in 0..iterations {
             let key = i as u64;
-            let res = tree.delete_inner(&key, root_id, &mut dummy_track)?;
+            let res = tree.delete_inner(&key, root_id, &mut track)?;
             let DeleteResult::Deleted(res) = res else {
                 return Err(TreeError::BackendAny("Expected DeleteResult::Deleted".to_string()).into());
             };
             root_id = res; // Update root_id after each delete
         }
-        tree.commit(root_id)?;
+        tree.commit(root_id, track.staged_height.unwrap(), track.staged_size.unwrap())?;
         assert_eq!(tree.get_height(), 1, "Height should remain 1 after deleting all nodes");
         Ok(())
     }
@@ -1591,7 +1621,7 @@ mod tests {
         let file_path = "test_commit_load.bin";
         let order = 4;
         let multiplier = 10; // Number of times to insert
-        let mut dummy_track = DummySink{};
+        let mut track = TransactionTracker::new();
         let iterations = order * multiplier;
         {
             let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
@@ -1601,7 +1631,7 @@ mod tests {
             for i in 0..iterations {
                 let key = i as u64;
                 let value = format!("value_{}", i);
-                let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
+                let res = tree.insert_inner(key, value.clone(), root_id, &mut track);
                 assert!(res.is_ok(), "Node should be inserted successfully");
                 root_id = res?;
             }
@@ -1609,7 +1639,7 @@ mod tests {
             // Commit the changes
             assert!(tree.get_root_id() != root_id, "Root ID should be unchanged before commit {}", tree.get_root_id());
             println!("Committing tree with root ID: {}", root_id);
-            tree.commit(root_id)?;
+            tree.commit(root_id, track.staged_height.unwrap(), track.staged_size.unwrap())?;
             assert!(tree.get_root_id() == root_id, "Root ID should be correct after commit {}", tree.get_root_id());
             for i in 0..iterations {
                 let key = i as u64;
@@ -1620,7 +1650,7 @@ mod tests {
         {
             let store_load = FileStore::<PageStore>::new(file_path)?;
             // Load the tree from storage
-            let mut loaded_tree = BPlusTree::<u64, String, FileStore<PageStore>>::load(store_load)?;
+            let loaded_tree = BPlusTree::<u64, String, FileStore<PageStore>>::load(store_load)?;
             let root_id = loaded_tree.get_root_id();
             assert!(root_id != 0, "Loaded tree should have a valid root ID");
             // Verify the loaded tree
@@ -1640,7 +1670,7 @@ mod tests {
         let file_path = "test_range_scan.bin";
         let order = 4;
         let multiplier = 20; // Number of times to insert
-        let mut dummy_track = DummySink{};
+        let mut track = TransactionTracker::new();
         let iterations = order * multiplier;
         {
             let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
@@ -1650,11 +1680,11 @@ mod tests {
             for i in 0..iterations {
                 let key = i as u64;
                 let value = format!("value_{}", i);
-                let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
+                let res = tree.insert_inner(key, value.clone(), root_id, &mut track);
                 assert!(res.is_ok(), "Node should be inserted successfully");
                 root_id = res?;
             }
-            tree.commit(root_id)?;
+            tree.commit(root_id, track.staged_height.unwrap(), track.staged_size.unwrap())?;
             assert!(tree.get_root_id() == root_id, "Root ID should be correct after commit {}", tree.get_root_id());
 
             let _ = tree.traverse()?;
