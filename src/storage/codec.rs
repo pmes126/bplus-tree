@@ -3,10 +3,33 @@ use crate::storage::page::LeafPage;
 use crate::storage::page::InternalPage;
 use crate::storage::page::INTERNAL_NODE_TAG;
 use crate::storage::page::LEAF_NODE_TAG;
-use crate::storage::{KeyCodec, ValueCodec, NodeCodec, CodecError};
+use crate::storage::{KeyCodec, ValueCodec, NodeCodec};
 use crate::bplustree::Node;
+use thiserror::Error;
 
 pub struct DefaultNodeCodec;
+
+#[derive(Debug, Error)]
+pub enum CodecError {
+    #[error("Error decoding value: {msg}")]
+    DecodeFailure {
+        msg: String,
+    },
+    #[error("Error encoding value: {msg}")]
+    EncodeFailure {
+        msg: String,
+    },
+    #[error("Error converting from byte slice: {source}")]
+    FromSliceError {
+        #[from]
+        source: std::array::TryFromSliceError,
+    },
+    #[error("IO error: {source}")]
+    Io {
+        #[from]
+        source: std::io::Error,
+    },
+}
 
 impl KeyCodec for u64 {
     fn encode_key(&self) -> &[u8] {

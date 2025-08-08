@@ -1,5 +1,5 @@
 use std::fmt::Debug;
-use crate::bplustree::tree::{SharedBPlusTree, BaseVersion, StagedMetadata, WriteResult};
+use crate::bplustree::tree::{SharedBPlusTree, BaseVersion, StagedMetadata};
 use crate::storage::ValueCodec;
 use crate::storage::KeyCodec;
 use crate::storage::{NodeStorage, MetadataStorage};
@@ -21,7 +21,7 @@ pub struct WriteTransaction<K, V, S>
 where
     K: KeyCodec + Clone + Ord,
     V: ValueCodec + Clone,
-    S: NodeStorage<K, V> + MetadataStorage,
+    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
     tree: SharedBPlusTree<K, V, S>,
     staged_update: Option<StagedMetadata>, // Staged metadata root ID
@@ -36,7 +36,7 @@ impl<K: Debug, V: Debug, S> WriteTransaction<K, V, S>
 where
     K: KeyCodec + Clone + Ord,
     V: ValueCodec + Clone,
-    S: NodeStorage<K, V> + MetadataStorage,
+    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
     pub fn new(tree: SharedBPlusTree<K, V, S>) -> Self {
 
@@ -213,4 +213,38 @@ mod tests {
 
     #[test]
     fn flush_failure_after_cas_keeps_published_state() { /* ... */ }
+
+    #[test]
+    fn many_writers_retry_until_success() {
+     let (tree, _h) = test_tree();
+
+     let threads: Vec<_> = (0..4).map(|_| {
+         let tree = Arc::clone(&tree);
+         std::thread::spawn(move || {
+             let mut ok = 0;
+             for i in 0..200 {
+                 loop {
+                     let base = tree.committed_ptr();
+                     let staged = StagedMetadata {
+                         root_id: (i as u64) + 2, // new id every attempt
+                         height: 2,
+                         size: i as u64,
+                     };
+                     match tree.try_commit(base, staged.clone()) {
+                         Ok(()) => { ok += 1; break; }
+                         Err(CommitError::RebaseRequired) => continue,
+                         Err(_) => break, // ignore IO for this test
+                     }
+                 }
+             }
+             ok
+         })
+     }).collect();
+
+     let total_ok: u64 = threads.into_iter().map(|t| t.join().unwrap() as u64).sum();
+
+     // Monotonic txn_id equals #successful commits
+     assert_eq!(tree.metadata().txn_id, total_ok);
+     assert!(total_ok > 0, "At least one commit should succeed");
+    }
 }

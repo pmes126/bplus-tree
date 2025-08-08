@@ -1,5 +1,5 @@
 use crate::bplustree::Node;
-use crate::storage::{PageStorage, NodeStorage, MetadataStorage, Metadata, codec::DefaultNodeCodec, { KeyCodec, ValueCodec, NodeCodec, metadata::{MetadataPage, METADATA_PAGE_1, METADATA_PAGE_2, calculate_checksum, new_metadata_page, new_metadata_page_with_object }}};
+use crate::storage::{PageStorage, NodeStorage, MetadataStorage, metadata::Metadata, codec::DefaultNodeCodec, { KeyCodec, ValueCodec, NodeCodec, metadata::{MetadataPage, METADATA_PAGE_1, METADATA_PAGE_2, calculate_checksum, new_metadata_page, new_metadata_page_with_object }}};
 use crate::layout::{PAGE_SIZE};
 use anyhow::Result;
 use std::path::Path;
@@ -18,7 +18,7 @@ impl<S: PageStorage> FileStore<S> {
 }
 
 impl<S: PageStorage> MetadataStorage for FileStore<S> {
-    fn read_metadata(&mut self, slot: u8) -> Result<MetadataPage, std::io::Error> {
+    fn read_metadata(&self, slot: u8) -> Result<MetadataPage, std::io::Error> {
         if slot > METADATA_PAGE_2 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -42,7 +42,7 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
         Ok(*metadata) // Return a COPY of the metadata page
     }
 
-    fn write_metadata(&mut self, slot: u8, meta: &mut MetadataPage) -> Result<(), std::io::Error> {
+    fn write_metadata(&self, slot: u8, meta: &mut MetadataPage) -> Result<(), std::io::Error> {
         let checksum = calculate_checksum(meta);
         meta.data.checksum = checksum;
         let buf = meta.as_bytes();
@@ -50,7 +50,7 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
         Ok(())
     }
 
-    fn read_current_root(&mut self) -> Result<u64, std::io::Error> {
+    fn read_current_root(&self) -> Result<u64, std::io::Error> {
         let meta0 = self.read_metadata(METADATA_PAGE_1)?;
         let meta1 = self.read_metadata(METADATA_PAGE_2)?;
         let root_node_id = if meta0.data.txn_id > meta1.data.txn_id {
@@ -61,7 +61,7 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
         Ok(root_node_id)
     }
 
-    fn get_metadata(&mut self) -> Result<Metadata, std::io::Error> {
+    fn get_metadata(&self) -> Result<Metadata, std::io::Error> {
         let meta0 = self.read_metadata(METADATA_PAGE_1)?;
         let meta1 = self.read_metadata(METADATA_PAGE_2)?;
         if meta0.data.txn_id >= meta1.data.txn_id {
@@ -71,13 +71,13 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
         }
     }
 
-    fn commit_metadata(&mut self, slot: u8, txn_id: u64, root: u64, height: usize, order: usize, size: usize) -> Result<(), std::io::Error> {
+    fn commit_metadata(&self, slot: u8, txn_id: u64, root: u64, height: usize, order: usize, size: usize) -> Result<(), std::io::Error> {
         let mut metadata_page = new_metadata_page(root, txn_id, 0, height, order, size);
         self.write_metadata(slot, &mut metadata_page)?;
         Ok(())
     }
     
-    fn commit_metadata_with_object(&mut self, slot: u8, metadata: &Metadata) -> Result<(), std::io::Error> {
+    fn commit_metadata_with_object(&self, slot: u8, metadata: &Metadata) -> Result<(), std::io::Error> {
         let mut metadata_page = new_metadata_page_with_object(metadata);
         self.write_metadata(slot, &mut metadata_page)?;
         Ok(())
@@ -103,7 +103,7 @@ impl<S: PageStorage, K, V> NodeStorage<K, V> for FileStore<S>
             )
     }
 
-    fn write_node(&mut self, node: &Node<K, V>) -> Result<u64, anyhow::Error>
+    fn write_node(&self, node: &Node<K, V>) -> Result<u64, anyhow::Error>
     where
         K: KeyCodec,
         V: ValueCodec,
@@ -113,12 +113,12 @@ impl<S: PageStorage, K, V> NodeStorage<K, V> for FileStore<S>
         Ok(res)
     }
 
-    fn flush(&mut self) -> Result<(), std::io::Error> {
+    fn flush(&self) -> Result<(), std::io::Error> {
         self.store.flush()
     }
 
 
-    fn free_node(&mut self, id: u64) -> Result<(), std::io::Error> {
+    fn free_node(&self, id: u64) -> Result<(), std::io::Error> {
         self.store.free_page(id)
     }
 }

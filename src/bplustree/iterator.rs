@@ -12,7 +12,7 @@ pub struct BPlusTreeIter<'a, K, V, S>
           V: ValueCodec,
           S: NodeStorage<K, V>,
 {
-    pub(super) storage: &'a mut S,
+    pub(super) storage: &'a S,
     pub current_leaf: Option<Node<K, V>>,
     pub(super) index: usize,
     pub(super) start: K,
@@ -34,7 +34,7 @@ impl<'a, K: Debug, V: Debug, S> BPlusTreeIter<'a, K, V, S>
             V: ValueCodec + Clone,
 {
     pub fn new(
-        storage: &'a mut S,
+        storage: &'a S,
         root_id: NodeId,
         start: &K,
         end: &K,

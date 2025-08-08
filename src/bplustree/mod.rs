@@ -8,7 +8,7 @@ pub use node::Node;
 pub use node::NodeId;
 pub use iterator::BPlusTreeIter;
 pub use epoch::EpochManager;
-pub use crate::storage::CodecError;
+pub use crate::storage::codec::CodecError;
 pub use thiserror::Error;
 use anyhow::Result;
 
