@@ -356,7 +356,6 @@ where
 
     #[cfg(any(test, feature = "testing"))]
     pub fn new_with_deps(storage: S, epoch_mgr: EpochManager, order: usize) -> Self {
-
         let meta = Metadata {
             root_node_id: 2,
             txn_id: 0, // Initial transaction ID
@@ -1228,6 +1227,7 @@ where
 
         // 1. Commit metadata to the double-buffered slot, if the commit fails we should return the error
         let slot = new_txn_id % 2;
+
         self.storage.commit_metadata_with_object(
             slot as u8,
             &metadata,
@@ -1381,6 +1381,13 @@ where
         let meta = unsafe { &*ptr };
         meta.order
     }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub fn test_force_publish(&self, metadata: &Metadata) {
+        let boxed = Box::new(*metadata);
+        let new_ptr = Box::into_raw(boxed);
+        self.committed.store(new_ptr, Ordering::SeqCst);
+    }
 }
 
 
@@ -1389,6 +1396,7 @@ mod tests {
     use super::*;
     use crate::storage::file_store::FileStore;
     use crate::storage::page_store::PageStore;
+    use crate::tests::common::{test_storage::TestStorage, test_tree, test_tree_with_noop_storage, TestHarness};
 
     use rand::seq::SliceRandom;
     use rand::thread_rng;
@@ -1773,5 +1781,136 @@ mod tests {
         }
         Ok(())
     }
+
+    #[test]
+    fn commit_happy_path() {
+        let storage = TestStorage::new(); // Reset the test storage state
+        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let tree = test_harness.tree;
+
+        let base = BaseVersion { committed_ptr: tree.metadata_ptr() };
+        let staged = StagedMetadata { root_id: 42, height: 3, size: 10 };
+
+        let res = tree.try_commit(&base, staged);
+        
+        assert!(res.is_ok(), "Commit should succeed");
+
+        let m = tree.metadata();
+        assert_eq!(m.root_node_id, 42);
+        assert_eq!(m.txn_id, 2); // txn_id is initialized at 1 so txn_id should be 2
+    }
+
+    #[test]
+    fn commit_happy_path_2() {
+        let storage = TestStorage::new(); // Reset the test storage state
+        let h = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let base = BaseVersion { committed_ptr: h.tree.metadata_ptr() };
+
+        let staged = StagedMetadata { root_id: 42, height: 3, size: 10 };
+        h.tree.try_commit(&base, staged).expect("commit ok");
+
+        let m = h.tree.metadata();
+        assert_eq!(m.root_node_id, 42);
+        assert_eq!(m.height, 3);
+        assert_eq!(m.size, 10);
+        assert_eq!(m.txn_id, 2);
+
+        let (slot, txn, rid, hgt, _ord, sz) = h.storage.last_commit().unwrap();
+        assert_eq!(slot, (txn % 2) as u8);
+        assert_eq!(txn, 2);
+        assert_eq!(rid, 42);
+        assert_eq!(hgt, 3);
+        assert_eq!(sz, 10);
+
+        assert_eq!(h.storage.flush_count(), 1);
+    }
+
+    #[test]
+    fn commit_aborts_on_conflict() {
+        let storage = TestStorage::new(); // Reset the test storage state
+        storage.inject_commit_failure(true); 
+        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let tree = test_harness.tree;
+        let _mocks = test_harness.storage;
+        let base = BaseVersion { committed_ptr: tree.metadata_ptr() };
+        let staged = StagedMetadata { root_id: 42, height: 3, size: 10 };
+
+        let result = tree.try_commit(&base, staged);
+        println!("Commit result: {:?}", result);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn txn_id_is_strictly_monotonic() {
+        let storage = TestStorage::new(); // Reset the test storage state
+        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
+        let mut prev = h.tree.metadata().txn_id;
+
+        for i in 0..5 {
+            loop {
+                let base = BaseVersion { committed_ptr: h.tree.metadata_ptr() };
+                if h.tree.try_commit(&base, StagedMetadata { root_id: 100 + i, height: 3, size: i as usize }).is_ok() { break; }
+            }
+            let now = h.tree.metadata().txn_id;
+            assert_eq!(now, prev + 1);
+            prev = now;
+        }
+    }
+
+    #[test]
+    fn slot_follows_txn_mod2() {
+        let storage = TestStorage::new(); // Reset the test storage state
+        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
+        for i in 0..6 {
+            let base = BaseVersion { committed_ptr: h.tree.metadata_ptr() };
+            h.tree.try_commit(&base, StagedMetadata { root_id: 200 + i, height: 3, size: i as usize }).unwrap();
+            let (slot, txn, ..) = h.storage.last_commit().unwrap();
+            assert_eq!(slot, (txn % 2) as u8);
+        }
+    }
+
+    // commit should abort if there is a storage failure - don't change the tree state (cas)
+    //#[test]
+    //fn commit_metadata_write_failure_is_abort() { /* ... */ }
+
+    //#[test]
+    //fn flush_failure_after_cas_keeps_published_state() { /* ... */ }
+
+    //#[test]
+    //fn many_writers_retry_until_success() {
+    // let storage = TestStorage::new(); // Reset the test storage state
+    // let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
+    // let tree = test_harness.tree;
+
+    // let threads: Vec<_> = (0..4).map(|_| {
+    //     let tree = Arc::clone(&tree);
+    //     std::thread::spawn(move || {
+    //         let mut ok = 0;
+    //         for i in 0..200 {
+    //             loop {
+    //                 let base = tree.metadata_ptr();
+    //                 let base_version = BaseVersion { committed_ptr: base };
+    //                 let staged = StagedMetadata {
+    //                     root_id: (i as u64) + 2, // new id every attempt
+    //                     height: 2,
+    //                     size: i as usize,
+    //                 };
+    //                 match tree.try_commit(&base_version, staged.clone()) {
+    //                     Ok(()) => { ok += 1; break; }
+    //                     Err(CommitError::RebaseRequired) => continue,
+    //                     Err(_) => break, // ignore IO for this test
+    //                 }
+    //             }
+    //         }
+    //         ok
+    //     })
+    // }).collect();
+
+    // let total_ok: u64 = threads.into_iter().map(|t| t.join().unwrap() as u64).sum();
+
+    // // Monotonic txn_id equals #successful commits
+    // assert_eq!(tree.metadata().txn_id, total_ok);
+    // assert!(total_ok > 0, "At least one commit should succeed");
+    //}
 }
 

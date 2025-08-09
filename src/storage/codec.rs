@@ -97,6 +97,16 @@ impl KeyCodec for Vec<u8> {
     }
 }
 
+impl ValueCodec for Vec<u8> {
+    fn encode_value(&self) -> &[u8] {
+        self.as_slice()
+    }
+
+    fn decode_value(buf: &[u8]) -> Self {
+        buf.to_vec()
+    }
+}
+
 impl<K, V> NodeCodec<K, V> for DefaultNodeCodec
 where
     K: KeyCodec + Ord,

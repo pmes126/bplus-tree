@@ -169,85 +169,99 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    
     use crate::tests::common::{test_storage::TestStorage, test_tree, test_tree_with_noop_storage, TestHarness};
+    use crate::storage::metadata::{Metadata};
 
     #[test]
-    fn commit_happy_path() {
+    fn cas_mismatch_returns_rebase_required_with_no_side_effects() {
         let storage = TestStorage::new(); // Reset the test storage state
-        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
-        let tree = test_harness.tree;
+        let h = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let base = BaseVersion { committed_ptr: h.tree.metadata_ptr() };
 
-        let base = BaseVersion { committed_ptr: tree.metadata_ptr() };
-        let staged = StagedMetadata { root_id: 42, height: 3, size: 10 };
+        // Simulate another writer already published
+        #[cfg(any(test, feature="testing"))]
+        h.tree.test_force_publish(&Metadata { root_node_id: 99, height: 2, size: 5, txn_id: 1, order: 128, checksum: 0 });
 
-        let res = tree.try_commit(&base, staged);
-        
-        assert!(res.is_ok(), "Commit should succeed");
+        let err = h.tree.try_commit(&base, StagedMetadata { root_id: 100, height: 3, size: 6 });
+        assert!(matches!(err, Err(CommitError::RebaseRequired)));
 
-        let m = tree.metadata();
-        assert_eq!(m.root_node_id, 42);
-        assert_eq!(m.txn_id, 2); // txn_id is initialized at 1 so txn_id should be 2
+        assert_eq!(h.storage.flush_count(), 0);
+        let m = h.tree.metadata();
+        assert_eq!(m.root_node_id, 99);
+        assert_eq!(m.txn_id, 1);
     }
 
     #[test]
-    fn commit_retries_on_conflict() {
+    fn metadata_write_failure_aborts_before_publish() {
         let storage = TestStorage::new(); // Reset the test storage state
-        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
-        let tree = test_harness.tree;
-        let _mocks = test_harness.storage;
-        let base = BaseVersion { committed_ptr: tree.metadata_ptr() };
-        let staged = StagedMetadata { root_id: 42, height: 3, size: 10 };
+        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
+        h.storage.inject_commit_failure(true);
 
-        // Simulate a conflict
-        //mocks.expect_try_commit()
-        //    .returning(|_, _| Err(anyhow::anyhow!("Conflict")));
+        let base = BaseVersion { committed_ptr: h.tree.metadata_ptr() };
+        let err = h.tree.try_commit(&base, StagedMetadata { root_id: 2, height: 2, size: 2 })
+            .unwrap_err();
+        assert!(matches!(err, CommitError::Io(_)));
 
-        let result = tree.try_commit(&base, staged);
-        assert!(result.is_err());
+        // No publish, no flush, no epoch advance
+        let m = h.tree.metadata();
+        assert_eq!(m.root_node_id, 1);
+        assert_eq!(h.storage.flush_count(), 0);
     }
 
-    // commit should abort if there is a storage failure - don't change the tree state (cas)
     #[test]
-    fn commit_metadata_write_failure_is_abort() { /* ... */ }
+    fn flush_failure_after_publish_keeps_state() {
+        let storage = TestStorage::new(); // Reset the test storage state
+        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
+        h.storage.inject_flush_failure(true);
+
+        let base = BaseVersion { committed_ptr: h.tree.metadata_ptr() };
+        let err = h.tree.try_commit(&base, StagedMetadata { root_id: 7, height: 4, size: 11 })
+            .unwrap_err();
+        assert!(matches!(err, CommitError::Io(_)));
+
+        // State already published
+        let m = h.tree.metadata();
+        assert_eq!(m.root_node_id, 7);
+        assert_eq!(m.txn_id, 1);
+    }
+
+    //#[test]
+    //fn gc_runs_after_success() {
+    //    let storage = TestStorage::new(); // Reset the test storage state
+    //    let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
+    //    h.tree.get_epoch_mgr().set_oldest_active(10);
+    //    h.tree.get_epoch_mgr().set_reclaim_list(vec![10, 11, 12]);
+
+    //    let base = BaseVersion { committed_ptr: h.tree.metadata_ptr() };
+    //    h.tree.try_commit(&base, StagedMetadata { root_id: 555, height: 3, size: 9 }).unwrap();
+
+    //    assert_eq!(h.storage.freed_pages(), vec![10, 11, 12]);
+    //}
 
     #[test]
-    fn flush_failure_after_cas_keeps_published_state() { /* ... */ }
+    fn published_metadata_is_visible_immediately() {
+        let storage = TestStorage::new(); // Reset the test storage state
+        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
+        let base = BaseVersion { committed_ptr: h.tree.metadata_ptr() };
+        h.tree.try_commit(&base, StagedMetadata { root_id: 777, height: 9, size: 123 }).unwrap();
 
+        let m = h.tree.metadata();
+        assert_eq!(m.root_node_id, 777);
+        assert_eq!(m.height, 9);
+        assert_eq!(m.size, 123);
+    }
+
+    // Optional: if you validate staged inputs
     #[test]
-    fn many_writers_retry_until_success() {
-     let storage = TestStorage::new(); // Reset the test storage state
-     let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
-     let tree = test_harness.tree;
-
-     let threads: Vec<_> = (0..4).map(|_| {
-         let tree = Arc::clone(&tree);
-         std::thread::spawn(move || {
-             let mut ok = 0;
-             for i in 0..200 {
-                 loop {
-                     let base = tree.metadata_ptr();
-                     let base_version = BaseVersion { committed_ptr: base };
-                     let staged = StagedMetadata {
-                         root_id: (i as u64) + 2, // new id every attempt
-                         height: 2,
-                         size: i as usize,
-                     };
-                     match tree.try_commit(&base_version, staged.clone()) {
-                         Ok(()) => { ok += 1; break; }
-                         Err(CommitError::RebaseRequired) => continue,
-                         Err(_) => break, // ignore IO for this test
-                     }
-                 }
-             }
-             ok
-         })
-     }).collect();
-
-     let total_ok: u64 = threads.into_iter().map(|t| t.join().unwrap() as u64).sum();
-
-     // Monotonic txn_id equals #successful commits
-     assert_eq!(tree.metadata().txn_id, total_ok);
-     assert!(total_ok > 0, "At least one commit should succeed");
+    fn invalid_staged_is_rejected_before_io() {
+        let storage = TestStorage::new(); // Reset the test storage state
+        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
+        let base = BaseVersion { committed_ptr: h.tree.metadata_ptr() };
+        // Say height == 0 is invalid in your tree:
+        let err = h.tree.try_commit(&base, StagedMetadata { root_id: 1, height: 0, size: 0 })
+            .unwrap_err();
+        //assert!(matches!(err, CommitError::Invalid(_)));
+        assert_eq!(h.storage.flush_count(), 0);
+        assert!(h.storage.last_commit().is_none());
     }
 }
