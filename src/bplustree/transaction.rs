@@ -1,9 +1,10 @@
-use std::fmt::Debug;
-use crate::bplustree::tree::{SharedBPlusTree, BaseVersion, StagedMetadata};
+use crate::bplustree::tree::{SharedBPlusTree, BaseVersion, StagedMetadata, CommitError};
 use crate::storage::ValueCodec;
 use crate::storage::KeyCodec;
 use crate::storage::{NodeStorage, MetadataStorage};
 use anyhow::Result;
+use std::fmt::Debug;
+use std::sync::Arc;
 
 enum WriteOp<K, V> {
     Insert(K, V),
@@ -39,7 +40,6 @@ where
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
     pub fn new(tree: SharedBPlusTree<K, V, S>) -> Self {
-
         Self {
             tree: tree.clone(),
             tree_base_version: BaseVersion { committed_ptr: tree.get_metadata_ptr() }, // Store initial root ID for reference
@@ -170,43 +170,40 @@ where
 mod tests {
     use super::*;
     
-    use crate::tests::common::{TestStorage, TestEpoch, test_tree};
-    use mockall::{mock, predicate::*};
-    
-    //mock! {
-    //}
-    //
-    //fn test_tree() -> (SharedBPlusTree<u64, String, MockStorage>, MockStorage) {
-    //    // Create a mock storage and a shared BPlusTree instance for testing
-    //    let storage = MockStorage::new();
-    //    let tree = SharedBPlusTree::new(storage.clone());
-    //    (tree, storage)
-    //}
+    use crate::tests::common::{test_storage::TestStorage, test_tree, test_tree_with_noop_storage, TestHarness};
 
     #[test]
     fn commit_happy_path() {
-        let (tree, mocks) = test_tree();
-        let base = BaseVersion { committed_ptr: tree.committed_ptr() };
+        let storage = TestStorage::new(); // Reset the test storage state
+        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let tree = test_harness.tree;
+
+        let base = BaseVersion { committed_ptr: tree.metadata_ptr() };
         let staged = StagedMetadata { root_id: 42, height: 3, size: 10 };
 
-        tree.try_commit(base, staged).unwrap();
+        let res = tree.try_commit(&base, staged);
+        
+        assert!(res.is_ok(), "Commit should succeed");
 
         let m = tree.metadata();
-        assert_eq!(m.root_id, 42);
-        assert_eq!(m.txn_id, 1);
+        assert_eq!(m.root_node_id, 42);
+        assert_eq!(m.txn_id, 2); // txn_id is initialized at 1 so txn_id should be 2
     }
 
     #[test]
     fn commit_retries_on_conflict() {
-        let (tree, mocks) = test_tree();
-        let base = BaseVersion { committed_ptr: tree.committed_ptr() };
+        let storage = TestStorage::new(); // Reset the test storage state
+        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let tree = test_harness.tree;
+        let _mocks = test_harness.storage;
+        let base = BaseVersion { committed_ptr: tree.metadata_ptr() };
         let staged = StagedMetadata { root_id: 42, height: 3, size: 10 };
 
         // Simulate a conflict
-        mocks.expect_try_commit()
-            .returning(|_, _| Err(anyhow::anyhow!("Conflict")));
+        //mocks.expect_try_commit()
+        //    .returning(|_, _| Err(anyhow::anyhow!("Conflict")));
 
-        let result = tree.try_commit(base, staged);
+        let result = tree.try_commit(&base, staged);
         assert!(result.is_err());
     }
 
@@ -219,7 +216,9 @@ mod tests {
 
     #[test]
     fn many_writers_retry_until_success() {
-     let (tree, _h) = test_tree();
+     let storage = TestStorage::new(); // Reset the test storage state
+     let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
+     let tree = test_harness.tree;
 
      let threads: Vec<_> = (0..4).map(|_| {
          let tree = Arc::clone(&tree);
@@ -227,13 +226,14 @@ mod tests {
              let mut ok = 0;
              for i in 0..200 {
                  loop {
-                     let base = tree.committed_ptr();
+                     let base = tree.metadata_ptr();
+                     let base_version = BaseVersion { committed_ptr: base };
                      let staged = StagedMetadata {
                          root_id: (i as u64) + 2, // new id every attempt
                          height: 2,
-                         size: i as u64,
+                         size: i as usize,
                      };
-                     match tree.try_commit(base, staged.clone()) {
+                     match tree.try_commit(&base_version, staged.clone()) {
                          Ok(()) => { ok += 1; break; }
                          Err(CommitError::RebaseRequired) => continue,
                          Err(_) => break, // ignore IO for this test
