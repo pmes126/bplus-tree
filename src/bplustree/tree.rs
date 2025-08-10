@@ -1259,17 +1259,10 @@ where
             order: current.order,
         };
 
-        // 1. Commit metadata to the double-buffered slot, if the commit fails we should return the error
-        let slot = new_txn_id % 2;
-
-        self.storage.commit_metadata_with_object(
-            slot as u8,
-            &metadata,
-        )?;
-        // 2. Prepare new metadata box and pointer
+        // 1. Prepare new metadata box and pointer
         let boxed = Box::new(metadata);
         let new_ptr = Box::into_raw(boxed);
-        // 3. Atomically commit metadata pointer
+        // 2. Atomically commit metadata pointer
         let result = self.committed.compare_exchange(
             expected as *mut Metadata,
             new_ptr,
@@ -1278,9 +1271,24 @@ where
         );
 
         match result {
-            // ✅ commit has succeeded 
+            // ✅ cas has succeeded, proceed with commit to storage
             Ok(old_ptr) => {
+                // 3. Commit metadata to the double-buffered slot, TODO: if this commit fails we
+                //    are in a bad state, we should handle this case 
+                let slot = new_txn_id % 2;
+
+                let res = self.storage.commit_metadata_with_object(
+                    slot as u8,
+                    &metadata,
+                );
+                if let Err(e) = res {
+                    // ❌ commit failed, restore old metadata
+                    unsafe { drop(Box::from_raw(new_ptr)); } // Discard new metadata
+                    self.committed.store(current_ptr, Ordering::Release); // Restore old metadata
+                    return Err(CommitError::Io(e));
+                }
                 self.storage.flush()?; // flush to disk
+                // 4. Advance the epoch manager
                 self.epoch_mgr.advance();
                 let safe_epoch = self.epoch_mgr.oldest_active();
                 let reclaimed = self.epoch_mgr.reclaim(safe_epoch);
