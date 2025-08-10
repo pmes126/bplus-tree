@@ -78,7 +78,7 @@ pub enum CommitError {
     #[error("Commit aborted due to codec error: {0}")]
     Codec(#[from] CodecError),
 
-    #[error("Commit aborted due to root mismatch")]
+    #[error("Commit aborted due to root mismatch, try rebasing")]
     RebaseRequired,
 }
 
@@ -211,6 +211,11 @@ where
         Ok(write_res)
     }
 
+    pub fn insert(&self, key: K, value: V) -> Result<WriteResult> {
+        let root_id = self.inner.get_root_id();
+        self.insert_with_root(key, value, root_id)
+    }
+
     pub fn delete_with_root(&self, key: &K, root_id: NodeId) -> Result<WriteResult> {
         let mut collector = TransactionTracker::new();
         let delete_res = self.inner.delete_inner(key, root_id, &mut collector)?;
@@ -230,9 +235,21 @@ where
     pub fn search(&self, key: &K) -> Result<Option<V>> {
         self.inner.search(key)
     }
+    
+    pub fn search_with_root(&self, key: &K, root_id: NodeId) -> Result<Option<V>> {
+        self.inner.search_inner(key, root_id)
+    }
 
     pub fn get_root_id(&self) -> NodeId {
         self.inner.get_root_id()
+    }
+    
+    pub fn get_height(&self) -> usize {
+        self.inner.get_height()
+    }
+
+    pub fn get_size(&self) -> usize {
+        self.inner.get_size()
     }
 
     pub fn get_txn_id(&self) -> NodeId {
@@ -259,6 +276,10 @@ where
     pub fn get_metadata_ptr(&self) -> *const Metadata {
         self.inner.committed.load(Ordering::SeqCst)
     }
+    
+    pub fn get_metadata(&self) -> &Metadata {
+        unsafe { &*self.inner.committed.load(Ordering::Acquire) }
+    }
 
     pub fn arc(&self) -> Arc<BPlusTree<K, V, S>> {
         Arc::clone(&self.inner)
@@ -268,6 +289,19 @@ where
         Self {
             inner: Arc::clone(&self.inner),
         }
+    }
+
+    pub fn traverse(&self) -> Result<Vec<(K, V)>> {
+        self.inner.traverse()
+    }
+
+    pub fn search_in_range_at_root(&self, root_id: NodeId, start: &K, end: &K) -> Result<Option<BPlusTreeIter<K, V, S>>> {
+        self.inner.search_range(root_id, start, end)
+    }
+
+    pub fn search_in_range(&self, start: &K, end: &K) -> Result<Option<BPlusTreeIter<K, V, S>>> {
+        let root_id = self.inner.get_root_id();
+        self.inner.search_range(root_id, start, end)
     }
 }
 
@@ -1247,7 +1281,7 @@ where
             // ✅ commit has succeeded 
             Ok(old_ptr) => {
                 self.storage.flush()?; // flush to disk
-                self.epoch_mgr.advance(); // make version visible
+                self.epoch_mgr.advance();
                 let safe_epoch = self.epoch_mgr.oldest_active();
                 let reclaimed = self.epoch_mgr.reclaim(safe_epoch);
                 for pid in reclaimed {
@@ -1394,13 +1428,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::file_store::FileStore;
-    use crate::storage::page_store::PageStore;
     use crate::tests::common::{test_storage::TestStorage, test_tree, test_tree_with_noop_storage, TestHarness};
-
-    use rand::seq::SliceRandom;
-    use rand::thread_rng;
-    use rand::Rng;
 
     pub struct DummySink;
     impl TxnTracker for DummySink {
@@ -1414,372 +1442,6 @@ mod tests {
         }
         fn record_staged_height(&mut self, _height: usize) {
         }
-    }
-    #[test]
-    fn write_and_read_value() -> Result<(), anyhow::Error> {
-        let file_path = "test_flatfile.bin";
-        
-        let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-        let order = 3; // B+ tree order
-        let tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
-        let key = 1u64;
-        let value = "a".to_string();
-        let mut dummy_track = DummySink{};
-        let res = tree.insert(key, value.clone(), &mut dummy_track);
-        assert!(res.is_ok(), "Node should be inserted successfully");
-        let res = tree.search_inner(&key, res?)?;
-        assert!(res.is_some(), "Node should be read successfully");
-        assert_eq!(res.unwrap(), value, "Value should match the inserted value");
-        Ok(())
-    }
-    
-    #[test]
-    fn write_and_read_values_multiple() -> Result<(), anyhow::Error> {
-        let file_path = "test_flatfile.bin";
-        
-        let order = 20; // B+ tree order
-        let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-        let tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
-        let mut root_id = tree.get_root_id();
-        let mut dummy_track = DummySink{};
-        for i in 0..order - 1 {
-            let key = i as u64;
-            let value = format!("value_{}", i);
-            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
-            assert!(res.is_ok(), "Value should be inserted successfully");
-            root_id = res.unwrap(); // Update root_id after each insert
-            let res = tree.search_inner(&key, root_id)?;
-            assert!(res.is_some(), "Value should be read successfully");
-            assert_eq!(res.unwrap(), value, "Value should match the inserted value");
-        }
-        for i in 0..order - 1 {
-            let key = i as u64;
-            let value = format!("value_{}", i);
-            let res = tree.search_inner(&key, root_id)?;
-            assert!(res.is_some(), "Value should be read successfully");
-            assert_eq!(res.unwrap(), value, "Value should match the inserted value");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn write_and_read_values_with_overflow() -> Result<(), anyhow::Error> {
-        let file_path = "test_flatfile_2.bin";
-        
-        let order = 3; // B+ tree order
-        let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-        let tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
-        let multiplier = 1000; // Number of times to insert times the order - this will cause
-        let mut dummy_track = DummySink{};
-        let mut root_id = tree.get_root_id();
-        // overflows 
-        for i in 0..order*multiplier {
-            let key = i as u64;
-            let value = format!("value_{}", i);
-            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
-            assert!(res.is_ok(), "Value should be inserted successfully");
-            root_id = res.unwrap(); // Update root_id after each insert
-            let res = tree.search_inner(&key, root_id)?;
-            assert!(res.is_some(), "Value should be read successfully");
-            assert_eq!(res.unwrap(), value, "Value should match the inserted value");
-        }
-        for i in 0..order*multiplier {
-            let key = i as u64;
-            let value = format!("value_{}", i);
-            let res = tree.search_inner(&key, root_id)?;
-            assert!(res.is_some(), "Value should be read successfully");
-            assert_eq!(res.unwrap(), value, "Value should match the inserted value");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn write_and_delete_lockstep() -> Result<(), anyhow::Error> {
-        let file_path = "test_lockstep.bin";
-        let order = 3; // B+ tree order
-        let multiplier = 2; // Number of times to insert and delete
-        let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-        let tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
-        let mut root_id = tree.get_root_id();
-        let mut dummy_track = DummySink{};
-        let bound = order as u64*multiplier;
-        for i in 0..bound {
-            let key = i;
-            let value = format!("value_{}", i);
-            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
-            assert!(res.is_ok(), "Node should be inserted successfully");
-            root_id = res.unwrap(); // Update root_id after each insert
-        }
-            tree.traverse()?;
-        for i in 0..bound {
-            let key = i;
-            let res = tree.delete_inner(&key, root_id, &mut dummy_track)?;
-            let DeleteResult::Deleted(res) = res else {
-                return Err(TreeError::BackendAny("Expected DeleteResult::Deleted".to_string()).into());
-            };
-            
-            root_id = res; // Update root_id after each delete
-            let res = tree.search_inner(&key, root_id)?;
-            assert!(res.is_none(), "Key {} should be deleted successfully res none {}", key, res.is_none());
-
-            let mut rng = thread_rng();
-            if bound == i + 1 {
-                return Ok(()); // No more keys to search
-            }
-            let key_rand = rng.gen_range(i+1..bound);
-            let res = tree.search_inner(&(key_rand), root_id)?;
-            assert!(res.is_some(), "Key {} should be present res some {}", key_rand, res.is_some());
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn write_and_delete_values() -> Result<(), anyhow::Error> {
-        let file_path = "test_flatfile_3.bin";
-        
-        let order = 10; // B+ tree order
-        let multiplier = 200_u64; // Number of times to insert and delete
-        let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-        let tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
-        let mut root_id = tree.get_root_id();
-        let mut dummy_track = DummySink{};
-        // Inserting values
-        for i in 0..order as u64*multiplier {
-            let key = i;
-            let value = format!("value_{}", i);
-            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
-            assert!(res.is_ok(), "Node should be inserted successfully");
-            root_id = res?;
-        }
-        // Deleting all values
-        for i in 0..order as u64*multiplier {
-            let key = i;
-            let res = tree.delete_inner(&key, root_id, &mut dummy_track)?;
-            let DeleteResult::Deleted(res) = res else {
-                return Err(TreeError::BackendAny("Expected DeleteResult::Deleted".to_string()).into());
-            };
-            root_id = res; // Update root_id after each delete
-            let res = tree.search(&key)?;
-            assert!(res.is_none(), "Key {} should be deleted successfully res none {}", key, res.is_none());
-        }
-        // Check that the tree is empty after all deletions
-        let res = tree.traverse()?;
-
-        for i in 0..order as u64*multiplier {
-            let key = i;
-            let res = tree.search(&key)?;
-            assert!(res.is_none(), "Key {} should be deleted successfully res none {}", key, res.is_none());
-        }
-        assert!(res.is_empty(), "Tree should be empty after all deletions");
-        Ok(())
-    }
-
-    #[test]
-    fn write_and_delete_values_random() -> Result<(), anyhow::Error> {
-        let file_path = "test_flatfile_4.bin";
-        
-        let order = 10; // B+ tree order
-        let multiplier = 200_u64; // Number of times to insert and delete
-        //let order = 3; // B+ tree order
-        //let multiplier = 2; // Number of times to insert and delete
-        let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-        let tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
-        let mut dummy_track = DummySink{};
-        let mut root_id = tree.get_root_id();
-        for i in 0..order as u64*multiplier {
-            let key = i;
-            let value = format!("value_{}", i);
-            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
-            assert!(res.is_ok(), "Node should be inserted successfully");
-            root_id = res?; // Update root_id after each insert
-        }
-        let mut values_to_delete: Vec<u64> = (0..(order as u64)*multiplier).collect();
-        let mut rng = thread_rng();
-        values_to_delete.shuffle(&mut rng);
-
-        for i in values_to_delete {
-            let key = i;
-            let res = tree.delete_inner(&key, root_id, &mut dummy_track)?;
-            let DeleteResult::Deleted(res) = res else {
-                return Err(TreeError::BackendAny("Expected DeleteResult::Deleted".to_string()).into());
-            };
-            root_id = res; // Update root_id after each delete
-            let res = tree.search(&key)?;
-            assert!(res.is_none(), "Node should be deleted successfully");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
-        let file_path = "test_flatfile_5.bin";
-        let mut track = TransactionTracker::new();
-        
-        let order = 3;
-        let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-        let tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
-        let mut root_id = tree.get_root_id();
-        let iterations = order * 10;
-        for i in 0..order - 1 {
-            let key = i as u64;
-            let value = format!("value_{}", i);
-            let res = tree.insert_inner(key, value.clone(), root_id, &mut track);
-            assert!(res.is_ok(), "Node should be inserted successfully");
-            root_id = res?;
-        }
-        tree.commit(root_id, track.staged_height.unwrap(), track.staged_size.unwrap())?;
-        assert_eq!(tree.get_height(), 1, "Height should be 1 after inserting {} nodes", order-1);
-        for i in 0..order - 1 {
-            let key = i as u64;
-            let res = tree.delete_inner(&key, root_id, &mut track)?;
-            let DeleteResult::Deleted(res) = res else {
-                return Err(TreeError::BackendAny("Expected DeleteResult::Deleted".to_string()).into());
-            };
-            root_id = res; // Update root_id after each delete
-            tree.commit(root_id, track.staged_height.unwrap(), track.staged_size.unwrap())?;
-        }
-        assert_eq!(tree.get_height(), 1, "Height should remain 1 after deleting all nodes");
-        for i in 0..iterations {
-            let key = i as u64;
-            let value = format!("value_{}", i);
-            let res = tree.insert_inner(key, value.clone(), root_id, &mut track);
-            assert!(res.is_ok(), "Node should be inserted successfully");
-            root_id = res?;
-        }
-        tree.commit(root_id, track.staged_height.unwrap(), track.staged_size.unwrap())?;
-        for i in 0..iterations {
-            let key = i as u64;
-            let res = tree.delete_inner(&key, root_id, &mut track)?;
-            let DeleteResult::Deleted(res) = res else {
-                return Err(TreeError::BackendAny("Expected DeleteResult::Deleted".to_string()).into());
-            };
-            root_id = res; // Update root_id after each delete
-        }
-        tree.commit(root_id, track.staged_height.unwrap(), track.staged_size.unwrap())?;
-        assert_eq!(tree.get_height(), 1, "Height should remain 1 after deleting all nodes");
-        Ok(())
-    }
-
-    #[test]
-    fn insert_duplicate_keys_should_overwrite_value() -> Result<()> {
-        let file_path = "test_duplicates.bin";
-        let order = 4;
-        let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-        let tree = BPlusTree::<String, String, FileStore<PageStore>>::new(store, order)?;
-        let mut root_id = tree.get_root_id();
-        let mut dummy_track = DummySink{};
-
-        for i in 0..order {
-            let key = format!("key_{}", i);
-            let value = format!("value_{}", i);
-            let value_updated = format!("value_upd_{}", i);
-            let res = tree.insert_inner(key.clone(), value.clone(), root_id, &mut dummy_track);
-            assert!(res.is_ok(), "Node should be inserted successfully");
-            root_id = res?;
-            assert_eq!(tree.search_inner(&key, root_id)?, Some(value.clone()), "Value should be inserted successfully");
-            let res = tree.insert_inner(key.clone(), value_updated.clone(), root_id, &mut dummy_track);
-            assert!(res.is_ok(), "Node should be inserted successfully");
-            root_id = res?;
-            assert_eq!(tree.search_inner(&key, root_id)?, Some(value_updated), "Value should be updated for duplicate key");
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn commit_and_load_tree() -> Result<()> {
-        let file_path = "test_commit_load.bin";
-        let order = 4;
-        let multiplier = 10; // Number of times to insert
-        let mut track = TransactionTracker::new();
-        let iterations = order * multiplier;
-        {
-            let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-            let tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
-            let mut root_id = tree.get_root_id();
-
-            for i in 0..iterations {
-                let key = i as u64;
-                let value = format!("value_{}", i);
-                let res = tree.insert_inner(key, value.clone(), root_id, &mut track);
-                assert!(res.is_ok(), "Node should be inserted successfully");
-                root_id = res?;
-            }
-
-            // Commit the changes
-            assert!(tree.get_root_id() != root_id, "Root ID should be unchanged before commit {}", tree.get_root_id());
-            println!("Committing tree with root ID: {}", root_id);
-            tree.commit(root_id, track.staged_height.unwrap(), track.staged_size.unwrap())?;
-            assert!(tree.get_root_id() == root_id, "Root ID should be correct after commit {}", tree.get_root_id());
-            for i in 0..iterations {
-                let key = i as u64;
-                let res = tree.search(&key)?;
-                assert!(res.is_some(), "Loaded tree should have the key {}", key);
-            }
-        }
-        {
-            let store_load = FileStore::<PageStore>::new(file_path)?;
-            // Load the tree from storage
-            let loaded_tree = BPlusTree::<u64, String, FileStore<PageStore>>::load(store_load)?;
-            let root_id = loaded_tree.get_root_id();
-            assert!(root_id != 0, "Loaded tree should have a valid root ID");
-            // Verify the loaded tree
-            for i in 0..iterations {
-                let key = i as u64;
-                let value = format!("value_{}", i);
-                let res = loaded_tree.search(&key)?;
-                assert!(res.is_some(), "Loaded tree should have the key {}", key);
-                assert_eq!(loaded_tree.search(&key)?, Some(value), "Loaded tree should have the correct value for key {}", key);
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn range_search_test() -> Result<()> {
-        let file_path = "test_range_scan.bin";
-        let order = 4;
-        let multiplier = 20; // Number of times to insert
-        let mut track = TransactionTracker::new();
-        let iterations = order * multiplier;
-        {
-            let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-            let tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
-            let mut root_id = tree.get_root_id();
-
-            for i in 0..iterations {
-                let key = i as u64;
-                let value = format!("value_{}", i);
-                let res = tree.insert_inner(key, value.clone(), root_id, &mut track);
-                assert!(res.is_ok(), "Node should be inserted successfully");
-                root_id = res?;
-            }
-            tree.commit(root_id, track.staged_height.unwrap(), track.staged_size.unwrap())?;
-            assert!(tree.get_root_id() == root_id, "Root ID should be correct after commit {}", tree.get_root_id());
-
-            let _ = tree.traverse()?;
-            // Perform range search
-            let start = 0;
-            let end = iterations as u64 - 1;
-            let res = tree.search_range(root_id, &start, &end)?;
-            assert!(res.is_some(), "Range search should be successful");
-            for (i,  value) in res.unwrap().enumerate() {
-                let (key, val) = value?;
-                
-                assert_eq!(key, i as u64, "Key should match the index in range search");
-                assert_eq!(val, format!("value_{}", i), "Value should match the inserted value in range search");
-            }
-
-            let start_rand = rand::thread_rng().gen_range(0..(iterations/2)  as u64);
-            let end_rand = rand::thread_rng().gen_range(start_rand..iterations as u64);
-            let res = tree.search_range(root_id, &start_rand, &end_rand)?;
-            for (i, value) in res.unwrap().enumerate() {
-                let (key, val) = value?;
-                assert_eq!(key, start_rand + i as u64, "Key should match the index in range search");
-                assert_eq!(val, format!("value_{}", start_rand + i as u64), "Value should match the inserted value in range search");
-            }
-        }
-        Ok(())
     }
 
     #[test]

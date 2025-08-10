@@ -3,6 +3,4 @@
 pub(crate) mod storage;
 pub(crate) mod bplustree;
 pub(crate) mod layout;
-#[cfg(any(test, feature = "testing"))]
-pub mod tests;
-
+pub(crate) mod tests;
