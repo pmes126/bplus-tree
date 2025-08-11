@@ -59,3 +59,26 @@ where
         storage, 
     }
 }
+
+#[cfg(any(test, feature = "testing"))]
+pub fn test_tree_with_epoch<K, V, S>(
+    storage: S,
+    epoch_manager: EpochManager,
+    order: usize,
+) -> TestHarness<K, V, S>
+where
+    K: KeyCodec + Clone + Ord + std::fmt::Debug + 'static,
+    V: ValueCodec + Clone + std::fmt::Debug + 'static,
+    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + Clone + 'static,
+{
+    let tree = Arc::new(BPlusTree::new_with_deps(
+        storage.clone(),
+        epoch_manager,
+        order, // order
+    ));
+
+    TestHarness {
+        tree,
+        storage, 
+    }
+}

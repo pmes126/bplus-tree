@@ -169,7 +169,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::common::{test_storage::TestStorage, test_tree, test_tree_with_noop_storage, TestHarness};
+    use crate::tests::common::{test_storage::TestStorage, test_tree};
     use crate::storage::metadata::{Metadata};
 
     #[test]
@@ -226,18 +226,19 @@ mod tests {
         assert_eq!(m.txn_id, 2);
     }
 
-    //#[test]
-    //fn gc_runs_after_success() {
-    //    let storage = TestStorage::new(); // Reset the test storage state
-    //    let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
-    //    h.tree.get_epoch_mgr().set_oldest_active(10);
-    //    h.tree.get_epoch_mgr().set_reclaim_list(vec![10, 11, 12]);
+    #[test]
+    fn gc_runs_after_success() {
+        let storage = TestStorage::new();
+        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
+        // Epoch will be advance after commit
+        h.tree.get_epoch_mgr().set_oldest_active(1);
+        h.tree.get_epoch_mgr().set_reclaim_list(1, vec![10, 11, 12]);
 
-    //    let base = BaseVersion { committed_ptr: h.tree.metadata_ptr() };
-    //    h.tree.try_commit(&base, StagedMetadata { root_id: 555, height: 3, size: 9 }).unwrap();
+        let base = BaseVersion { committed_ptr: h.tree.metadata_ptr() };
+        h.tree.try_commit(&base, StagedMetadata { root_id: 555, height: 3, size: 9 }).unwrap();
 
-    //    assert_eq!(h.storage.freed_pages(), vec![10, 11, 12]);
-    //}
+        assert_eq!(h.storage.freed_pages(), vec![10, 11, 12]);
+    }
 
     #[test]
     fn published_metadata_is_visible_immediately() {
@@ -251,18 +252,4 @@ mod tests {
         assert_eq!(m.height, 9);
         assert_eq!(m.size, 123);
     }
-
-    // Optional: maybe validate staged inputs?
-    //#[test]
-    //fn invalid_staged_is_rejected_before_io() {
-    //    let storage = TestStorage::new(); // Reset the test storage state
-    //    let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
-    //    let base = BaseVersion { committed_ptr: h.tree.metadata_ptr() };
-    //    // Say height == 0 is invalid in your tree:
-    //    let err = h.tree.try_commit(&base, StagedMetadata { root_id: 1, height: 0, size: 0 })
-    //        .unwrap_err();
-    //    //assert!(matches!(err, CommitError::Invalid(_)));
-    //    assert_eq!(h.storage.flush_count(), 0);
-    //    assert!(h.storage.last_commit().is_none());
-    //}
 }
