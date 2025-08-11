@@ -8,7 +8,7 @@ pub type Epoch = u64;
 
 pub const COMMIT_COUNT: u64 = 10; // Number of commits before a new epoch is created
 
-/// Tracks active reader epochs and deferred_pages reclamation.
+// Tracks active reader epochs and deferred_pages reclamation.
 #[derive(Debug)]
 pub struct EpochManager {
     global_epoch: AtomicU64,
@@ -33,21 +33,21 @@ impl EpochManager {
         })
     }
 
-    /// Advance the epoch (typically called on commit)
+    // Advance the epoch (typically called on commit)
     pub fn advance(&self) -> u64 {
-        self.global_epoch.fetch_add(1, Ordering::SeqCst)
+        self.global_epoch.fetch_add(1, Ordering::SeqCst) + 1
     }
     
     pub fn current(&self) -> u64 {
         self.global_epoch.load(Ordering::SeqCst)
     }
 
-    /// Register a page for future reclamation
+    // Register a page for future reclamation
     pub fn add_reclaim_candidate(&self, epoch: u64, page_id: u64) {
         self.deferred_pages.lock().unwrap().entry(epoch).or_default().push(page_id);
     }
 
-    /// Reader pins itself to current epoch
+    // Reader pins itself to current epoch
     pub fn pin(self: &Arc<Self>) -> ReaderGuard {
         let epoch = self.global_epoch.load(Ordering::Relaxed); // Get the current epoch, no need for SeqCst here
         let tid = std::thread::current().id();
@@ -60,24 +60,24 @@ impl EpochManager {
         }
     }
 
-    /// Reader unpins itself
+    // Reader unpins itself
     pub fn unpin(&self) {
         let tid = std::thread::current().id();
         self.active_readers.lock().unwrap().remove(&tid);
     }
 
-    /// Unpin for a specific thread ID
+    // Unpin for a specific thread ID
     pub fn unpin_by_id(&self, tid: ThreadId) {
         self.active_readers.lock().unwrap().remove(&tid);
     }
 
-    /// Return the minimum epoch still pinned
+    // Return the minimum epoch still pinned
     pub fn oldest_active(&self) -> Epoch {
         let readers = self.active_readers.lock().unwrap();
         readers.values().copied().min().unwrap_or(self.global_epoch.load(Ordering::Relaxed))
     }
 
-    /// Reclaim all pages older than or equal to a safe epoch
+    // Reclaim all pages older than or equal to a safe epoch
     pub fn reclaim(&self, safe_epoch: Epoch) -> Vec<NodeId> {
         let mut reclaimed = vec![];
         let to_reclaim: Vec<u64> = self.deferred_pages.lock().unwrap()
@@ -93,10 +93,41 @@ impl EpochManager {
         reclaimed
     }
 
-    /// Get the current epoch for the current thread
+    // Get the current epoch for the current thread
     pub fn get_current_thread_epoch(&self) -> Option<Epoch> {
         let tid = std::thread::current().id();
         self.active_readers.lock().unwrap().get(&tid).copied()
+    }
+
+    #[cfg(test)]
+    pub fn get_active_readers(&self) -> HashMap<ThreadId, Epoch> {
+        self.active_readers.lock().unwrap().clone()
+    }
+
+    #[cfg(test)]
+    pub fn get_deferred_pages(&self) -> BTreeMap<u64, Vec<NodeId>> {
+        self.deferred_pages.lock().unwrap().clone()
+    }
+
+    #[cfg(test)]
+    pub fn get_global_epoch(&self) -> Epoch {
+        self.global_epoch.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub fn set_oldest_active(&self, epoch: Epoch) {
+        // This is for testing purposes to set a specific oldest active epoch
+        let mut readers = self.active_readers.lock().unwrap();
+        for (_, e) in readers.iter_mut() {
+            *e = epoch;
+        }
+    }
+
+    #[cfg(test)]
+    pub fn set_reclaim_list(&self, epoch: u64, pages: Vec<NodeId>) {
+        // This is for testing purposes to set a specific reclaim list
+        let mut deferred = self.deferred_pages.lock().unwrap();
+        deferred.insert(epoch, pages);
     }
 }
 
@@ -146,5 +177,25 @@ mod tests {
 
         let reclaimed = mgr.reclaim(safe);
         assert!(reclaimed.len() == epochs.len() - 1);
+    }
+
+    #[test]
+    fn test_epoch_manager_basic() {
+        let mgr = EpochManager::new_shared();
+        let initial_epoch = mgr.current();
+
+        // Pin a reader
+        let guard = mgr.pin();
+        assert_eq!(guard.epoch(), initial_epoch);
+        assert_eq!(mgr.get_current_thread_epoch(), Some(initial_epoch));
+
+        // Advance the epoch
+        let new_epoch = mgr.advance();
+        assert_eq!(new_epoch, initial_epoch + 1);
+        assert_eq!(mgr.current(), new_epoch);
+
+        // Unpin the reader
+        drop(guard);
+        assert_eq!(mgr.get_current_thread_epoch(), None);
     }
 }

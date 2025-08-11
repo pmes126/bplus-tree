@@ -256,10 +256,6 @@ where
         self.inner.txn_id.load(Ordering::SeqCst)
     }
 
-    pub fn get_epoch_mgr(&self) -> Arc<EpochManager> {
-        Arc::clone(&self.inner.epoch_mgr)
-    }
-
     pub fn flush(&mut self) -> Result<()> {
         self.inner.storage.flush()?;
         Ok(())
@@ -302,6 +298,10 @@ where
     pub fn search_in_range(&self, start: &K, end: &K) -> Result<Option<BPlusTreeIter<K, V, S>>> {
         let root_id = self.inner.get_root_id();
         self.inner.search_range(root_id, start, end)
+    }
+    
+    pub fn get_epoch_mgr(&self) -> Arc<EpochManager> {
+        Arc::clone(&self.inner.epoch_mgr)
     }
 }
 
@@ -1428,6 +1428,11 @@ where
         let boxed = Box::new(*metadata);
         let new_ptr = Box::into_raw(boxed);
         self.committed.store(new_ptr, Ordering::SeqCst);
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub fn get_epoch_mgr(&self) -> Arc<EpochManager> {
+        Arc::clone(&self.epoch_mgr)
     }
 }
 

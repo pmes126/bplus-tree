@@ -82,7 +82,7 @@ impl InternalPage {
 
         // Write the key
         let key_offset = self.header.free_start as usize;
-        let raw = key.as_ref();
+        let raw = key;
         let end = key_offset + raw.len();
 
         data[key_offset..end].copy_from_slice(raw);
@@ -102,7 +102,7 @@ impl InternalPage {
     }
 
 
-    // Read the fo key_offset->[key_len][key][ptr]
+    // Read from the key_offset->[key_len][key][child_ptr]
     pub fn get_entry(&self, idx: usize) -> Result<(&[u8], u64), PageCodecError> {
         // Read and decode the length of the key
         let key_len_offset = self.header.key_offsets[idx] as usize;
