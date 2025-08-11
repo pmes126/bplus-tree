@@ -68,8 +68,9 @@ impl KeyCodec for String {
         String::from_utf8(buf.to_vec()).expect("Invalid UTF-8 sequence")
     }
 
+    #[inline]
     fn compare_encoded(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
-        String::decode_key(a).cmp(&String::decode_key(b))
+        a.cmp(b) // bytewise lexicographic compare (memcmp-ish)
     }
 }
 
