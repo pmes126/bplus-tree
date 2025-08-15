@@ -4,7 +4,6 @@ use crate::storage::KeyCodec;
 use crate::storage::{NodeStorage, MetadataStorage};
 use anyhow::Result;
 use std::fmt::Debug;
-use std::sync::Arc;
 
 enum WriteOp<K, V> {
     Insert(K, V),

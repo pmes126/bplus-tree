@@ -112,7 +112,7 @@ impl LeafPage {
 
         // Write the key
         let key_offset = self.header.free_start as usize;
-        let raw = key.as_ref();
+        let raw = key;
         let end = key_offset + raw.len();
 
         data[key_offset..end].copy_from_slice(raw);
@@ -120,7 +120,7 @@ impl LeafPage {
 
         // Write the value
         let value_offset = self.header.free_start as usize;
-        let raw = value.as_ref();
+        let raw = value;
         let end = value_offset + raw.len();
 
         data[value_offset..end].copy_from_slice(raw);
@@ -156,14 +156,34 @@ impl LeafPage {
 
         Ok((key, value))
     }
+    
+    /// Return key bytes at slot i (no decode) klen vlen key value
+    #[inline]
+    pub fn key_bytes_at(&self, i: usize) -> &[u8] {
+        let off = self.slots.offsets[i] as usize;
+        let len = u16::from_le_bytes([self.data.blob[off], self.data.blob[off + LEN_VALUE_SIZE]]) as usize;
+        let k0 = off + LEN_VALUE_SIZE;
+        &self.data.blob[k0 .. k0 + len]
+    }
+    
+    /// Return value bytes at slot i (no decode)
+    #[inline]
+    pub fn value_bytes_at(&self, i: usize) -> &[u8] {
+        let mut off = self.slots.offsets[i] as usize;
+        let key_len = u16::from_le_bytes([self.data.blob[off], self.data.blob[off + LEN_VALUE_SIZE]]) as usize;
+        off += LEN_VALUE_SIZE; // offset for value length
+        let value_len = u16::from_le_bytes([self.data.blob[off], self.data.blob[off + LEN_VALUE_SIZE]]) as usize;
+        let v0 = off + LEN_VALUE_SIZE + key_len;
+        &self.data.blob[v0 .. v0 + value_len]
+    }
 
+    #[inline]
     pub fn len(&self) -> usize {
         self.header.entry_count as usize
     }
 
     pub fn to_bytes(&self) -> Result<&[u8; PAGE_SIZE], std::array::TryFromSliceError> {
-        let bytes: &[u8] = self.as_bytes(); // borrow lives for the function scope
-        let array: &[u8; PAGE_SIZE] = bytes.try_into()?; // also scoped
+        let array: &[u8; PAGE_SIZE] = self.as_bytes().try_into()?; // also scoped
         Ok(array)
     }
 }
