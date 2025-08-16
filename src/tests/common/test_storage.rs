@@ -1,4 +1,4 @@
-use crate::bplustree::Node;
+use crate::bplustree::{Node, NodeView};
 use crate::storage::NodeStorage;
 use crate::storage::MetadataStorage;
 use crate::storage::metadata::MetadataPage;
@@ -164,6 +164,16 @@ where
 
     fn write_node(&self, _node: &Node<K, V>) -> Result<u64, anyhow::Error> {
         // Simulate writing a node by returning a dummy ID
+        Ok(0)
+    }
+
+    fn read_node_view(&self, _id: u64) -> Result<Option<NodeView>, anyhow::Error> {
+        // Simulate reading a node view by returning None
+        Ok(None)
+    }
+
+    fn write_node_view(&self, _node_view: NodeView) -> Result<u64, anyhow::Error> {
+        // Simulate writing a node view by returning a dummy ID
         Ok(0)
     }
 

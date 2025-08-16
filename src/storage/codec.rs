@@ -4,10 +4,11 @@ use crate::storage::page::InternalPage;
 use crate::storage::page::INTERNAL_NODE_TAG;
 use crate::storage::page::LEAF_NODE_TAG;
 use crate::storage::{KeyCodec, ValueCodec, NodeCodec};
-use crate::bplustree::Node;
+use crate::bplustree::{Node, NodeView};
 use thiserror::Error;
 
 pub struct DefaultNodeCodec;
+pub struct NoopNodeViewCodec;
 
 #[derive(Debug, Error)]
 pub enum CodecError {
@@ -198,6 +199,47 @@ where
                 }
                 page.to_bytes().map_err(|e| CodecError::EncodeFailure { msg: e.to_string() }).copied()
             }   
+        }
+    }
+}
+
+impl NoopNodeViewCodec {
+    pub fn decode(buf: &[u8; PAGE_SIZE]) -> Result<NodeView, CodecError> {
+        let node_type =  u64::from_le_bytes(buf[0..8].try_into()
+            .map_err(|e| CodecError::FromSliceError { source: e })?);
+        match node_type {
+        LEAF_NODE_TAG => {
+            // Leaf node
+            let page = LeafPage::from_bytes(buf).
+                map_err(|e| CodecError::DecodeFailure {
+                        msg: e.to_string(),
+                    })?;
+            Ok(NodeView::Leaf {
+                page: *page,
+            })
+        }
+        INTERNAL_NODE_TAG => {
+            // Internal node
+            let page = InternalPage::from_bytes(buf).
+                map_err(|e| CodecError::DecodeFailure {
+                        msg: e.to_string(),
+                    })?;
+            Ok(NodeView::Internal {
+                page: *page,
+            })
+        }
+        _ => Err(CodecError::DecodeFailure { msg: "Invalid node type tag in page".to_string() })
+        }
+    }
+
+    pub fn encode(node: &NodeView) -> Result<[u8; PAGE_SIZE], CodecError> {
+        match node {
+            NodeView::Leaf { page } => {
+                page.to_bytes().map_err(|e| CodecError::EncodeFailure { msg: e.to_string() }).copied()
+            }
+            NodeView::Internal { page } => {
+                page.to_bytes().map_err(|e| CodecError::EncodeFailure { msg: e.to_string() }).copied()
+            }
         }
     }
 }
