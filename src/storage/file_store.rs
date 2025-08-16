@@ -1,4 +1,6 @@
 use crate::bplustree::Node;
+use crate::bplustree::NodeView;
+use crate::storage::codec::NoopNodeViewCodec;
 use crate::storage::{PageStorage, NodeStorage, MetadataStorage, metadata::Metadata, codec::DefaultNodeCodec, { KeyCodec, ValueCodec, NodeCodec, metadata::{MetadataPage, METADATA_PAGE_1, METADATA_PAGE_2, calculate_checksum, new_metadata_page, new_metadata_page_with_object }}};
 use crate::layout::{PAGE_SIZE};
 use anyhow::Result;
@@ -39,7 +41,7 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
                 "Metadata checksum mismatch",
             ));
         }
-        Ok(*metadata) // Return a COPY of the metadata page
+        Ok(*metadata)
     }
 
     fn write_metadata(&self, slot: u8, meta: &mut MetadataPage) -> Result<(), std::io::Error> {
@@ -113,10 +115,26 @@ impl<S: PageStorage, K, V> NodeStorage<K, V> for FileStore<S>
         Ok(res)
     }
 
+    fn read_node_view(&self, page_id: u64) -> Result<Option<NodeView>, anyhow::Error>
+    {
+        let mut buf = [0u8; PAGE_SIZE];
+        self.store.read_page(page_id, &mut buf)?;
+        NoopNodeViewCodec::decode(&buf)
+            .map_or(Ok(None), |view| {
+                Ok(Some(view))
+            })
+    }
+
+    fn write_node_view(&self, node_view: NodeView) -> Result<u64, anyhow::Error>
+    {
+        let buf = NoopNodeViewCodec::encode(&node_view)?;
+        let res = self.store.write_page(&buf)?;
+        Ok(res)
+    }
+
     fn flush(&self) -> Result<(), std::io::Error> {
         self.store.flush()
     }
-
 
     fn free_node(&self, id: u64) -> Result<(), std::io::Error> {
         self.store.free_page(id)

@@ -1,5 +1,5 @@
 use crate::layout::PAGE_SIZE;
-use crate::bplustree::Node;
+use crate::bplustree::{Node, NodeView};
 use crate::storage::metadata::{ Metadata, MetadataPage};
 use std::path::{Path};
 use anyhow::Result;
@@ -64,6 +64,12 @@ where
 
     /// Writes a node to storage
     fn write_node(&self, node: &Node<K, V>) -> Result<u64, anyhow::Error>;
+
+    /// Reads a node view (undecoded) from storage by its ID
+    fn read_node_view(&self, id: u64) -> Result<Option<NodeView>, anyhow::Error>;
+
+    /// Writes a node view (encoded) to storage by its ID
+    fn write_node_view(&self, node_view: NodeView) -> Result<u64, anyhow::Error>;
 
     /// Flushes any cached writes to persistent storage
     fn flush(&self) -> Result<(), std::io::Error>;

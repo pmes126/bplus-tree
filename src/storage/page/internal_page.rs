@@ -124,7 +124,40 @@ impl InternalPage {
         let child = u64::from_le_bytes(arr);
         Ok((key, child))
     }
+    
+    #[inline]
+    pub fn key_bytes_at(&self, i: usize) -> &[u8] {
+        let offset = self.header.key_offsets[i] as usize;
+        let len = u16::from_le_bytes([self.data.blob[offset]; LEN_KEY_SIZE]) as usize;
+        let k0 = offset + LEN_KEY_SIZE;
+        &self.data.blob[k0 .. k0 + len]
+    }
+    
+    #[inline]
+    pub fn child_bytes_at(&self, i: usize) -> &[u8] {
+        let offset = self.header.key_offsets[i] as usize;
+        let key_len = u16::from_le_bytes([self.data.blob[offset], self.data.blob[offset + LEN_KEY_SIZE]]) as usize;
+        let c0 = offset + LEN_KEY_SIZE + key_len;
+        &self.data.blob[c0 .. c0 + CHILD_ID_SIZE]
+    }
 
+    #[inline]
+    pub fn child_at(&self, i: usize) -> Result<u64, PageCodecError> {
+        // Read and decode the length of the key
+        let offset = self.header.key_offsets[i] as usize;
+        let end = offset + LEN_KEY_SIZE;
+        let arr: [u8; LEN_KEY_SIZE] = self.data.blob[offset..end].try_into().
+            map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to read bytes as slice".to_string() })?;
+        let key_length = u16::from_le_bytes(arr);
+
+        
+        let c0 = offset + LEN_KEY_SIZE + key_length as usize;
+        let arr: [u8; CHILD_ID_SIZE] = self.data.blob[c0..c0 + CHILD_ID_SIZE].try_into().
+            map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to read bytes as slice".to_string() })?;
+        Ok(u64::from_le_bytes(arr))
+    }
+
+    #[inline]
     pub fn to_bytes(&self) -> Result<&[u8; PAGE_SIZE], std::array::TryFromSliceError> {
         let bytes: &[u8] = self.as_bytes(); // borrow lives for the function scope
         let array: &[u8; PAGE_SIZE] = bytes.try_into()?; // also scoped

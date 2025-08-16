@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, AtomicU64, AtomicPtr, Ordering};
 use std::sync::Arc;
 
 use crate::bplustree::epoch::COMMIT_COUNT;
-use crate::bplustree::Node;
+use crate::bplustree::{Node, NodeView};
 use crate::bplustree::BPlusTreeIter;
 use crate::bplustree::EpochManager;
 use crate::storage::ValueCodec;
@@ -124,7 +124,7 @@ where
     K: KeyCodec + Ord,
     V: ValueCodec,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
-    {
+{
     max_keys: usize,
     min_internal_keys: usize,
     min_leaf_keys: usize,
@@ -434,6 +434,47 @@ where
        Ok(new_id)
     }
 
+    pub fn get_insertion_path_undecoded(&self, key: &K, root_id: NodeId) -> Result<(Vec<PathNode>, Node<K, V>)> {
+        let mut path = vec![];
+        let mut current_id = root_id;
+
+        // Find insertion point
+        loop {
+            match self.storage.read_node_view(current_id)? {
+                Some(node) => match &node {
+                    NodeView::Leaf { .. } => {
+                        // Found the leaf node, return the path and node
+                        let decoded_node = self.storage.read_node(current_id)?.ok_or_else(|| {
+                            TreeError::NodeNotFound(format!("Leaf node with ID {} not found", current_id))
+                        })?;
+                        return Ok((path, decoded_node));
+                    }
+                    NodeView::Internal { .. } => {
+                        // Find the insertion point in the internal node
+                        let i = match node.lower_bound(key.encode_key()) {
+                            Ok(i) => i + 1, // Insert after the found key
+                            Err(i) => i, // Insert before the found key
+                        };
+                        path.push((current_id, i)); // Record the current node and index
+                        let child = node.child_ptr_at(i)?; // Move to the child node
+                        if let Some(child_id) = child {
+                            current_id = child_id; // Move to the child node
+                        } else {
+                            TreeError::BackendAny(format!("Internal node cannot retrieve child at index {}", i));
+                        }
+                    }
+                },
+                None => {
+                    println!("Node with ID: {} not found", current_id);
+                    // Node not found, this should not happen as we are traversing the path
+                   return Err(TreeError::BackendAny(
+                       "Node not found while getting insertion path".to_string(),
+                   ).into());
+                }
+            }
+        }
+    }
+
     // Returns the path of where a key should be inserted.
     pub fn get_insertion_path(&self, key: &K, root_id: NodeId) -> Result<(Vec<PathNode>, Node<K, V>)> {
         let mut path = vec![];
@@ -474,7 +515,7 @@ where
     // Inserts a key-value pair into the B+ tree.
     pub fn insert_inner(&self, key: K, value: V, root_id: NodeId, track: &mut impl TxnTracker) -> Result<NodeId> {
         let _guard = self.epoch_mgr.pin();
-        let (path, mut leaf_node) = self.get_insertion_path(&key, root_id)?;
+        let (path, mut leaf_node) = self.get_insertion_path_undecoded(&key, root_id)?;
     
         let Node::Leaf { keys, values, .. } = &mut leaf_node else {
             return Err(TreeError::BackendAny(
