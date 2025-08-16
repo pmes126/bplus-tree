@@ -3,10 +3,33 @@ use crate::storage::page::LeafPage;
 use crate::storage::page::InternalPage;
 use crate::storage::page::INTERNAL_NODE_TAG;
 use crate::storage::page::LEAF_NODE_TAG;
-use crate::storage::{KeyCodec, ValueCodec, NodeCodec, CodecError};
+use crate::storage::{KeyCodec, ValueCodec, NodeCodec};
 use crate::bplustree::Node;
+use thiserror::Error;
 
 pub struct DefaultNodeCodec;
+
+#[derive(Debug, Error)]
+pub enum CodecError {
+    #[error("Error decoding value: {msg}")]
+    DecodeFailure {
+        msg: String,
+    },
+    #[error("Error encoding value: {msg}")]
+    EncodeFailure {
+        msg: String,
+    },
+    #[error("Error converting from byte slice: {source}")]
+    FromSliceError {
+        #[from]
+        source: std::array::TryFromSliceError,
+    },
+    #[error("IO error: {source}")]
+    Io {
+        #[from]
+        source: std::io::Error,
+    },
+}
 
 impl KeyCodec for u64 {
     fn encode_key(&self) -> &[u8] {
@@ -45,8 +68,9 @@ impl KeyCodec for String {
         String::from_utf8(buf.to_vec()).expect("Invalid UTF-8 sequence")
     }
 
+    #[inline]
     fn compare_encoded(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
-        String::decode_key(a).cmp(&String::decode_key(b))
+        a.cmp(b) // bytewise lexicographic compare (memcmp-ish)
     }
 }
 
@@ -74,6 +98,16 @@ impl KeyCodec for Vec<u8> {
     }
 }
 
+impl ValueCodec for Vec<u8> {
+    fn encode_value(&self) -> &[u8] {
+        self.as_slice()
+    }
+
+    fn decode_value(buf: &[u8]) -> Self {
+        buf.to_vec()
+    }
+}
+
 impl<K, V> NodeCodec<K, V> for DefaultNodeCodec
 where
     K: KeyCodec + Ord,
@@ -90,12 +124,11 @@ where
                         msg: e.to_string(),
                     })?;
             let mut leaf = Node::Leaf {
-                    keys: Vec::with_capacity(page.len()),
-                    values: Vec::with_capacity(page.len()),
-                    next: None,
+                    keys: Vec::new(),
+                    values: Vec::new(),
             };
 
-            if let Node::Leaf { keys, values, next } = &mut leaf {
+            if let Node::Leaf { keys, values } = &mut leaf {
                 for i in 0..page.header.entry_count as usize {
                     let (key_bytes, value_bytes) = page.get_entry(i).
                         map_err(|e| CodecError::DecodeFailure {
@@ -104,7 +137,6 @@ where
                     keys.push(K::decode_key(key_bytes));
                     values.push(V::decode_value(value_bytes));
                 }
-                next.replace(page.header.next_node_id);
             }
             Ok(leaf)
         }
@@ -137,7 +169,7 @@ where
 
     fn encode(node: &Node<K, V>) -> Result<[u8; PAGE_SIZE], CodecError> {
         match node {
-            Node::Leaf { keys, values, .. } =>  {
+            Node::Leaf { keys, values } =>  {
                 let mut page = LeafPage::new();
                 { 
                 for (key_ref, value_ref) in keys.iter().zip(values.iter()) {
