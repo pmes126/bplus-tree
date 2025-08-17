@@ -274,11 +274,12 @@ fn write_and_delete_values() -> Result<(), anyhow::Error> {
     for i in 0..order as u64*multiplier {
         let key = i;
         let res = tree.delete_with_root(&key, root_id);
-        assert!(res.is_ok(), "Node should be deleted successfully");
+        assert!(res.is_ok(), "Key should be deleted successfully");
         let r = res.unwrap();
         root_id = r.new_root_id; // Update root_id after each delete
         size = r.new_size; // Update size after each delete
         let res = tree.search_with_root(&key, root_id)?;
+        println!("Searching for key {}: {:?}", key, res);
         assert!(res.is_none(), "Key {} should be deleted successfully res none {}", key, res.is_none());
     }
 

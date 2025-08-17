@@ -31,11 +31,12 @@ pub trait PageStorage {
 
 /// Trait for node storage operations
 pub trait KeyCodec {
-    fn encode_key(&self) -> &[u8];
+    fn encode_key(&self, out: &mut [u8]) -> Result<usize, CodecError>;
     fn decode_key(buf: &[u8]) -> Self
     where
         Self: Sized;
     fn compare_encoded(a: &[u8], b: &[u8]) -> std::cmp::Ordering;
+    fn encoded_len(&self) -> usize;
 }
 
 pub trait ValueCodec {
