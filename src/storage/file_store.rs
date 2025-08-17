@@ -120,9 +120,9 @@ impl<S: PageStorage, K, V> NodeStorage<K, V> for FileStore<S>
         let mut buf = [0u8; PAGE_SIZE];
         self.store.read_page(page_id, &mut buf)?;
         NoopNodeViewCodec::decode(&buf)
-            .map_or(Ok(None), |view| {
+            .map(|view| {
                 Ok(Some(view))
-            })
+            })?
     }
 
     fn write_node_view(&self, node_view: NodeView) -> Result<u64, anyhow::Error>

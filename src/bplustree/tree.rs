@@ -438,12 +438,18 @@ where
         let mut path = vec![];
         let mut current_id = root_id;
 
+        let mut encode_buf = vec![0u8; std::mem::size_of::<K>()];
+        key.encode_key(encode_buf.as_mut()).
+            map_err(|e| CodecError::EncodeFailure {
+                    msg: e.to_string(),
+                })?;
         // Find insertion point
         loop {
             match self.storage.read_node_view(current_id)? {
                 Some(node) => match &node {
                     NodeView::Leaf { .. } => {
                         // Found the leaf node, return the path and node
+
                         let decoded_node = self.storage.read_node(current_id)?.ok_or_else(|| {
                             TreeError::NodeNotFound(format!("Leaf node with ID {} not found", current_id))
                         })?;
@@ -451,7 +457,7 @@ where
                     }
                     NodeView::Internal { .. } => {
                         // Find the insertion point in the internal node
-                        let i = match node.lower_bound(key.encode_key()) {
+                        let i = match node.lower_bound(encode_buf.as_ref()) {
                             Ok(i) => i + 1, // Insert after the found key
                             Err(i) => i, // Insert before the found key
                         };
@@ -515,8 +521,10 @@ where
     // Inserts a key-value pair into the B+ tree.
     pub fn insert_inner(&self, key: K, value: V, root_id: NodeId, track: &mut impl TxnTracker) -> Result<NodeId> {
         let _guard = self.epoch_mgr.pin();
-        let (path, mut leaf_node) = self.get_insertion_path_undecoded(&key, root_id)?;
-    
+        let (path, mut leaf_node) = self.get_insertion_path(&key, root_id)?;
+        //assert_eq!(path, path_1, "Insertion paths should match");
+
+
         let Node::Leaf { keys, values, .. } = &mut leaf_node else {
             return Err(TreeError::BackendAny(
                 "Expected a leaf node for insertion".to_string(),
@@ -534,8 +542,7 @@ where
         }
     
         track.record_staged_size(self.get_size() + 1); // Update staged size
-        track.record_staged_height(self.get_height()); // Update staged height - it maybe increased
-        // later
+        track.record_staged_height(self.get_height()); // Update staged height - could be increased later
 
         if keys.len() > self.max_keys {
             self.handle_leaf_split(path, leaf_node, track)
@@ -762,6 +769,56 @@ where
         }
     }
 
+    pub fn search_inner_undecoded(&self, key: &K, root_id: NodeId) -> Result<Option<V>> {
+        let _guard = self.epoch_mgr.pin();
+        let mut current_id = root_id;
+
+        let mut encode_buf = vec![0u8; std::mem::size_of::<K>()];
+        key.encode_key(encode_buf.as_mut()).
+            map_err(|e| CodecError::EncodeFailure {
+                    msg: e.to_string(),
+                })?;
+        // Find insertion point
+        loop {
+            match self.storage.read_node_view(current_id)? {
+                Some(node) => match &node {
+                    NodeView::Leaf { .. } => {
+                        match node.lower_bound(encode_buf.as_ref()) {
+                            Ok(i) =>  {
+                                let val = node.value_at(i)?;
+                                match val {
+                                    Some(val) => return Ok(Some(V::decode_value(val.as_ref()))), // Insert after the found key
+                                    None => return Ok(None), // Key not found
+                                }
+                            }
+                            Err(_i) => return Ok(None), // Insert before the found key
+                        };
+                    }
+                    NodeView::Internal { .. } => {
+                        // Find the insertion point in the internal node
+                        let i = match node.lower_bound(encode_buf.as_ref()) {
+                            Ok(i) => i + 1, // Insert after the found key
+                            Err(i) => i, // Insert before the found key
+                        };
+                        let child = node.child_ptr_at(i)?; // Move to the child node
+                        if let Some(child_id) = child {
+                            current_id = child_id; // Move to the child node
+                        } else {
+                            TreeError::BackendAny(format!("Internal node cannot retrieve child at index {}", i));
+                        }
+                    }
+                },
+                None => {
+                    println!("Node with ID: {} not found", current_id);
+                    // Node not found, this should not happen as we are traversing the path
+                   return Err(TreeError::BackendAny(
+                       "Node not found while getting insertion path".to_string(),
+                   ).into());
+                }
+            }
+        }
+    }
+
     // Searches for a range of keys in the B+ tree and returns an iterator over the key-value
     // pairs.
     pub fn search_range(&self, root_id: NodeId, start: &K, end: &K) -> Result<Option<BPlusTreeIter<K, V, S>>> {
@@ -791,7 +848,7 @@ where
     // Delete the key value pair and handle underflow of leaf nodes
     pub fn delete_inner(&self, key: &K, root_id: NodeId, track: &mut impl TxnTracker) -> Result<DeleteResult<NodeId>> {
         let _guard = self.epoch_mgr.pin();
-        let (path, mut node) = self.get_insertion_path(key, root_id)?;
+            let (path, mut node) = self.get_insertion_path(key, root_id)?;
         let Node::Leaf { keys, values, .. } = &mut node else {
             return Err(TreeError::BackendAny("Expected leaf node".to_string()).into());
         };
