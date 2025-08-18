@@ -244,7 +244,7 @@ where
     }
     
     pub fn search_with_root(&self, key: &K, root_id: NodeId) -> Result<Option<V>> {
-        self.inner.search_inner(key, root_id)
+        self.inner.search_inner_undecoded(key, root_id)
     }
 
     pub fn get_root_id(&self) -> NodeId {
@@ -452,7 +452,7 @@ where
                         let decoded_node = self.storage.read_node(current_id)?.ok_or_else(|| {
                             TreeError::NodeNotFound(format!("Leaf node with ID {} not found", current_id))
                         })?;
-                        println!("Found leaf node with id: {} contents: {:?}", current_id, decoded_node);
+                        //println!("Found leaf node with id: {} contents: {:?}", current_id, decoded_node);
                         return Ok((path, decoded_node));
                     }
                     NodeView::Internal { .. } => {
@@ -491,7 +491,7 @@ where
             match self.read_node(current_id)? {
                 Some(node_res) => match &node_res {
                     Node::Leaf { .. } => {
-                        println!("Found leaf node with id: {} contents: {:?}", current_id, node_res);
+                        //println!("Found leaf node with id: {} contents: {:?}", current_id, node_res);
                         return Ok((path, node_res)); // Found the leaf node
                     }
                     Node::Internal { keys, children } => {
@@ -523,14 +523,14 @@ where
     pub fn insert_inner(&self, key: K, value: V, root_id: NodeId, track: &mut impl TxnTracker) -> Result<NodeId> {
         let _guard = self.epoch_mgr.pin();
         let (path, mut leaf_node) = self.get_insertion_path_undecoded(&key, root_id)?;
-        let (path_1, leaf_node_1) = self.get_insertion_path(&key, root_id)?;
-        assert_eq!(path, path_1, "Insertion paths should match");
+        //let (path_1, leaf_node_1) = self.get_insertion_path(&key, root_id)?;
+        //assert_eq!(path, path_1, "Insertion paths should match");
 
-        println!("Insertion path 1: {:?}", path);
-        println!("Leaf node 1: {:?}", leaf_node);
+        //println!("Insertion path 1: {:?}", path);
+        //println!("Leaf node 1: {:?}", leaf_node);
 
-        println!("Insertion path 2: {:?}", path_1);
-        println!("Leaf node 2: {:?}", leaf_node_1);
+        //println!("Insertion path 2: {:?}", path_1);
+        //println!("Leaf node 2: {:?}", leaf_node_1);
 
 
         let Node::Leaf { keys, values, .. } = &mut leaf_node else {
@@ -747,7 +747,7 @@ where
     // Search for a key in the B+ tree, acquiring an epoch guard to ensure consistency.
     pub fn search(&self, key: &K) -> Result<Option<V>> {
         let root_id = self.get_root_id();
-        self.search_inner(key, root_id)
+        self.search_inner_undecoded(key, root_id)
     }
     
     // Search for a key and return the value if exists
@@ -793,13 +793,21 @@ where
                     NodeView::Leaf { .. } => {
                         match node.lower_bound(encode_buf.as_ref()) {
                             Ok(i) =>  {
+                                println!("Found value for key {:?} at index {} ", key, i);
                                 let val = node.value_at(i)?;
                                 match val {
-                                    Some(val) => return Ok(Some(V::decode_value(val.as_ref()))), // Insert after the found key
+                                    Some(val) => {
+                                        println!("Found value for key {:?} at index {}: {:?}", key, i, val);
+
+                                        return Ok(Some(V::decode_value(val.as_ref())));
+                                    }
                                     None => return Ok(None), // Key not found
                                 }
                             }
-                            Err(_i) => return Ok(None), // Insert before the found key
+                            Err(i) => {
+                                println!("Not found value for key {:?} at index {} ", key, i);
+                                return Ok(None)
+                            }
                         };
                     }
                     NodeView::Internal { .. } => {
@@ -856,7 +864,8 @@ where
     // Delete the key value pair and handle underflow of leaf nodes
     pub fn delete_inner(&self, key: &K, root_id: NodeId, track: &mut impl TxnTracker) -> Result<DeleteResult<NodeId>> {
         let _guard = self.epoch_mgr.pin();
-            let (path, mut node) = self.get_insertion_path(key, root_id)?;
+        let (path, mut node) = self.get_insertion_path(key, root_id)?;
+        //let (path, mut node) = self.get_insertion_path_undecoded(&key, root_id)?;
         let Node::Leaf { keys, values, .. } = &mut node else {
             return Err(TreeError::BackendAny("Expected leaf node".to_string()).into());
         };

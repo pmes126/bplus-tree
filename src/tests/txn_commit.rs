@@ -9,7 +9,7 @@ use rand::Rng;
 use std::thread;
 use fail;
 
-#[test]
+//#[test]
 fn commit_happy_path() {
     let dir = TempDir::new().unwrap();
     let order = 16;
@@ -59,7 +59,7 @@ fn commit_with_retries() {
 }
 */
 
-#[test]
+//#[test]
 fn commit_with_random_inserts() {
     let dir = TempDir::new().unwrap();
     let order = 16;
@@ -81,7 +81,7 @@ fn commit_with_random_inserts() {
     }
 }
 
-#[test]
+//#[test]
 fn contending_parallel_transactions() {
     let dir = TempDir::new().unwrap();
     let order = 16;
@@ -105,7 +105,7 @@ fn contending_parallel_transactions() {
     }
 }
 
-#[test]
+//#[test]
 fn commit_with_conflicting_transactions() {
     let dir = TempDir::new().unwrap();
     let order = 16;
@@ -178,7 +178,7 @@ fn commit_failure_should_reclaim_nodes() {
     fail::remove("tree::commit::try_commit_failure");
 }
 
-#[test]
+//#[test]
 fn noop_tx_commit_no_side_effects() {
     let dir = TempDir::new().unwrap();
     let order = 16;

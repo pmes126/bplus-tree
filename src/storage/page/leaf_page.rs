@@ -28,7 +28,7 @@ pub struct EntrySlots {
 const HEADER_SIZE_BYTES: usize = std::mem::size_of::<LeafPageHeader>();
 const ENTRY_SLOTS_SIZE: usize = std::mem::size_of::<EntrySlots>();
 const DATA_SIZE: usize = PAGE_SIZE - HEADER_SIZE_BYTES - ENTRY_SLOTS_SIZE;
-const LEN_VALUE_SIZE: usize = std::mem::size_of::<u16>();
+const LEN_SIZE: usize = std::mem::size_of::<u16>();
 
 #[repr(C)]
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
@@ -79,7 +79,7 @@ impl LeafPage {
             });
         }
 
-        let required_space = key.len() + value.len() + LEN_VALUE_SIZE * 2; // key_len +
+        let required_space = key.len() + value.len() + LEN_SIZE * 2; // key_len +
         // value_len
         if self.header.free_start + required_space as u64 > DATA_SIZE as u64 {
             return Err(PageCodecError::PageFull{
@@ -138,43 +138,57 @@ impl LeafPage {
         }
 
         let key_len_offset = self.slots.offsets[idx] as usize;
-        let arr: [u8; LEN_VALUE_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_VALUE_SIZE)].try_into().
+        let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_SIZE)].try_into().
             map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to convert bytes to LeafPage".to_string() })?;
 
-        let key_length = u16::from_le_bytes(arr);
+        let key_length = u16::from_le_bytes(arr) as usize;
 
-        let value_len_offset = key_len_offset + LEN_VALUE_SIZE;
-        let arr: [u8; LEN_VALUE_SIZE] = self.data.blob[value_len_offset..(value_len_offset + LEN_VALUE_SIZE)].try_into().
+        let value_len_offset = key_len_offset + LEN_SIZE;
+        let arr: [u8; LEN_SIZE] = self.data.blob[value_len_offset..(value_len_offset + LEN_SIZE)].try_into().
             map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to read bytes as slice".to_string() })?;
         let value_length = u16::from_le_bytes(arr);
 
-        let key_offset = value_len_offset + LEN_VALUE_SIZE;
-        let key = &self.data.blob[key_offset..(key_offset + key_length as usize)];
+        let key_offset = value_len_offset + LEN_SIZE;
+        let key = &self.data.blob[key_offset..(key_offset + key_length)];
 
-        let value_offset = key_offset + key_length as usize;
+        let value_offset = key_offset + key_length;
         let value = &self.data.blob[value_offset..(value_offset + value_length as usize)];
 
         Ok((key, value))
     }
     
     /// Return key bytes at slot i (no decode) klen vlen key value
+    /// according to the Layout of [RECORD AREA: N × [klen][vlen][key][value]]
     #[inline]
-    pub fn key_bytes_at(&self, i: usize) -> &[u8] {
+    pub fn key_bytes_at(&self, i: usize) -> Result<&[u8], std::array::TryFromSliceError> {
         let off = self.slots.offsets[i] as usize;
-        let len = u16::from_le_bytes([self.data.blob[off], self.data.blob[off + LEN_VALUE_SIZE]]) as usize;
-        let k0 = off + LEN_VALUE_SIZE;
-        &self.data.blob[k0 .. k0 + len]
+        let len = u16::from_le_bytes(
+            self.data.blob[off..off + LEN_SIZE].try_into()?
+        ) as usize;
+
+        println!("key length at {} is {}", i, len);
+        let k0 = off + LEN_SIZE*2;
+        Ok(&self.data.blob[k0 .. k0 + len])
     }
     
     /// Return value bytes at slot i (no decode)
     #[inline]
-    pub fn value_bytes_at(&self, i: usize) -> &[u8] {
-        let mut off = self.slots.offsets[i] as usize;
-        let key_len = u16::from_le_bytes([self.data.blob[off], self.data.blob[off + LEN_VALUE_SIZE]]) as usize;
-        off += LEN_VALUE_SIZE; // offset for value length
-        let value_len = u16::from_le_bytes([self.data.blob[off], self.data.blob[off + LEN_VALUE_SIZE]]) as usize;
-        let v0 = off + LEN_VALUE_SIZE + key_len;
-        &self.data.blob[v0 .. v0 + value_len]
+    pub fn value_bytes_at(&self, i: usize) -> Result<&[u8], std::array::TryFromSliceError> {
+        let key_len_offset = self.slots.offsets[i] as usize;
+        let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_SIZE)].try_into()?;
+
+        let key_length = u16::from_le_bytes(arr) as usize;
+
+        let value_len_offset = key_len_offset + LEN_SIZE;
+        let arr: [u8; LEN_SIZE] = self.data.blob[value_len_offset..(value_len_offset + LEN_SIZE)].try_into()?;
+        let value_length = u16::from_le_bytes(arr);
+
+        let key_offset = value_len_offset + LEN_SIZE;
+
+        let value_offset = key_offset + key_length;
+        let value = &self.data.blob[value_offset..(value_offset + value_length as usize)];
+
+        Ok(value)
     }
 
     #[inline]

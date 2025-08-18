@@ -224,11 +224,8 @@ where
             }
             Node::Internal { keys, children } => {
                 let mut page = InternalPage::new();
-                page.header.leftmost_child = children[0]; // Set the leftmost child pointer
-                let entries = keys.iter().zip(children.iter().skip(1)); // skip the first child, as
-                // it's the leftmost child
-    
-                //let mut encode_buf = vec![0u8; MAX_KEY_SIZE];
+                page.header.leftmost_child = children[0]; // Set the leftmost child pointer and skip it
+                let entries = keys.iter().zip(children.iter().skip(1));     
                 let mut encode_buf: Vec<u8> = Vec::with_capacity(MAX_KEY_SIZE);
                 for (key_ref, child_ref) in entries {
                     encode_buf.resize(key_ref.encoded_len(), 0);

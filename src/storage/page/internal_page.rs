@@ -126,19 +126,26 @@ impl InternalPage {
     }
     
     #[inline]
-    pub fn key_bytes_at(&self, i: usize) -> &[u8] {
+    pub fn key_bytes_at(&self, i: usize) -> Result<&[u8], std::array::TryFromSliceError> {
         let offset = self.header.key_offsets[i] as usize;
-        let len = u16::from_le_bytes([self.data.blob[offset]; LEN_KEY_SIZE]) as usize;
+
+        let len = u16::from_le_bytes(
+            self.data.blob[offset..offset + LEN_KEY_SIZE].try_into()?
+        ) as usize;
+
+        //println!("key length at {} is {}", i, len);
         let k0 = offset + LEN_KEY_SIZE;
-        &self.data.blob[k0 .. k0 + len]
+        Ok(&self.data.blob[k0 .. k0 + len])
     }
     
     #[inline]
-    pub fn child_bytes_at(&self, i: usize) -> &[u8] {
+    pub fn child_bytes_at(&self, i: usize) -> Result<&[u8], std::array::TryFromSliceError> {
         let offset = self.header.key_offsets[i] as usize;
-        let key_len = u16::from_le_bytes([self.data.blob[offset], self.data.blob[offset + LEN_KEY_SIZE]]) as usize;
+        let key_len = u16::from_le_bytes(
+            self.data.blob[offset..offset + LEN_KEY_SIZE].try_into()?
+        ) as usize;
         let c0 = offset + LEN_KEY_SIZE + key_len;
-        &self.data.blob[c0 .. c0 + CHILD_ID_SIZE]
+        Ok(&self.data.blob[c0 .. c0 + CHILD_ID_SIZE])
     }
 
     #[inline]
