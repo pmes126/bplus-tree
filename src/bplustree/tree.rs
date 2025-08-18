@@ -848,8 +848,7 @@ where
     // Delete the key value pair and handle underflow of leaf nodes
     pub fn delete_inner(&self, key: &K, root_id: NodeId, track: &mut impl TxnTracker) -> Result<DeleteResult<NodeId>> {
         let _guard = self.epoch_mgr.pin();
-        let (path, mut node) = self.get_insertion_path(key, root_id)?;
-        //let (path, mut node) = self.get_insertion_path_undecoded(&key, root_id)?;
+        let (path, mut node) = self.get_insertion_path_undecoded(key, root_id)?;
         let Node::Leaf { keys, values, .. } = &mut node else {
             return Err(TreeError::BackendAny("Expected leaf node".to_string()).into());
         };
@@ -1224,7 +1223,7 @@ where
     }
 
     // Merges two nodes (left and right) into a single node, returning the new node ID.
-    pub fn merge_nodes (
+    pub fn merge_nodes(
         &self,
         left_node: &mut Node<K, V>,
         right_node: &mut Node<K, V>
