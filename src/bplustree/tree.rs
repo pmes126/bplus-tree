@@ -449,17 +449,17 @@ where
                 Some(node) => match &node {
                     NodeView::Leaf { .. } => {
                         // Found the leaf node, return the path and node
-
                         let decoded_node = self.storage.read_node(current_id)?.ok_or_else(|| {
                             TreeError::NodeNotFound(format!("Leaf node with ID {} not found", current_id))
                         })?;
+                        println!("Found leaf node with id: {} contents: {:?}", current_id, decoded_node);
                         return Ok((path, decoded_node));
                     }
                     NodeView::Internal { .. } => {
                         // Find the insertion point in the internal node
                         let i = match node.lower_bound(encode_buf.as_ref()) {
-                            Ok(i) => i + 1, // Insert after the found key
-                            Err(i) => i, // Insert before the found key
+                            Ok(i) => i + 1,
+                            Err(i) => i,
                         };
                         path.push((current_id, i)); // Record the current node and index
                         let child = node.child_ptr_at(i)?; // Move to the child node
@@ -491,6 +491,7 @@ where
             match self.read_node(current_id)? {
                 Some(node_res) => match &node_res {
                     Node::Leaf { .. } => {
+                        println!("Found leaf node with id: {} contents: {:?}", current_id, node_res);
                         return Ok((path, node_res)); // Found the leaf node
                     }
                     Node::Internal { keys, children } => {
@@ -521,8 +522,15 @@ where
     // Inserts a key-value pair into the B+ tree.
     pub fn insert_inner(&self, key: K, value: V, root_id: NodeId, track: &mut impl TxnTracker) -> Result<NodeId> {
         let _guard = self.epoch_mgr.pin();
-        let (path, mut leaf_node) = self.get_insertion_path(&key, root_id)?;
-        //assert_eq!(path, path_1, "Insertion paths should match");
+        let (path, mut leaf_node) = self.get_insertion_path_undecoded(&key, root_id)?;
+        let (path_1, leaf_node_1) = self.get_insertion_path(&key, root_id)?;
+        assert_eq!(path, path_1, "Insertion paths should match");
+
+        println!("Insertion path 1: {:?}", path);
+        println!("Leaf node 1: {:?}", leaf_node);
+
+        println!("Insertion path 2: {:?}", path_1);
+        println!("Leaf node 2: {:?}", leaf_node_1);
 
 
         let Node::Leaf { keys, values, .. } = &mut leaf_node else {
@@ -797,8 +805,8 @@ where
                     NodeView::Internal { .. } => {
                         // Find the insertion point in the internal node
                         let i = match node.lower_bound(encode_buf.as_ref()) {
-                            Ok(i) => i + 1, // Insert after the found key
-                            Err(i) => i, // Insert before the found key
+                            Ok(i) => i + 1,
+                            Err(i) => i,
                         };
                         let child = node.child_ptr_at(i)?; // Move to the child node
                         if let Some(child_id) = child {
