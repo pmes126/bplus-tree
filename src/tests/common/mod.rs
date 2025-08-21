@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::storage::NodeStorage;
 use crate::bplustree::tree::BPlusTree;
 use crate::bplustree::EpochManager;
@@ -6,11 +8,11 @@ use crate::bplustree::transaction::{WriteTransaction};
 use crate::storage::file_store::FileStore;
 use crate::storage::page_store::PageStore;
 use crate::storage::{KeyCodec, ValueCodec, MetadataStorage};
-use crate::tests::common::test_storage::{TestStorage};
 
 use std::sync::Arc;
 use std::fmt::Debug;
 use tempfile::TempDir;
+
 
 pub mod test_storage;
 pub mod test_epoch;
@@ -23,27 +25,6 @@ pub struct TestHarness<K, V, S: Send + Sync>
 {
     pub tree: Arc<BPlusTree<K, V, S>>,
     pub storage: S,
-}
-
-#[cfg(any(test, feature = "testing"))]
-pub fn test_tree_with_noop_storage<K, V>(
-    order: usize,
-) -> TestHarness<K, V, TestStorage>
-where
-    K: KeyCodec + Clone + Ord + Debug + 'static,
-    V: ValueCodec + Clone + Debug + 'static,
-{
-    let storage = TestStorage::new();
-
-    let tree = Arc::new(BPlusTree::new_with_deps(
-        storage.clone(),
-        EpochManager::new(),
-        order, // order
-    ));
-    TestHarness {
-        tree,
-        storage,
-    }
 }
 
 #[cfg(any(test, feature = "testing"))]

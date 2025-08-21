@@ -342,7 +342,9 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
     let multiplier = 20_u64; // Number of times to insert and delete
     let tree = make_tree(&dir, order).expect("create tree");
     let mut root_id = tree.get_root_id();
+    #[allow(unused_assignments)]
     let mut height = tree.get_height();
+    #[allow(unused_assignments)]
     let mut size = tree.get_size();
 
     // No height increase on inserts up to order - 1

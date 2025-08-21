@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicUsize, AtomicU64, AtomicPtr, Ordering};
 use std::sync::Arc;
@@ -107,11 +109,6 @@ pub struct StagedMetadata {
     pub height: usize,
     pub size: usize,
 }
-
-//pub struct PinnedMetadataSnapshot<'g> {
-//    pub snapshot: MetadataSnapshot,
-//    _guard: ReaderGuard<'g>,
-//}
 
 // Pointer to the committed metadata
 pub struct BaseVersion {
@@ -289,6 +286,7 @@ where
         Arc::clone(&self.inner)
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -299,11 +297,11 @@ where
         self.inner.traverse()
     }
 
-    pub fn search_in_range_at_root(&self, root_id: NodeId, start: &K, end: &K) -> Result<Option<BPlusTreeIter<K, V, S>>> {
+    pub fn search_range_at_root<'a>(&'a self, root_id: NodeId, start: &K, end: &K) -> Result<Option<BPlusTreeIter<'a, K, V, S>>> {
         self.inner.search_range(root_id, start, end)
     }
 
-    pub fn search_in_range(&self, start: &K, end: &K) -> Result<Option<BPlusTreeIter<K, V, S>>> {
+    pub fn search_in_range<'a>(&'a self, start: &K, end: &K) -> Result<Option<BPlusTreeIter<'a, K, V, S>>> {
         let root_id = self.inner.get_root_id();
         self.inner.search_range(root_id, start, end)
     }
@@ -785,7 +783,6 @@ where
                                 let val = node.value_at(i)?;
                                 match val {
                                     Some(val) => {
-
                                         return Ok(Some(V::decode_value(val.as_ref())));
                                     }
                                     None => return Ok(None), // Key not found
@@ -822,7 +819,7 @@ where
 
     // Searches for a range of keys in the B+ tree and returns an iterator over the key-value
     // pairs.
-    pub fn search_range(&self, root_id: NodeId, start: &K, end: &K) -> Result<Option<BPlusTreeIter<K, V, S>>> {
+    pub fn search_range<'a>(&'a self, root_id: NodeId, start: &K, end: &K) -> Result<Option<BPlusTreeIter<'a, K, V, S>>> {
         if start > end {
             return Ok(None); // Invalid range
         }
@@ -830,6 +827,7 @@ where
         Ok(Some(BPlusTreeIter::new(
             &self.storage,
             root_id,
+            self.epoch_mgr.clone(),
             start,
             end,
         )))

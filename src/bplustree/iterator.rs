@@ -1,6 +1,10 @@
+#![allow(dead_code)]
+
 use crate::bplustree::node::{Node, NodeId};
+use crate::bplustree::{EpochManager, epoch::ReaderGuard};
 use crate::storage::{KeyCodec, ValueCodec, NodeStorage};
 use std::fmt::Debug;
+use std::sync::Arc;
 
 struct TraversalFrame {
     node_id: NodeId,
@@ -12,13 +16,13 @@ pub struct BPlusTreeIter<'a, K, V, S>
           V: ValueCodec,
           S: NodeStorage<K, V>,
 {
-    pub(super) storage: &'a S,
-    pub current_leaf: Option<Node<K, V>>,
-    pub(super) index: usize,
-    pub(super) start: K,
-    pub(super) end: K,
+    storage: &'a S,
+    current_leaf: Option<Node<K, V>>,
+    index: usize,
+    start: K,
+    end: K,
     stack: Vec<TraversalFrame>,
-    pub phantom: std::marker::PhantomData<(K, V)>,
+    reader_guard: ReaderGuard,
 }
 
 struct LeafCursor<'a, K, V> {
@@ -36,6 +40,7 @@ impl<'a, K: Debug, V: Debug, S> BPlusTreeIter<'a, K, V, S>
     pub fn new(
         storage: &'a S,
         root_id: NodeId,
+        epoch_mgr: Arc<EpochManager>,
         start: &K,
         end: &K,
     ) -> Self {
@@ -46,7 +51,7 @@ impl<'a, K: Debug, V: Debug, S> BPlusTreeIter<'a, K, V, S>
             start: start.clone(),
             end: end.clone(),
             index: 0,
-            phantom: std::marker::PhantomData,
+            reader_guard: epoch_mgr.pin(),
         };
         let _ = iter.descend_to_leaf(root_id, Some(start));
         iter
@@ -98,8 +103,8 @@ impl<'a, K: Debug, V: Debug, S> Iterator for BPlusTreeIter<'a, K, V, S>
     // Returns the next item in the iteration, it returns a deep copy value of the Key and Value pair if it is within the range
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if let Some(Node::Leaf { keys, values, .. }) = &mut self.current_leaf &&
-                self.index < keys.len() {
+            if let Some(Node::Leaf { keys, values, .. }) = &mut self.current_leaf
+                && self.index < keys.len() {
                     let (k, v) = (&keys[self.index], &values[self.index]);
                     if k > &self.end {
                         // If the key is beyond the end, stop iteration

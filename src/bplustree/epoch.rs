@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::bplustree::NodeId;
 use std::collections::{HashMap, BTreeMap};
 use std::thread::{ThreadId};

@@ -1,4 +1,6 @@
-use crate::bplustree::transaction::{WriteTransaction, MAX_COMMIT_RETRIES};
+#![cfg(test)]
+
+use crate::bplustree::transaction::WriteTransaction;
 use crate::tests::common;
 use tempfile::TempDir;
 use rand::seq::SliceRandom;
