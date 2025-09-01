@@ -480,7 +480,7 @@ where
                         path.push((current_id, i)); // Record the current node and index
                         let child = node.child_ptr_at(i)?; // Move to the child node
                         if let Some(child_id) = child {
-                            current_id = child_id; // Move to the child node
+                            current_id = child_id; // Continue iteration
                         } else {
                             TreeError::BackendAny(format!(
                                 "Internal node cannot retrieve child at index {}",
@@ -1423,24 +1423,6 @@ where
             order: meta.order,
         }
     }
-
-    // Returns a pinned snapshot of the tree's metadata, ensuring it remains valid
-    //pub fn pinned_snapshot<'g>(&'g self) -> PinnedMetadataSnapshot<'g> {
-    //    let guard = self.epoch_mgr.pin(); // enter epoch scope
-    //    let ptr = self.committed.load(Ordering::Acquire);
-    //    let meta = unsafe { &*ptr };
-
-    //    PinnedMetadataSnapshot {
-    //        snapshot: MetadataSnapshot {
-    //            root_id: meta.root_node_id,
-    //            height: meta.height,
-    //            size: meta.size,
-    //            txn_id: meta.txn_id,
-    //            order: meta.order,
-    //        },
-    //        _guard: guard,
-    //    }
-    //}
 
     // Version of commit to be used for single threaded commits, use for testing and debugging
     pub fn commit(&self, new_root_id: NodeId, _height: usize, _size: usize) -> Result<()> {

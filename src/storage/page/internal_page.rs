@@ -3,6 +3,7 @@ use crate::layout::PAGE_SIZE;
 use crate::storage::page::INTERNAL_NODE_TAG;
 use crate::storage::page::PageCodecError;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use std::ptr;
 
 #[repr(C)]
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
@@ -62,7 +63,7 @@ impl InternalPage {
             });
         }
 
-        let required_space = key.len() + LEN_SIZE + CHILD_ID_SIZE; // key_len +
+        let required_space = key.len() + LEN_SIZE + CHILD_ID_SIZE;
         if self.header.free_start + required_space as u64 > DATA_SIZE as u64 {
             return Err(PageCodecError::PageFull {
                 msg: "LeafPage is full, cannot insert more entries".to_string(),
@@ -97,6 +98,80 @@ impl InternalPage {
 
         data[child_offset..end].copy_from_slice(raw.as_ref());
         self.header.free_start += raw.len() as u64;
+
+        // Adjust count
+        self.header.entry_count += 1;
+        Ok(())
+    }
+
+    // Store at a specific index according to the layout => [klen][key][ptr]
+    pub fn insert_entry_at(&mut self, idx: usize, key: &[u8], child: u64) -> Result<(), PageCodecError> {
+        if idx > self.header.entry_count as usize {
+            return Err(PageCodecError::IndexOutOfBounds {
+                msg: "Provided insertion index is beyond entries size".to_string(),
+            });
+        }
+
+        if self.header.entry_count as usize >= MAX_ENTRIES {
+            return Err(PageCodecError::PageFull {
+                msg: "LeafPage is full, cannot insert more entries".to_string(),
+            });
+        }
+
+        let required_space = key.len() + LEN_SIZE + CHILD_ID_SIZE;
+
+        if self.header.free_start + required_space as u64 > DATA_SIZE as u64 {
+            return Err(PageCodecError::PageFull {
+                msg: "LeafPage is full, cannot insert more entries".to_string(),
+            });
+        }
+
+        // We need to memcpy the contents from idx to idx + required space and write the key value
+        // pair in the space between
+        let insertion_point = self.header.key_offsets[idx] as usize;
+        unsafe {
+            let shift_count = self.data.blob.len() - idx;
+            let src_ptr = self.data.blob.as_mut_ptr().add(insertion_point); 
+            let dst_ptr = src_ptr.add(required_space);
+            ptr::copy(src_ptr, dst_ptr, shift_count);
+        }
+        // All values from idx onwards should be shifted by 1 position to the right and have required_space
+        // added to them
+        unsafe {
+            let shift_count = self.header.key_offsets.len() - idx;
+            let src_ptr = self.header.key_offsets.as_mut_ptr().add(idx); 
+            let dst_ptr = src_ptr.add(1);
+            ptr::copy(src_ptr, dst_ptr, shift_count);
+            for i in 0..shift_count {
+                let val = *dst_ptr.add(i) + required_space as u16;
+                *dst_ptr.add(i) = val;
+            }
+        }
+
+        self.header.free_start += required_space as u64;
+        
+        let data = &mut self.data.blob[..];
+
+        let key_len_offset = insertion_point;
+        let key_len = key.len() as u16;
+        let raw = key_len.to_le_bytes();
+        let end = key_len_offset + raw.len();
+
+        data[key_len_offset..end].copy_from_slice(raw.as_ref());
+
+        // Write the key
+        let key_offset = key_len_offset + raw.len();
+        let raw = key;
+        let end = key_offset + raw.len();
+
+        data[key_offset..end].copy_from_slice(raw);
+
+        // Write the child pointer
+        let child_offset = end;
+        let raw = child.to_le_bytes();
+        let end = child_offset + raw.len();
+
+        data[child_offset..end].copy_from_slice(raw.as_ref());
 
         // Adjust count
         self.header.entry_count += 1;
