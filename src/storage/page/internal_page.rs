@@ -301,4 +301,30 @@ mod tests {
             assert_eq!(retrieved_child, children[i]);
         }
     }
+
+    #[test]
+    fn test_internal_page_random_insterts() {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let mut page = InternalPage::new();
+        let iterations = 10;
+
+        for i in 0..iterations {
+            let mut key = format!("key{}", i);
+            for _j in 0..i {
+                key.push_str(&format!("key{}", i));
+            }
+            assert!(page.insert_entry(key.as_bytes(), i).is_ok());
+            let (retrieved_key, retrieved_value) = page.get_entry(i as usize).unwrap();
+            assert_eq!(retrieved_key, key.as_bytes());
+            assert_eq!(retrieved_value, i);
+        }
+        let key = "SomeKeyWithRandomSize";
+        let idx_rand = rng.gen_range(0..iterations-1) as usize; 
+        let res = page.insert_entry_at(idx_rand as usize, key.as_bytes(), 999);
+        assert!(res.is_ok());
+        let (retrieved_key, retrieved_value) = page.get_entry(idx_rand).unwrap();
+        assert_eq!(retrieved_value, 999);
+        assert_eq!(retrieved_key, key.as_bytes());
+    }
 }
