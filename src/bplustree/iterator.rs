@@ -111,15 +111,16 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if let Some(Node::Leaf { keys, values, .. }) = &mut self.current_leaf
-                && self.index < keys.len()
             {
-                let (k, v) = (&keys[self.index], &values[self.index]);
-                if k > &self.end {
-                    // If the key is beyond the end, stop iteration
-                    return None;
+                if self.index < keys.len() {
+                    let (k, v) = (&keys[self.index], &values[self.index]);
+                    if k > &self.end {
+                        // If the key is beyond the end, stop iteration
+                        return None;
+                    }
+                    self.index += 1;
+                    return Some(Ok((k.clone(), v.clone())));
                 }
-                self.index += 1;
-                return Some(Ok((k.clone(), v.clone())));
             }
 
             // Need to move to next subtree

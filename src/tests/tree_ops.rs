@@ -314,7 +314,6 @@ fn write_and_delete_values() -> Result<(), anyhow::Error> {
         root_id = r.new_root_id; // Update root_id after each delete
         size = r.new_size; // Update size after each delete
         let res = tree.search_with_root(&key, root_id)?;
-        println!("Searching for key {}: {:?}", key, res);
         assert!(
             res.is_none(),
             "Key {} should be deleted successfully res none {}",

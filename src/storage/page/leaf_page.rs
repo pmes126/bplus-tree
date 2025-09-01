@@ -159,16 +159,11 @@ impl LeafPage {
         let insertion_point = self.slots.offsets[idx] as usize;
         unsafe {
             let shift_count = self.data.blob.len() - (self.slots.offsets[idx] as usize);
-            println!("Shift count {}", shift_count);
             let src_ptr = self.data.blob.as_mut_ptr().add(insertion_point); 
-            println!("insertion idx {}", insertion_point);
-            println!("required_space {}", required_space);
             let dst_ptr = src_ptr.add(required_space);
             ptr::copy(src_ptr, dst_ptr, shift_count);
-            println!("src_ptr");
         }
 
-        println!("Before {:?}", self.slots.offsets);
         // All values from idx onwards should be shifted by 1 position to the right and have required_space
         // added to them
         unsafe {
@@ -181,7 +176,6 @@ impl LeafPage {
                 *dst_ptr.add(i) = val;
             }
         }
-        println!("After {:?}", self.slots.offsets);
 
         self.header.free_start += required_space as u64;
 
@@ -203,7 +197,6 @@ impl LeafPage {
 
         data[value_len_offset..end].copy_from_slice(raw.as_ref());
 
-        println!("write key!");
         // Write the key
         let key_offset = end;
         let raw = key;
@@ -211,7 +204,6 @@ impl LeafPage {
 
         data[key_offset..end].copy_from_slice(raw);
 
-        println!("write value!");
         // Write the value
         let value_offset = end;
         let raw = value;
@@ -221,12 +213,10 @@ impl LeafPage {
 
         // Adjust count
         self.header.entry_count += 1;
-        println!("write at ok!");
         Ok(())
     }
 
     pub fn get_entry(&self, idx: usize) -> Result<(&[u8], &[u8]), PageCodecError> {
-        println!("get entry");
         if idx >= self.header.entry_count as usize {
             return Err(PageCodecError::IndexOutOfBounds {
                 msg: "Index out of bounds".to_string(),
@@ -254,10 +244,7 @@ impl LeafPage {
         let key = &self.data.blob[key_offset..(key_offset + key_length)];
 
         let value_offset = key_offset + key_length;
-        println!("value_offset {} value length {}", value_offset, value_length);
-        println!("data.blob.len() {}", &self.data.blob.len());
         let value = &self.data.blob[value_offset..(value_offset + value_length as usize)];
-        println!("Got entry OK");
 
         Ok((key, value))
     }
@@ -362,8 +349,9 @@ mod tests {
 
     #[test]
     fn test_leaf_page_random_insterts() {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
         let mut page = LeafPage::new();
-        let _rng = rand::thread_rng();
         let iterations = 10;
 
         for i in 0..iterations {
@@ -380,14 +368,11 @@ mod tests {
         }
         let key = "SomeKeyWithRandomSize";
         let value = "SomeValueWithRandomSize";
-        //let idx_rand = rng.gen_range(0..iterations-5);
-        let idx_rand = 0;
-        println!("Inserting");
-        let _res = page.insert_entry_at(idx_rand, key.as_bytes(), value.as_bytes());
-        //assert!(res.is_ok());
-        println!("OKOK");
-        //let (retrieved_key, retrieved_value) = page.get_entry(idx_rand).unwrap();
-        //println!("Got!");
-       //assert_eq!(retrieved_value, value.as_bytes());
+        let idx_rand = rng.gen_range(0..iterations-1);
+        let res = page.insert_entry_at(idx_rand, key.as_bytes(), value.as_bytes());
+        assert!(res.is_ok());
+        let (retrieved_key, retrieved_value) = page.get_entry(idx_rand).unwrap();
+        assert_eq!(retrieved_value, value.as_bytes());
+        assert_eq!(retrieved_key, key.as_bytes());
     }
 }
