@@ -41,10 +41,11 @@ pub trait KeyCodec {
 }
 
 pub trait ValueCodec {
-    fn encode_value(&self) -> &[u8];
+    fn encode_value(&self, out: &mut [u8]) -> Result<usize, CodecError>;
     fn decode_value(buf: &[u8]) -> Self
     where
         Self: Sized;
+    fn encoded_len(&self) -> usize;
 }
 
 pub trait NodeCodec<K, V>
@@ -71,7 +72,7 @@ where
     fn read_node_view(&self, id: u64) -> Result<Option<NodeView>, anyhow::Error>;
 
     /// Writes a node view (encoded) to storage by its ID
-    fn write_node_view(&self, node_view: NodeView) -> Result<u64, anyhow::Error>;
+    fn write_node_view(&self, node_view: &NodeView) -> Result<u64, anyhow::Error>;
 
     /// Flushes any cached writes to persistent storage
     fn flush(&self) -> Result<(), std::io::Error>;

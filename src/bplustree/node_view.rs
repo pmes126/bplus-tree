@@ -1,11 +1,12 @@
 use crate::storage::page::{InternalPage, LeafPage};
+use crate::storage::{KeyCodec, ValueCodec};
 use anyhow::Result;
 use std::cmp::Ordering;
 
 pub type NodeId = u64;
 
 /// A view of a B+ tree node stored in a page
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum NodeView {
     Internal { page: InternalPage },
     Leaf { page: LeafPage },
@@ -76,6 +77,64 @@ impl NodeView {
             NodeView::Leaf { page } => {
                 let value = page.value_bytes_at(i)?;
                 Ok(Some(value.to_vec()))
+            }
+        }
+    }
+
+    /// Insert a key-value pair or key-child pointer into the node at a given index
+    #[inline]
+    pub fn insert_at(
+        &mut self,
+        idx: usize,
+        key: &[u8],
+        value: Option<&[u8]>,
+        child_ptr: Option<u64>,
+    ) -> Result<(), anyhow::Error> {
+        match self {
+            NodeView::Internal { page } => {
+                if let Some(ptr) = child_ptr {
+                    page.insert_entry_at(idx, key, ptr).map_err(|e| anyhow::anyhow!(e))
+                } else {
+                    Err(anyhow::anyhow!(
+                        "Internal nodes require a child pointer for insertion"
+                    ))
+                }
+            }
+            NodeView::Leaf { page } => {
+                if let Some(val) = value {
+                    page.insert_entry_at(idx, key, val).map_err(|e| anyhow::anyhow!(e))
+                } else {
+                    Err(anyhow::anyhow!(
+                        "Leaf nodes require a value for insertion"
+                    ))
+                }
+            }
+        }
+    }
+
+    /// Get the entry count of the node
+    #[inline]
+    pub fn entry_count(&self) -> usize {
+        match self {
+            NodeView::Internal { page } => page.header.entry_count as usize,
+            NodeView::Leaf { page } => page.header.entry_count as usize,
+        }
+    }
+
+    /// Split the node into two, returning the new node and the split key
+    pub fn split_off(&mut self, idx: usize) -> Result<(Vec<u8>, NodeView), anyhow::Error> {
+        match self {
+            NodeView::Internal { page } => {
+                let new_page = page.split_off(idx).map_err(|e| anyhow::anyhow!(e))?;
+                let split_key = new_page.key_bytes_at(0)?; // First key of the new page
+                Ok((split_key.to_vec(), NodeView::Internal { page: new_page }))
+            }
+            NodeView::Leaf { page } => {
+                let new_page = page.split_off(idx).map_err(|e| anyhow::anyhow!(e))?;
+                println!("Getting split key at index 0 of new leaf page");
+                let split_key = new_page.key_bytes_at(0)?; // First key of the new page
+                println!("split_key: {:?}", split_key.to_vec());
+                Ok((split_key.to_vec(), NodeView::Leaf { page: new_page }))
             }
         }
     }

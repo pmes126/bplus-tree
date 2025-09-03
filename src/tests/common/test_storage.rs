@@ -167,7 +167,7 @@ where
         Ok(None)
     }
 
-    fn write_node_view(&self, _node_view: NodeView) -> Result<u64, anyhow::Error> {
+    fn write_node_view(&self, _node_view: &NodeView) -> Result<u64, anyhow::Error> {
         // Simulate writing a node view by returning a dummy ID
         Ok(0)
     }

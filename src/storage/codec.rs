@@ -11,6 +11,7 @@ pub struct DefaultNodeCodec;
 pub struct NoopNodeViewCodec;
 
 const MAX_KEY_SIZE: usize = 256; // Maximum key size for internal nodes
+const MAX_VAL_SIZE: usize = 256; // Maximum key size for internal nodes
 
 #[derive(Debug, Error)]
 pub enum CodecError {
@@ -55,14 +56,21 @@ impl KeyCodec for u64 {
 }
 
 impl ValueCodec for u64 {
-    fn encode_value(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts((self as *const u64) as *const u8, 8) }
+    fn encode_value(&self, out: &mut [u8]) -> Result<usize, CodecError> {
+        let size = std::mem::size_of::<u64>();
+        out[..size].copy_from_slice(&self.to_be_bytes());
+        Ok(size)
     }
 
     fn decode_value(buf: &[u8]) -> Self {
         let mut arr = [0u8; 8];
         arr.copy_from_slice(&buf[..8]);
         u64::from_le_bytes(arr)
+    }
+
+    #[inline]
+    fn encoded_len(&self) -> usize {
+        std::mem::size_of::<u64>()
     }
 }
 
@@ -89,12 +97,19 @@ impl KeyCodec for String {
 }
 
 impl ValueCodec for String {
-    fn encode_value(&self) -> &[u8] {
-        self.as_bytes()
+    fn encode_value(&self, buf: &mut [u8]) -> Result<usize, CodecError> {
+        let size = self.len();
+        buf[..size].copy_from_slice(self.as_bytes());
+        Ok(size)
     }
 
     fn decode_value(buf: &[u8]) -> Self {
         String::from_utf8(buf.to_vec()).expect("Invalid UTF-8 sequence")
+    }
+
+    #[inline]
+    fn encoded_len(&self) -> usize {
+        self.len()
     }
 }
 
@@ -121,12 +136,19 @@ impl KeyCodec for Vec<u8> {
 }
 
 impl ValueCodec for Vec<u8> {
-    fn encode_value(&self) -> &[u8] {
-        self.as_slice()
+    fn encode_value(&self, buf: &mut [u8]) -> Result<usize, CodecError> {
+        let size = self.len();
+        buf[..size].copy_from_slice(self.as_slice());
+        Ok(size)
     }
 
     fn decode_value(buf: &[u8]) -> Self {
         buf.to_vec()
+    }
+
+    #[inline]
+    fn encoded_len(&self) -> usize {
+        self.len()
     }
 }
 
@@ -197,14 +219,18 @@ where
             Node::Leaf { keys, values } => {
                 let mut page = LeafPage::new();
                 {
-                    let mut encode_buf: Vec<u8> = Vec::with_capacity(MAX_KEY_SIZE);
+                    let mut encode_buf_key: Vec<u8> = Vec::with_capacity(MAX_KEY_SIZE);
+                    let mut encode_buf_val: Vec<u8> = Vec::with_capacity(MAX_VAL_SIZE);
                     for (key_ref, value_ref) in keys.iter().zip(values.iter()) {
-                        encode_buf.resize(key_ref.encoded_len(), 0);
+                        encode_buf_key.resize(key_ref.encoded_len(), 0);
+                        encode_buf_val.resize(value_ref.encoded_len(), 0);
                         key_ref
-                            .encode_key(encode_buf.as_mut())
+                            .encode_key(encode_buf_key.as_mut())
                             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
-                        let value = value_ref.encode_value();
-                        page.insert_entry(&encode_buf, value.as_ref())
+                        value_ref
+                            .encode_value(encode_buf_val.as_mut())
+                            .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
+                        page.insert_entry(&encode_buf_key, &encode_buf_val)
                             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
                     }
                 }

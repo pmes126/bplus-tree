@@ -164,7 +164,7 @@ impl LeafPage {
             ptr::copy(src_ptr, dst_ptr, shift_count);
         }
 
-        // All values from idx onwards should be shifted by 1 position to the right and have required_space
+        // All offset values from idx onwards should be shifted by 1 position to the right and have required_space
         // added to them
         unsafe {
             let shift_count = self.header.entry_count as usize - idx;
@@ -255,7 +255,6 @@ impl LeafPage {
     pub fn key_bytes_at(&self, i: usize) -> Result<&[u8], std::array::TryFromSliceError> {
         let off = self.slots.offsets[i] as usize;
         let len = u16::from_le_bytes(self.data.blob[off..off + LEN_SIZE].try_into()?) as usize;
-
         let k0 = off + LEN_SIZE * 2;
         Ok(&self.data.blob[k0..k0 + len])
     }
@@ -296,6 +295,47 @@ impl LeafPage {
     pub fn to_bytes(&self) -> Result<&[u8; PAGE_SIZE], std::array::TryFromSliceError> {
         let array: &[u8; PAGE_SIZE] = self.as_bytes().try_into()?; // also scoped
         Ok(array)
+    }
+
+    pub fn drain(&mut self, idx: usize) -> Result<(), PageCodecError> {
+        if idx >= self.header.entry_count as usize {
+            return Err(PageCodecError::IndexOutOfBounds {
+                msg: "Index out of bounds".to_string(),
+            });
+        }
+
+        // Simply adjust the entry count to "remove" entries from idx onwards
+        self.header.entry_count = idx as u64;
+
+        Ok(())
+    }
+
+    pub fn split_off(&mut self, idx: usize) -> Result<LeafPage, PageCodecError> {
+        if idx >= self.header.entry_count as usize {
+            return Err(PageCodecError::IndexOutOfBounds {
+                msg: "Index out of bounds".to_string(),
+            });
+        }
+
+        let mut new_page = LeafPage::new();
+
+        // Move entries from idx to the end to the new page
+        for i in idx..self.header.entry_count as usize {
+            let (key, value) = self.get_entry(i)?;
+            new_page.insert_entry(key, value)?;
+        }
+
+        // Update the free_start of the original page to the offset of the idx entry
+        self.header.free_start = self.slots.offsets[idx] as u64;
+        // Clear the data area from free_start to the end
+        self.data.blob[self.header.free_start as usize..].fill(0);
+        // Clear old offsets
+        self.slots.offsets[idx..self.header.entry_count as usize]
+            .fill(0);
+        // Adjust the entry count of the original page
+        self.drain(idx)?;
+
+        Ok(new_page)
     }
 }
 
@@ -382,9 +422,7 @@ mod tests {
                 key.push_str(&format!("key{}", i));
                 value.push_str(&format!("value{}", i));
             }
-            println!("getting value at {}", i);
             let (retrieved_key, retrieved_value) = page.get_entry(i+1).unwrap();
-            println!("Retrieved {:?}, want {:?}", String::from_utf8_lossy(retrieved_key), String::from_utf8_lossy(key.as_bytes()));
             assert_eq!(retrieved_key, key.as_bytes());
             assert_eq!(retrieved_value, value.as_bytes());
         }

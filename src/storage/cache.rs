@@ -74,7 +74,7 @@ impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
         self.backend.free_node(id)
     }
 
-    fn write_node_view(&self, _node_view: NodeView) -> Result<u64, anyhow::Error> {
+    fn write_node_view(&self, _node_view: &NodeView) -> Result<u64, anyhow::Error> {
         todo!{}
     }
 
