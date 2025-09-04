@@ -1,5 +1,4 @@
 use crate::storage::page::{InternalPage, LeafPage};
-use crate::storage::{KeyCodec, ValueCodec};
 use anyhow::Result;
 use std::cmp::Ordering;
 
@@ -131,9 +130,7 @@ impl NodeView {
             }
             NodeView::Leaf { page } => {
                 let new_page = page.split_off(idx).map_err(|e| anyhow::anyhow!(e))?;
-                println!("Getting split key at index 0 of new leaf page");
                 let split_key = new_page.key_bytes_at(0)?; // First key of the new page
-                println!("split_key: {:?}", split_key.to_vec());
                 Ok((split_key.to_vec(), NodeView::Leaf { page: new_page }))
             }
         }

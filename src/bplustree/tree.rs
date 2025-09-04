@@ -445,6 +445,8 @@ where
         Ok(new_id)
     }
 
+    // Returns the path of where a key should be inserted, without decoding the nodes for
+    // efficiency.
     pub fn get_insertion_path_undecoded(
         &self,
         key: &K,
