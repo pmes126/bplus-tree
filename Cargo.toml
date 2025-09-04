@@ -38,3 +38,7 @@ criterion = "0.5"
 [lib]
 name = "bplustree"
 path = "src/lib.rs"
+
+[[bench]]
+name = "bench_insert"
+harness = false
