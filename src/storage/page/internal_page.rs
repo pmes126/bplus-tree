@@ -3,7 +3,6 @@ use crate::layout::PAGE_SIZE;
 use crate::storage::page::INTERNAL_NODE_TAG;
 use crate::storage::page::PageCodecError;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
-use std::ptr;
 
 #[repr(C)]
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
@@ -129,27 +128,24 @@ impl InternalPage {
         // We need to memcpy the contents from idx to idx + required space and write the key value
         // pair in the space between
         let insertion_point = self.header.key_offsets[idx] as usize;
-        unsafe {
-            let shift_count = self.data.blob.len() - idx;
-            let src_ptr = self.data.blob.as_mut_ptr().add(insertion_point); 
-            let dst_ptr = src_ptr.add(required_space);
-            ptr::copy(src_ptr, dst_ptr, shift_count);
-        }
+        let shift_count = self.header.free_start as usize - insertion_point;
+        let src_idx = insertion_point;
+        let dst_idx = src_idx + required_space;
+        self.data.blob.copy_within(src_idx..src_idx+shift_count, dst_idx);
+
         // All values from idx onwards should be shifted by 1 position to the right and have required_space
         // added to them
-        unsafe {
-            let shift_count = self.header.key_offsets.len() - idx;
-            let src_ptr = self.header.key_offsets.as_mut_ptr().add(idx); 
-            let dst_ptr = src_ptr.add(1);
-            ptr::copy(src_ptr, dst_ptr, shift_count);
-            for i in 0..shift_count {
-                let val = *dst_ptr.add(i) + required_space as u16;
-                *dst_ptr.add(i) = val;
-            }
+        let shift_count = self.header.entry_count as usize - idx;
+        let src_idx = idx;
+        let end_idx = src_idx + shift_count;
+        let dest_idx = src_idx + 1;
+        self.header.key_offsets.copy_within(src_idx..end_idx, dest_idx);
+        for i in dest_idx..dest_idx + shift_count - 1 {
+            self.header.key_offsets[i] += required_space as u16;
         }
 
         self.header.free_start += required_space as u64;
-        
+
         let data = &mut self.data.blob[..];
 
         let key_len_offset = insertion_point;
@@ -276,7 +272,7 @@ impl InternalPage {
 
         // Update the entry count of the original page
         self.header.entry_count = idx as u64;
-        
+
         // Update the free_start of the original page to the offset of the idx entry
         self.header.free_start = self.header.key_offsets[idx] as u64;
         // Clear old offsets
@@ -348,7 +344,7 @@ mod tests {
             assert_eq!(retrieved_value, i);
         }
         let key = "SomeKeyWithRandomSize";
-        let idx_rand = rng.gen_range(0..iterations-1) as usize; 
+        let idx_rand = rng.gen_range(0..iterations-1) as usize;
         let res = page.insert_entry_at(idx_rand as usize, key.as_bytes(), 999);
         assert!(res.is_ok());
         let (retrieved_key, retrieved_value) = page.get_entry(idx_rand).unwrap();

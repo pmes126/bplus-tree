@@ -3,7 +3,6 @@ use crate::layout::PAGE_SIZE;
 use crate::storage::page::LEAF_NODE_TAG;
 use crate::storage::page::PageCodecError;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
-use std::ptr;
 
 pub const LEAF_NODE_VERSION: u8 = 0;
 
@@ -157,26 +156,23 @@ impl LeafPage {
         // We need to memcpy the contents from idx to idx + required space and write the key value
         // pair in the space between
         let insertion_point = self.slots.offsets[idx] as usize;
-        unsafe {
-            let shift_count = self.data.blob.len() - (self.slots.offsets[idx] as usize);
-            let src_ptr = self.data.blob.as_mut_ptr().add(insertion_point); 
-            let dst_ptr = src_ptr.add(required_space);
-            ptr::copy(src_ptr, dst_ptr, shift_count);
-        }
+        let shift_count = self.header.free_start as usize - insertion_point;
+        let src_idx = insertion_point; 
+        let dst_idx = src_idx + required_space;
+        self.data.blob.copy_within(src_idx..src_idx+shift_count, dst_idx);
 
-        // All offset values from idx onwards should be shifted by 1 position to the right and have required_space
+        // All values from idx onwards should be shifted by 1 position to the right and have required_space
         // added to them
-        unsafe {
-            let shift_count = self.header.entry_count as usize - idx;
-            let src_ptr = self.slots.offsets.as_mut_ptr().add(idx); 
-            let dst_ptr = src_ptr.add(1);
-            ptr::copy(src_ptr, dst_ptr, shift_count);
-            for i in 0..shift_count {
-                let val = *dst_ptr.add(i) + required_space as u16;
-                *dst_ptr.add(i) = val;
-            }
+        let shift_count = self.header.entry_count as usize - idx;
+        let src_idx = idx;
+        let end_idx = src_idx + shift_count;
+        let dest_idx = src_idx + 1;
+        self.slots.offsets.copy_within(src_idx..end_idx, dest_idx);
+        for i in dest_idx..dest_idx + shift_count {
+            self.slots.offsets[i] += required_space as u16;
         }
-
+        
+        
         self.header.free_start += required_space as u64;
 
         let data = &mut self.data.blob[..];
