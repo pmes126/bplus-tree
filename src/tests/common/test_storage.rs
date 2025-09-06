@@ -149,8 +149,8 @@ impl MetadataStorage for TestStorage {
 
 impl<K, V> NodeStorage<K, V> for TestStorage
 where
-    K: crate::storage::KeyCodec + Ord,
-    V: crate::storage::ValueCodec,
+    K: crate::codec::KeyCodec + Ord,
+    V: crate::codec::ValueCodec,
 {
     fn read_node(&self, _id: u64) -> Result<Option<Node<K, V>>, anyhow::Error> {
         // Simulate reading a node by returning None

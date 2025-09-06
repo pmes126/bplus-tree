@@ -105,8 +105,8 @@ pub enum StorageError {
     #[error("page {pid} not found")]
     NotFound { pid: u64 },
 
-    #[error("page {pid} corrupted: {msg}")]
-    EncDecFailure { pid: u64, msg: &'static str },
+    #[error("page corrupted: {msg}")]
+    EncDecFailure { msg: &'static str },
 
     #[error("out of space")]
     OutOfSpace,
@@ -119,8 +119,8 @@ impl From<CodecError> for StorageError {
     fn from(e: CodecError) -> Self {
         match e {
             CodecError::Io { source } => StorageError::Io { source },
-            CodecError::EncodeFailure { pid, msg } => StorageError::EncDecFailure { pid, msg: msg.into() },
-            CodecError::DecodeFailure { pid, msg } => StorageError::EncDecFailure { pid, msg: msg },
+            CodecError::EncodeFailure { msg } => StorageError::EncDecFailure { msg: msg.into() },
+            CodecError::DecodeFailure { msg } => StorageError::EncDecFailure { msg: msg },
             _ => StorageError::Invariant("unknown codec error"),
         }
     }

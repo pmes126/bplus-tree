@@ -10,6 +10,7 @@ use crate::bplustree::epoch::COMMIT_COUNT;
 use crate::bplustree::{Node, NodeView};
 use crate::codec::{KeyCodec, ValueCodec, CodecError};
 use crate::storage::{NodeStorage, MetadataStorage};
+use crate::metadata;
 use crate::metadata::{
     Metadata, {METADATA_PAGE_1, METADATA_PAGE_2},
 };
@@ -381,8 +382,8 @@ where
             size: 0,             // Initial size
             order,
         };
-        let mut metadata_1 = Metadata::new_metadata_page_with_object(&md1);
-        let mut metadata_2 = Metadata::new_metadata_page_with_object(&md2);
+        let mut metadata_1 = metadata::new_metadata_page_with_object(&md1);
+        let mut metadata_2 = metadata::new_metadata_page_with_object(&md2);
         storage.write_metadata(METADATA_PAGE_1, &mut metadata_1)?;
         storage.write_metadata(METADATA_PAGE_2, &mut metadata_2)?;
 

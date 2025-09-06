@@ -5,7 +5,6 @@ use crate::page::LEAF_NODE_TAG;
 use crate::page::InternalPage;
 use crate::page::LeafPage;
 use crate::codec::{KeyCodec, NodeCodec, ValueCodec, CodecError};
-use thiserror::Error;
 
 pub struct DefaultNodeCodec;
 pub struct NoopNodeViewCodec;
