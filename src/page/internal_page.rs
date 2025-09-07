@@ -184,6 +184,41 @@ impl InternalPage {
         Ok(())
     }
 
+    pub fn write_leftmost_child(&mut self, child: u64) {
+        self.header.leftmost_child = child;
+    }
+
+    // Replace the child pointer at idx with the provided child pointer
+    pub fn replace_child_at(&mut self, idx: usize, child: u64) -> Result<(), PageCodecError> {
+        if idx > self.header.entry_count as usize {
+            return Err(PageCodecError::IndexOutOfBounds {
+                msg: "Provided index is beyond entries size".to_string(),
+            });
+        }
+
+        if idx == 0 {
+            self.header.leftmost_child = child;
+            return Ok(());
+        }
+
+        let key_len_offset = self.header.key_offsets[idx - 1] as usize;
+        let mut end = key_len_offset + LEN_SIZE;
+        let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..end]
+            .try_into()
+            .map_err(|_| PageCodecError::FromBytesError {
+                msg: "Failed to read bytes as slice".to_string(),
+            })?;
+        let key_length = u16::from_le_bytes(arr);
+
+        // Move to the start of the child pointer
+        let child_offset = key_len_offset + LEN_SIZE + key_length as usize;
+        end = child_offset + CHILD_ID_SIZE;
+
+        let raw = child.to_le_bytes();
+        self.data.blob[child_offset..end].copy_from_slice(raw.as_ref());
+        Ok(())
+    }
+
     // Read from the key_offset->[key_len][key][child_ptr]
     pub fn get_entry(&self, idx: usize) -> Result<(&[u8], u64), PageCodecError> {
         // Read and decode the length of the key
@@ -212,6 +247,47 @@ impl InternalPage {
             })?;
         let child = u64::from_le_bytes(arr);
         Ok((key, child))
+    }
+
+    // Removes the entry at idx and shifts all subsequent entries left
+    pub fn remove_entry_at(&mut self, idx: usize) -> Result<(), PageCodecError> {
+        if idx >= self.header.entry_count as usize {
+            return Err(PageCodecError::IndexOutOfBounds {
+                msg: "Provided removal index is out of bounds".to_string(),
+            });
+        }
+
+        let start_offset = self.header.key_offsets[idx] as usize;
+        let end_offset = if idx + 1 < self.header.entry_count as usize {
+            self.header.key_offsets[idx + 1] as usize
+        } else {
+            self.header.free_start as usize
+        };
+        let entry_size = end_offset - start_offset;
+
+        // Shift data to the left to remove the entry
+        self.data
+            .blob
+            .copy_within(end_offset..self.header.free_start as usize, start_offset);
+
+        // Update key offsets
+        for i in idx..self.header.entry_count as usize - 1 {
+            self.header.key_offsets[i] = self.header.key_offsets[i + 1] - entry_size as u16;
+        }
+        self.header.key_offsets[self.header.entry_count as usize - 1] = 0; // Clear last offset
+
+        // Update free_start and entry_count
+        self.header.free_start -= entry_size as u64;
+        self.header.entry_count -= 1;
+
+        Ok(())
+    }
+
+    pub fn get_child_at(&self, idx: usize) -> Result<u64, PageCodecError> {
+        if idx == 0 {
+            return Ok(self.header.leftmost_child);
+        }
+        self.child_at(idx - 1)
     }
 
     #[inline]
@@ -271,6 +347,13 @@ impl InternalPage {
             });
         }
 
+        if idx == 0 {
+            // If idx is 0, we are splitting all entries to the new page
+            let mut new_page = InternalPage::new();
+            std::mem::swap(&mut new_page, self);
+            return Ok(new_page);
+        }
+
         let mut new_page = InternalPage::new();
 
         // Move entries from idx to the end to the new page
@@ -278,6 +361,11 @@ impl InternalPage {
             let (key, child) = self.get_entry(i)?;
             new_page.insert_entry(key, child)?;
         }
+
+        // The last child of the original page becomes the leftmost child of the new page
+        self.get_entry(idx - 1).map(|(_, child)| {
+            new_page.header.leftmost_child = child;
+        })?;
 
         // Update the entry count of the original page
         self.header.entry_count = idx as u64;

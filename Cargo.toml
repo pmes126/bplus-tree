@@ -1,5 +1,5 @@
 [package]
-name = "bplus_tree"
+name = "bplustree"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
@@ -38,7 +38,7 @@ opt-level = 3
 [profile.release]
 opt-level = 3
 
-[dev-dependencies.bplus_tree]
+[dev-dependencies.bplustree]
 path = "."
 features = ["testing", "failpoints" ]
 

@@ -263,7 +263,7 @@ Priorities: P0 = must-have for public use, P1 = nice soon, P2 = later
 - [x] P2: Prefix scans & RangeBounds helpers
 - [x] P2: Background GC tuning (adaptive frequency)
 - [x] P2: Optional network service + driver (gRPC)
-- [x] P2: Support for large values (overflow pages)
+- [x] P2: Support for large values (overflow pages) Or calculate max value size based on order and page size
 - [x] P2: Performance optimizations (hot paths)
 - [x] P2: Async support (async storage backends)  
 - [x] P2: Monitoring & metrics (operation counts, latencies)

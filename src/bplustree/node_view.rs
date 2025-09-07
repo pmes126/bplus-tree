@@ -121,17 +121,15 @@ impl NodeView {
     }
 
     /// Split the node into two, returning the new node and the split key
-    pub fn split_off(&mut self, idx: usize) -> Result<(Vec<u8>, NodeView), anyhow::Error> {
+    pub fn split_off(&mut self, idx: usize) -> Result<NodeView, anyhow::Error> {
         match self {
             NodeView::Internal { page } => {
                 let new_page = page.split_off(idx).map_err(|e| anyhow::anyhow!(e))?;
-                let split_key = new_page.key_bytes_at(0)?; // First key of the new page
-                Ok((split_key.to_vec(), NodeView::Internal { page: new_page }))
+                Ok(NodeView::Internal { page: new_page })
             }
             NodeView::Leaf { page } => {
                 let new_page = page.split_off(idx).map_err(|e| anyhow::anyhow!(e))?;
-                let split_key = new_page.key_bytes_at(0)?; // First key of the new page
-                Ok((split_key.to_vec(), NodeView::Leaf { page: new_page }))
+                Ok(NodeView::Leaf { page: new_page })
             }
         }
     }
