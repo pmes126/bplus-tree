@@ -248,7 +248,7 @@ where
         let delete_res = self.inner.delete_inner(key, root_id, &mut collector)?;
         let DeleteResult::Deleted(new_root_id) = delete_res else {
             return Err(
-                TreeError::BackendAny(format!("Failed to delete key: {:?}", delete_res)).into(),
+                TreeError::BackendAny(format!("Failed to delete key: {:?}", delete_res)),
             );
         };
         let write_res = WriteResult {
@@ -458,7 +458,7 @@ where
     fn read_node(&self, id: NodeId) -> Result<Option<Node<K, V>>, TreeError> {
         self.storage
             .read_node(id)
-            .map_err(|e| TreeError::BackendAny(format!("failed to read node {}:", e.to_string())))
+            .map_err(|e| TreeError::BackendAny(format!("failed to read node {}:", e)))
     }
 
     // Writes a node to the B+ tree storage and updates the cache.
@@ -468,7 +468,7 @@ where
         tracker: &mut impl TxnTracker,
     ) -> Result<u64, TreeError> {
         let new_id = self.storage.write_node(node).map_err(|e| {
-            TreeError::BackendAny(format!("failed to write node {}:", e.to_string()))
+            TreeError::BackendAny(format!("failed to write node {}:", e))
         })?;
         tracker.add_new(new_id);
         Ok(new_id)
@@ -524,8 +524,7 @@ where
                     // Node not found, this should not happen as we are traversing the path
                     return Err(TreeError::BackendAny(
                         "Node not found while getting insertion path".to_string(),
-                    )
-                    .into());
+                    ));
                 }
             }
         }
@@ -560,8 +559,7 @@ where
                     // Node not found, this should not happen as we are traversing the path
                     return Err(TreeError::BackendAny(
                         "Node not found while getting insertion path".to_string(),
-                    )
-                    .into());
+                    ));
                 }
             }
         }
@@ -591,7 +589,7 @@ where
 
         let Node::Leaf { keys, values, .. } = &mut leaf_node else {
             return Err(
-                TreeError::BackendAny("Expected a leaf node for insertion".to_string()).into(),
+                TreeError::BackendAny("Expected a leaf node for insertion".to_string()),
             );
         };
 
@@ -666,7 +664,7 @@ where
                 split_key: split_key.clone(),
             })
         } else {
-            Err(TreeError::BackendAny("Expected a leaf node for splitting".to_string()).into())
+            Err(TreeError::BackendAny("Expected a leaf node for splitting".to_string()))
         }
     }
 
@@ -702,7 +700,7 @@ where
                 split_key: split_key.clone(),
             })
         } else {
-            Err(TreeError::BackendAny("Expected an internal node for splitting".to_string()).into())
+            Err(TreeError::BackendAny("Expected an internal node for splitting".to_string()))
         }
     }
 
@@ -740,15 +738,13 @@ where
             else {
                 return Err(TreeError::BackendAny(
                     "Expected internal node while updating parents".to_string(),
-                )
-                .into());
+                ));
             };
             if insert_pos >= children.len() {
                 return Err(TreeError::BackendAny(format!(
                     "Insert position {} out of bounds for children in node {}",
                     insert_pos, parent_id
-                ))
-                .into());
+                )));
             }
             // Reclaim the original child node and update the child pointer
             track.reclaim(children[insert_pos]);
@@ -773,14 +769,12 @@ where
             let Some(mut node) = self.read_node(parent_id)? else {
                 return Err(TreeError::NodeNotFound(
                     "Node not found while inserting into parent".to_string(),
-                )
-                .into());
+                ));
             };
             let Node::Internal { keys, children } = &mut node else {
                 return Err(TreeError::BackendAny(
                     "Expected internal node in propagation path".to_string(),
-                )
-                .into());
+                ));
             };
             // Insert the split key and adjust children
             keys.insert(insert_pos, key);
@@ -900,8 +894,7 @@ where
                     // Node not found, this should not happen as we are traversing the path
                     return Err(TreeError::BackendAny(
                         "Node not found while getting insertion path".to_string(),
-                    )
-                    .into());
+                    ));
                 }
             }
         }
@@ -938,7 +931,7 @@ where
         let res = self.delete_inner(key, root_id, track)?;
         match res {
             DeleteResult::NotFound => {
-                Err(TreeError::BackendAny("Key not found for deletion".to_string()).into())
+                Err(TreeError::BackendAny("Key not found for deletion".to_string()))
             } // Key not found, return current root
             DeleteResult::Deleted(new_root_id) => Ok(new_root_id),
         }
@@ -954,7 +947,7 @@ where
         let _guard = self.epoch_mgr.pin();
         let (path, mut node) = self.get_insertion_path_undecoded(key, root_id)?;
         let Node::Leaf { keys, values, .. } = &mut node else {
-            return Err(TreeError::BackendAny("Expected leaf node".to_string()).into());
+            return Err(TreeError::BackendAny("Expected leaf node".to_string()));
         };
         let Ok(index) = keys.binary_search(key) else {
             return Ok(DeleteResult::NotFound);
@@ -986,7 +979,7 @@ where
     ) -> Result<NodeId, TreeError> {
         while let Some((parent_id, idx)) = path.pop() {
             let Some(mut parent_node) = self.read_node(parent_id)? else {
-                return Err(TreeError::NodeNotFound("Parent node not found".to_string()).into());
+                return Err(TreeError::NodeNotFound("Parent node not found".to_string()));
             };
             {
                 let Node::Internal {
@@ -996,8 +989,7 @@ where
                 else {
                     return Err(TreeError::BackendAny(
                         "Expected internal node as parent".to_string(),
-                    )
-                    .into());
+                    ));
                 };
                 // If the root has only one child, replace the root with that child
                 if path.is_empty() && children.len() == 1 {
@@ -1050,7 +1042,7 @@ where
                 }
             }
         }
-        Err(TreeError::BackendAny("Node underflow couldn't be resolved".to_string()).into())
+        Err(TreeError::BackendAny("Node underflow couldn't be resolved".to_string()))
     }
 
     // Tries to borrow a key from the left sibling of the current node.
@@ -1069,7 +1061,7 @@ where
         let left_child_idx = idx - 1; // The index of the left sibling in the children array
         let left_sibling_id = children[left_child_idx];
         let Some(mut left_sibling) = self.read_node(left_sibling_id)? else {
-            return Err(TreeError::NodeNotFound("Left sibling not found".to_string()).into());
+            return Err(TreeError::NodeNotFound("Left sibling not found".to_string()));
         };
         match (&mut left_sibling, &mut *node) {
             (
@@ -1127,8 +1119,7 @@ where
             _ => {
                 return Err(TreeError::BackendAny(
                     "Expected matching node types for borrowing".to_string(),
-                )
-                .into());
+                ));
             }
         };
         let new_node_id = self.write_node(node, track)?;
@@ -1157,7 +1148,7 @@ where
         let parent_key_idx = idx; // The key in the parent node that separates the two children
         let right_sibling_id = children[idx + 1];
         let Some(mut right_sibling) = self.read_node(right_sibling_id)? else {
-            return Err(TreeError::NodeNotFound("Right sibling not found".to_string()).into());
+            return Err(TreeError::NodeNotFound("Right sibling not found".to_string()));
         };
         match (&mut *node, &mut right_sibling) {
             (
@@ -1213,8 +1204,7 @@ where
             _ => {
                 return Err(TreeError::BackendAny(
                     "Expected matching node types for borrowing".to_string(),
-                )
-                .into());
+                ));
             }
         }
         // Write the updated nodes back to storage
@@ -1244,7 +1234,7 @@ where
         let left_sibling_id = children[idx - 1];
         let parent_key_idx = idx - 1; // The key in the parent node that separates the two children
         let Some(mut left_sibling) = self.read_node(left_sibling_id)? else {
-            return Err(TreeError::NodeNotFound("Left sibling not found".to_string()).into());
+            return Err(TreeError::NodeNotFound("Left sibling not found".to_string()));
         };
         match (&mut left_sibling, &mut *node) {
             (
@@ -1300,7 +1290,6 @@ where
             }
             _ => Err(
                 TreeError::BackendAny("Expected matching node types for merging".to_string())
-                    .into(),
             ),
         }
     }
@@ -1323,7 +1312,7 @@ where
         let right_sibling_id = children[right_idx];
         let parent_key_idx = idx; // The key in the parent node that separates the two children
         let Some(mut right_sibling) = self.read_node(right_sibling_id)? else {
-            return Err(TreeError::NodeNotFound("Left sibling not found".to_string()).into());
+            return Err(TreeError::NodeNotFound("Left sibling not found".to_string()));
         };
         match (&mut *node, &mut right_sibling) {
             (
@@ -1379,7 +1368,6 @@ where
             }
             _ => Err(
                 TreeError::BackendAny("Expected matching node types for merging".to_string())
-                    .into(),
             ),
         }
     }
@@ -1406,8 +1394,7 @@ where
                 if left_keys.len() + right_keys.len() > self.max_keys {
                     return Err(TreeError::BackendAny(
                         "Cannot merge leaf nodes, total keys exceed max keys".to_string(),
-                    )
-                    .into());
+                    ));
                 }
                 // Merge the two leaf nodes
                 left_keys.append(right_keys); // Move keys from right to left
@@ -1430,8 +1417,7 @@ where
                 if left_keys.len() + right_keys.len() > self.max_keys {
                     return Err(TreeError::BackendAny(
                         "Cannot merge internal nodes, total keys exceed max keys".to_string(),
-                    )
-                    .into());
+                    ));
                 }
                 left_keys.append(right_keys);
                 left_children.append(right_children);
@@ -1441,7 +1427,7 @@ where
                     children: std::mem::take(left_children),
                 })
             }
-            _ => Err(TreeError::BackendAny("Expected leaf nodes for merging".to_string()).into()),
+            _ => Err(TreeError::BackendAny("Expected leaf nodes for merging".to_string())),
         }
     }
 
@@ -1658,7 +1644,7 @@ where
                     result.push((key.clone(), value.clone()));
                 }
             }
-            None => return Err(TreeError::NodeNotFound("Node not found".to_string()).into()),
+            None => return Err(TreeError::NodeNotFound("Node not found".to_string())),
         }
         Ok(())
     }
