@@ -1,7 +1,7 @@
 #![allow(dead_code)]
+use crate::api::TreeError;
 use crate::bplustree::node::{Node, NodeId};
 use crate::bplustree::{EpochManager, epoch::ReaderGuard};
-use crate::api::TreeError;
 use crate::codec::{KeyCodec, ValueCodec};
 use crate::storage::NodeStorage;
 use std::sync::Arc;
@@ -110,8 +110,7 @@ where
     // Returns the next item in the iteration, it returns a deep copy value of the Key and Value pair if it is within the range
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if let Some(Node::Leaf { keys, values, .. }) = &mut self.current_leaf
-            {
+            if let Some(Node::Leaf { keys, values, .. }) = &mut self.current_leaf {
                 if self.index < keys.len() {
                     let (k, v) = (&keys[self.index], &values[self.index]);
                     if k > &self.end {

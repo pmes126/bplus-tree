@@ -1,7 +1,7 @@
-use ::bplustree::*;
-use crate::bplustree::tree::{BPlusTree, SharedBPlusTree};
 use self::storage::{file_store::FileStore, page_store::PageStore};
-use criterion::{criterion_group, criterion_main, Criterion};
+use crate::bplustree::tree::{BPlusTree, SharedBPlusTree};
+use ::bplustree::*;
+use criterion::{Criterion, criterion_group, criterion_main};
 use tempfile::TempDir;
 fn benchmark_insert(c: &mut Criterion) {
     c.bench_function("insert 1 million keys", |b| {

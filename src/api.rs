@@ -12,18 +12,16 @@ use std::marker::PhantomData;
 
 use crate::bplustree::iterator::BPlusTreeIter;
 use crate::bplustree::tree::{BPlusTree, SharedBPlusTree};
-use crate::storage::{MetadataStorage, NodeStorage};
 use crate::codec::{KeyCodec, ValueCodec};
+use crate::storage::{MetadataStorage, NodeStorage};
 
-pub use crate::bplustree::transaction::{
-    WriteTransaction as WriteTxn,
-};
+pub use crate::bplustree::transaction::WriteTransaction as WriteTxn;
 
 // ============================
 // KV Error type
 // ============================
 
-pub use crate::bplustree::tree::{TreeError, CommitError};
+pub use crate::bplustree::tree::{CommitError, TreeError};
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
@@ -80,14 +78,8 @@ where
     }
 
     /// Streaming scan over [start, end). Returns None if tree is empty.
-    pub fn scan_range<'a>(
-        &'a self,
-        start: &[u8],
-        end: &[u8],
-    ) -> Result<Option<BytesIter<'a, S>>> {
-        let it_opt = self
-            .inner
-            .search_in_range(&start.to_vec(), &end.to_vec())?;
+    pub fn scan_range<'a>(&'a self, start: &[u8], end: &[u8]) -> Result<Option<BytesIter<'a, S>>> {
+        let it_opt = self.inner.search_in_range(&start.to_vec(), &end.to_vec())?;
         Ok(it_opt.map(|inner| BytesIter { inner }))
     }
 
@@ -115,9 +107,7 @@ where
 
     /// Begin a batched write transaction (single commit).
     pub fn begin_write(&self) -> Result<WriteTxnBytes<S>> {
-        Ok(WriteTxnBytes::new(
-            self.inner.clone(),
-        ))
+        Ok(WriteTxnBytes::new(self.inner.clone()))
     }
 }
 
@@ -180,19 +170,13 @@ where
         self.inner.delete_with_root(key, root_id).map(|_| ())
     }
 
-    pub fn scan_range<'a>(
-        &'a self,
-        start: &K,
-        end: &K,
-    ) -> Result<Option<TypedIter<'a, K, V, S>>> {
+    pub fn scan_range<'a>(&'a self, start: &K, end: &K) -> Result<Option<TypedIter<'a, K, V, S>>> {
         let it_opt = self.inner.search_in_range(start, end)?;
         Ok(it_opt.map(|inner| TypedIter { inner }))
     }
 
     pub fn begin_write(&self) -> Result<TypedWriteTxn<K, V, S>> {
-        Ok(TypedWriteTxn::new(
-            self.inner.clone(),
-        ))
+        Ok(TypedWriteTxn::new(self.inner.clone()))
     }
 }
 
@@ -227,7 +211,9 @@ pub struct DbOptions {
     // room for more: page_size, fsync, cache_cap, prealloc, etc.
 }
 impl Default for DbOptions {
-    fn default() -> Self { Self { order: 64 } }
+    fn default() -> Self {
+        Self { order: 64 }
+    }
 }
 
 /// Generic builder over a concrete storage backend `S`.
@@ -238,13 +224,24 @@ pub struct DbBuilder<S> {
 
 impl<S> DbBuilder<S> {
     /// Start a builder with a storage backend (configure the storage itself upstream).
-    pub fn new(storage: S) -> Self { Self { storage, opts: DbOptions::default() } }
+    pub fn new(storage: S) -> Self {
+        Self {
+            storage,
+            opts: DbOptions::default(),
+        }
+    }
 
     /// Replace the full options bag.
-    pub fn options(mut self, opts: DbOptions) -> Self { self.opts = opts; self }
+    pub fn options(mut self, opts: DbOptions) -> Self {
+        self.opts = opts;
+        self
+    }
 
     /// Set just the B+-tree order (fanout).
-    pub fn order(mut self, order: usize) -> Self { self.opts.order = order; self }
+    pub fn order(mut self, order: usize) -> Self {
+        self.opts.order = order;
+        self
+    }
 
     /// Build the **bytes-level** API (Vec<u8> keys/values).
     pub fn build_bytes(self) -> Result<DbBytes<S>>
@@ -269,9 +266,7 @@ impl<S> DbBuilder<S> {
 // ============================================================
 
 /// Bytes-level write txn (Vec<u8>, Vec<u8>)
-pub type WriteTxnBytes<S> =
-    WriteTxn<Vec<u8>, Vec<u8>, S>;
+pub type WriteTxnBytes<S> = WriteTxn<Vec<u8>, Vec<u8>, S>;
 
 /// Typed write txn (K, V)
-pub type TypedWriteTxn<K, V, S> =
-    WriteTxn<K, V, S>;
+pub type TypedWriteTxn<K, V, S> = WriteTxn<K, V, S>;

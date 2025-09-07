@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::fmt::{format, Debug};
+use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
@@ -8,12 +8,12 @@ use crate::bplustree::BPlusTreeIter;
 use crate::bplustree::EpochManager;
 use crate::bplustree::epoch::COMMIT_COUNT;
 use crate::bplustree::{Node, NodeView};
-use crate::codec::{KeyCodec, ValueCodec, CodecError};
-use crate::storage::{NodeStorage, MetadataStorage, StorageError};
+use crate::codec::{CodecError, KeyCodec, ValueCodec};
 use crate::metadata;
 use crate::metadata::{
     Metadata, {METADATA_PAGE_1, METADATA_PAGE_2},
 };
+use crate::storage::{MetadataStorage, NodeStorage, StorageError};
 use std::result::Result;
 use thiserror::Error;
 
@@ -50,8 +50,7 @@ pub enum SplitResult<K, N> {
 }
 
 #[derive(Debug, Error)]
-pub enum TreeError
-{
+pub enum TreeError {
     #[error("Bad input: {0}")]
     BadInput(String),
 
@@ -67,7 +66,7 @@ pub enum TreeError
     Storage(#[from] StorageError),
     #[error(transparent)]
     Codec(#[from] crate::codec::CodecError),
-    #[error(transparent)]   
+    #[error(transparent)]
     Any(#[from] anyhow::Error),
 }
 
@@ -190,7 +189,7 @@ where
     inner: Arc<BPlusTree<K, V, S>>,
 }
 
-impl<K, V, S> Clone for SharedBPlusTree<K, V, S> 
+impl<K, V, S> Clone for SharedBPlusTree<K, V, S>
 where
     K: KeyCodec + Ord + Clone,
     V: ValueCodec + Clone,
@@ -219,7 +218,12 @@ where
         Self { inner: tree }
     }
 
-    pub fn insert_with_root(&self, key: K, value: V, root_id: NodeId) -> Result<WriteResult, TreeError> {
+    pub fn insert_with_root(
+        &self,
+        key: K,
+        value: V,
+        root_id: NodeId,
+    ) -> Result<WriteResult, TreeError> {
         let mut collector = TransactionTracker::new();
         let new_root_id = self
             .inner
@@ -243,7 +247,9 @@ where
         let mut collector = TransactionTracker::new();
         let delete_res = self.inner.delete_inner(key, root_id, &mut collector)?;
         let DeleteResult::Deleted(new_root_id) = delete_res else {
-            return Err(TreeError::BackendAny(format!("Failed to delete key: {:?}", delete_res)).into());
+            return Err(
+                TreeError::BackendAny(format!("Failed to delete key: {:?}", delete_res)).into(),
+            );
         };
         let write_res = WriteResult {
             new_root_id,
@@ -450,12 +456,20 @@ where
 
     // Reads a node from the B+ tree storage, using the cache if available.
     fn read_node(&self, id: NodeId) -> Result<Option<Node<K, V>>, TreeError> {
-        self.storage.read_node(id).map_err(|e| TreeError::BackendAny(format!("failed to read node {}:", e.to_string())))
+        self.storage
+            .read_node(id)
+            .map_err(|e| TreeError::BackendAny(format!("failed to read node {}:", e.to_string())))
     }
 
     // Writes a node to the B+ tree storage and updates the cache.
-    fn write_node(&self, node: &Node<K, V>, tracker: &mut impl TxnTracker) -> Result<u64, TreeError> {
-        let new_id = self.storage.write_node(node).map_err(|e| TreeError::BackendAny(format!("failed to write node {}:", e.to_string())))?;
+    fn write_node(
+        &self,
+        node: &Node<K, V>,
+        tracker: &mut impl TxnTracker,
+    ) -> Result<u64, TreeError> {
+        let new_id = self.storage.write_node(node).map_err(|e| {
+            TreeError::BackendAny(format!("failed to write node {}:", e.to_string()))
+        })?;
         tracker.add_new(new_id);
         Ok(new_id)
     }
@@ -480,8 +494,7 @@ where
                     NodeView::Leaf { .. } => {
                         // Found the leaf node, return the path and node
                         let decoded_node =
-                            self.storage.read_node(current_id)?
-                            .ok_or_else(|| {
+                            self.storage.read_node(current_id)?.ok_or_else(|| {
                                 TreeError::NodeNotFound(format!(
                                     "Leaf node with ID {} not found",
                                     current_id
@@ -555,7 +568,12 @@ where
     }
 
     // Inserts a key-value pair into the B+ tree, acquiring an epoch guard to ensure consistency.
-    pub fn insert(&self, key: K, value: V, track: &mut impl TxnTracker) -> Result<NodeId, TreeError> {
+    pub fn insert(
+        &self,
+        key: K,
+        value: V,
+        track: &mut impl TxnTracker,
+    ) -> Result<NodeId, TreeError> {
         let root_id = self.get_root_id();
         self.insert_inner(key, value, root_id, track)
     }
@@ -617,7 +635,10 @@ where
 
     // Splits a leaf node into two nodes and returns the new right node, the left node, and the
     // first key of the right node to be pushed up to the parent.
-    fn split_leaf_node(&self, mut leaf_node: Node<K, V>) -> Result<SplitResult<K, Node<K, V>>, TreeError> {
+    fn split_leaf_node(
+        &self,
+        mut leaf_node: Node<K, V>,
+    ) -> Result<SplitResult<K, Node<K, V>>, TreeError> {
         // Equally split the keys and values between the two nodes.
         if let Node::Leaf { keys, values } = &mut leaf_node {
             let mid = keys.len() / 2;
@@ -838,8 +859,11 @@ where
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
         // Find insertion point
         loop {
-            match self.storage.read_node_view(current_id).map_err(|e| TreeError::BackendAny(e.to_string()))
-    ? {
+            match self
+                .storage
+                .read_node_view(current_id)
+                .map_err(|e| TreeError::BackendAny(e.to_string()))?
+            {
                 Some(node) => match &node {
                     NodeView::Leaf { .. } => {
                         match node.lower_bound(encode_buf.as_ref()) {
@@ -1365,7 +1389,7 @@ where
         &self,
         left_node: &mut Node<K, V>,
         right_node: &mut Node<K, V>,
-    ) -> Result<Node<K, V>,TreeError> {
+    ) -> Result<Node<K, V>, TreeError> {
         match (&mut *left_node, right_node) {
             // Match on a new mutable reference to the left node
             (
@@ -1444,7 +1468,12 @@ where
     }
 
     // Version of commit to be used for single threaded commits, use for testing and debugging
-    pub fn commit(&self, new_root_id: NodeId, _height: usize, _size: usize) -> Result<(), TreeError> {
+    pub fn commit(
+        &self,
+        new_root_id: NodeId,
+        _height: usize,
+        _size: usize,
+    ) -> Result<(), TreeError> {
         // Now commit the new root
         // 1. Write new metadata (to double-buffered slot)
         let new_txn_id = self.txn_id.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1611,7 +1640,11 @@ where
     }
 
     // Recursive implementation of traversal.
-    pub fn traverse_inner(&self, node_id: NodeId, result: &mut Vec<(K, V)>) -> Result<(), TreeError> {
+    pub fn traverse_inner(
+        &self,
+        node_id: NodeId,
+        result: &mut Vec<(K, V)>,
+    ) -> Result<(), TreeError> {
         match self.read_node(node_id)? {
             Some(Node::Internal { keys, children }) => {
                 for (i, child_id) in children.iter().enumerate() {

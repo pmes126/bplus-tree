@@ -132,7 +132,12 @@ impl LeafPage {
     }
 
     // Insert value at a specific index according to the Layout of [RECORD AREA: N × [klen][vlen][key][value]]
-    pub fn insert_entry_at(&mut self, idx: usize, key: &[u8], value: &[u8]) -> Result<(), PageCodecError> {
+    pub fn insert_entry_at(
+        &mut self,
+        idx: usize,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), PageCodecError> {
         if idx > self.header.entry_count as usize {
             return Err(PageCodecError::IndexOutOfBounds {
                 msg: "Provided insertion index is beyond entries size".to_string(),
@@ -157,9 +162,11 @@ impl LeafPage {
         // pair in the space between
         let insertion_point = self.slots.offsets[idx] as usize;
         let shift_count = self.header.free_start as usize - insertion_point;
-        let src_idx = insertion_point; 
+        let src_idx = insertion_point;
         let dst_idx = src_idx + required_space;
-        self.data.blob.copy_within(src_idx..src_idx+shift_count, dst_idx);
+        self.data
+            .blob
+            .copy_within(src_idx..src_idx + shift_count, dst_idx);
 
         // All values from idx onwards should be shifted by 1 position to the right and have required_space
         // added to them
@@ -171,8 +178,7 @@ impl LeafPage {
         for i in dest_idx..dest_idx + shift_count {
             self.slots.offsets[i] += required_space as u16;
         }
-        
-        
+
         self.header.free_start += required_space as u64;
 
         let data = &mut self.data.blob[..];
@@ -326,8 +332,7 @@ impl LeafPage {
         // Clear the data area from free_start to the end
         self.data.blob[self.header.free_start as usize..].fill(0);
         // Clear old offsets
-        self.slots.offsets[idx..self.header.entry_count as usize]
-            .fill(0);
+        self.slots.offsets[idx..self.header.entry_count as usize].fill(0);
         // Adjust the entry count of the original page
         self.drain(idx)?;
 
@@ -404,21 +409,21 @@ mod tests {
         }
         let key = "SomeKeyWithRandomSize";
         let value = "SomeValueWithRandomSize";
-        let idx_rand = rng.gen_range(0..iterations-1);
+        let idx_rand = rng.gen_range(0..iterations - 1);
         let res = page.insert_entry_at(idx_rand, key.as_bytes(), value.as_bytes());
         assert!(res.is_ok());
         let (retrieved_key, retrieved_value) = page.get_entry(idx_rand).unwrap();
         assert_eq!(retrieved_value, value.as_bytes());
         assert_eq!(retrieved_key, key.as_bytes());
-        
-        for i in idx_rand+1..iterations {
+
+        for i in idx_rand + 1..iterations {
             let mut key = format!("key{}", i);
             let mut value = format!("value{}", i);
             for _j in 0..i {
                 key.push_str(&format!("key{}", i));
                 value.push_str(&format!("value{}", i));
             }
-            let (retrieved_key, retrieved_value) = page.get_entry(i+1).unwrap();
+            let (retrieved_key, retrieved_value) = page.get_entry(i + 1).unwrap();
             assert_eq!(retrieved_key, key.as_bytes());
             assert_eq!(retrieved_value, value.as_bytes());
         }

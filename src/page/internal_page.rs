@@ -104,7 +104,12 @@ impl InternalPage {
     }
 
     // Store at a specific index according to the layout => [klen][key][ptr]
-    pub fn insert_entry_at(&mut self, idx: usize, key: &[u8], child: u64) -> Result<(), PageCodecError> {
+    pub fn insert_entry_at(
+        &mut self,
+        idx: usize,
+        key: &[u8],
+        child: u64,
+    ) -> Result<(), PageCodecError> {
         if idx > self.header.entry_count as usize {
             return Err(PageCodecError::IndexOutOfBounds {
                 msg: "Provided insertion index is beyond entries size".to_string(),
@@ -131,7 +136,9 @@ impl InternalPage {
         let shift_count = self.header.free_start as usize - insertion_point;
         let src_idx = insertion_point;
         let dst_idx = src_idx + required_space;
-        self.data.blob.copy_within(src_idx..src_idx+shift_count, dst_idx);
+        self.data
+            .blob
+            .copy_within(src_idx..src_idx + shift_count, dst_idx);
 
         // All values from idx onwards should be shifted by 1 position to the right and have required_space
         // added to them
@@ -139,7 +146,9 @@ impl InternalPage {
         let src_idx = idx;
         let end_idx = src_idx + shift_count;
         let dest_idx = src_idx + 1;
-        self.header.key_offsets.copy_within(src_idx..end_idx, dest_idx);
+        self.header
+            .key_offsets
+            .copy_within(src_idx..end_idx, dest_idx);
         for i in dest_idx..dest_idx + shift_count - 1 {
             self.header.key_offsets[i] += required_space as u16;
         }
@@ -276,8 +285,7 @@ impl InternalPage {
         // Update the free_start of the original page to the offset of the idx entry
         self.header.free_start = self.header.key_offsets[idx] as u64;
         // Clear old offsets
-        self.header.key_offsets[idx..self.header.entry_count as usize]
-            .fill(0);
+        self.header.key_offsets[idx..self.header.entry_count as usize].fill(0);
 
         Ok(new_page)
     }
@@ -344,7 +352,7 @@ mod tests {
             assert_eq!(retrieved_value, i);
         }
         let key = "SomeKeyWithRandomSize";
-        let idx_rand = rng.gen_range(0..iterations-1) as usize;
+        let idx_rand = rng.gen_range(0..iterations - 1) as usize;
         let res = page.insert_entry_at(idx_rand as usize, key.as_bytes(), 999);
         assert!(res.is_ok());
         let (retrieved_key, retrieved_value) = page.get_entry(idx_rand).unwrap();

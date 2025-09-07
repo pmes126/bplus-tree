@@ -1,5 +1,5 @@
 //! Example: bytes-level API usage
-use bplustree::api::{DbBuilder};
+use bplustree::api::DbBuilder;
 use bplustree::storage::{file_store::FileStore, page_store::PageStore};
 
 fn main() -> anyhow::Result<()> {
@@ -10,8 +10,8 @@ fn main() -> anyhow::Result<()> {
     let store = FileStore::<PageStore>::new(&db_path)?;
 
     let db = DbBuilder::new(store)
-    .order(64)
-    .build_typed::<u64, String>()?;
+        .order(64)
+        .build_typed::<u64, String>()?;
 
     let k1 = 1u64;
     let v1 = "Some String value".to_string();

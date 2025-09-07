@@ -21,7 +21,7 @@ pub enum StorageError {
     Codec(#[from] CodecError),
 
     #[error("page corrupted: {0}")]
-    CodecFailure (&'static str),
+    CodecFailure(&'static str),
 
     #[error("Storage error: {msg}")]
     StorageAny { msg: String },

@@ -1,8 +1,8 @@
 pub mod bincode;
 
-use thiserror::Error;
 use crate::bplustree::node::Node;
 use crate::layout::PAGE_SIZE;
+use thiserror::Error;
 
 /// Trait for node storage operations
 pub trait KeyCodec {
@@ -39,7 +39,7 @@ pub enum CodecError {
     #[error("Error encoding value: {msg}")]
     EncodeFailure { msg: String },
 
-    #[error("Error converting from byte slice: {source}" )]
+    #[error("Error converting from byte slice: {source}")]
     FromSliceError {
         #[from]
         source: std::array::TryFromSliceError,

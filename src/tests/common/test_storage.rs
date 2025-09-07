@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 use crate::bplustree::{Node, NodeView};
-use crate::storage::{NodeStorage, MetadataStorage, StorageError};
 use crate::metadata::Metadata;
 use crate::metadata::MetadataPage;
+use crate::storage::{MetadataStorage, NodeStorage, StorageError};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -22,7 +22,7 @@ pub struct TestStorage {
     pub state: Arc<Mutex<StorageState>>,
     pub fail_commit: Arc<AtomicBool>,
     pub fail_flush: Arc<AtomicBool>,
-    root_node_id: u64, // This can be used to simulate a root node ID
+    root_node_id: u64,
 }
 
 impl TestStorage {

@@ -92,7 +92,8 @@ impl NodeView {
         match self {
             NodeView::Internal { page } => {
                 if let Some(ptr) = child_ptr {
-                    page.insert_entry_at(idx, key, ptr).map_err(|e| anyhow::anyhow!(e))
+                    page.insert_entry_at(idx, key, ptr)
+                        .map_err(|e| anyhow::anyhow!(e))
                 } else {
                     Err(anyhow::anyhow!(
                         "Internal nodes require a child pointer for insertion"
@@ -101,11 +102,10 @@ impl NodeView {
             }
             NodeView::Leaf { page } => {
                 if let Some(val) = value {
-                    page.insert_entry_at(idx, key, val).map_err(|e| anyhow::anyhow!(e))
+                    page.insert_entry_at(idx, key, val)
+                        .map_err(|e| anyhow::anyhow!(e))
                 } else {
-                    Err(anyhow::anyhow!(
-                        "Leaf nodes require a value for insertion"
-                    ))
+                    Err(anyhow::anyhow!("Leaf nodes require a value for insertion"))
                 }
             }
         }

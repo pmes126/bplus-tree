@@ -1,11 +1,14 @@
-use crate::storage::{PageStorage, MetadataStorage, NodeStorage, Metadata, StorageError};
 use crate::bplustree::Node;
 use crate::bplustree::NodeView;
-use crate::layout::PAGE_SIZE;
 use crate::codec::bincode::DefaultNodeCodec;
 use crate::codec::bincode::NoopNodeViewCodec;
-use crate::codec::{ KeyCodec, NodeCodec, ValueCodec };
-use crate::metadata::{ METADATA_PAGE_1, METADATA_PAGE_2, MetadataPage, calculate_checksum, new_metadata_page, new_metadata_page_with_object };
+use crate::codec::{KeyCodec, NodeCodec, ValueCodec};
+use crate::layout::PAGE_SIZE;
+use crate::metadata::{
+    METADATA_PAGE_1, METADATA_PAGE_2, MetadataPage, calculate_checksum, new_metadata_page,
+    new_metadata_page_with_object,
+};
+use crate::storage::{Metadata, MetadataStorage, NodeStorage, PageStorage, StorageError};
 
 use anyhow::Result;
 use std::path::Path;
@@ -149,4 +152,3 @@ where
         self.store.free_page(id)
     }
 }
-
