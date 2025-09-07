@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use crate::bplustree::node::{Node, NodeId};
 use crate::bplustree::{EpochManager, epoch::ReaderGuard};
+use crate::api::TreeError;
 use crate::codec::{KeyCodec, ValueCodec};
 use crate::storage::NodeStorage;
 use std::sync::Arc;
@@ -104,7 +105,7 @@ where
     K: KeyCodec + Clone + Ord,
     V: ValueCodec + Clone,
 {
-    type Item = Result<(K, V), anyhow::Error>;
+    type Item = Result<(K, V), TreeError>;
 
     // Returns the next item in the iteration, it returns a deep copy value of the Key and Value pair if it is within the range
     fn next(&mut self) -> Option<Self::Item> {

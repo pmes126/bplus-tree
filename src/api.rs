@@ -62,7 +62,7 @@ where
 
     /// Get by raw key.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        self.inner.search(&key.to_vec())
+        self.inner.search(&key.to_vec()).map_err(ApiError::from)
     }
 
     /// Put raw key/value.
@@ -76,7 +76,7 @@ where
         let root_id = self.inner.get_root_id();
         self.inner
             .delete_with_root(&key.to_vec(), root_id)
-            .map(|_| ())
+            .map_err(ApiError::from)
     }
 
     /// Streaming scan over [start, end). Returns None if tree is empty.
@@ -169,7 +169,7 @@ where
     }
 
     pub fn get(&self, key: &K) -> Result<Option<V>> {
-        self.inner.search(key)
+        self.inner.search(key).map_err(ApiError::from)
     }
     pub fn put(&self, key: K, value: V) -> Result<()> {
         self.inner.insert(key, value)?;
@@ -247,7 +247,7 @@ impl<S> DbBuilder<S> {
     pub fn order(mut self, order: usize) -> Self { self.opts.order = order; self }
 
     /// Build the **bytes-level** API (Vec<u8> keys/values).
-    pub fn build_bytes(self) -> anyhow::Result<DbBytes<S>>
+    pub fn build_bytes(self) -> Result<DbBytes<S>>
     where
         S: NodeStorage<Vec<u8>, Vec<u8>> + MetadataStorage + Send + Sync + 'static,
     {
@@ -255,7 +255,7 @@ impl<S> DbBuilder<S> {
     }
 
     /// Build the **typed** API using your KeyCodec/ValueCodec.
-    pub fn build_typed<K, V>(self) -> anyhow::Result<TypedDb<K, V, S>>
+    pub fn build_typed<K, V>(self) -> Result<TypedDb<K, V, S>>
     where
         K: KeyCodec + Ord + Clone,
         V: ValueCodec + Clone,

@@ -52,12 +52,6 @@ pub enum SplitResult<K, N> {
 #[derive(Debug, Error)]
 pub enum TreeError
 {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("Failed to initialize backend: {0}")]
-    Backend(#[from] CodecError),
-
     #[error("Bad input: {0}")]
     BadInput(String),
 
@@ -68,7 +62,13 @@ pub enum TreeError
     NodeNotFound(String),
 
     #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
     Storage(#[from] StorageError),
+    #[error(transparent)]
+    Codec(#[from] crate::codec::CodecError),
+    #[error(transparent)]   
+    Any(#[from] anyhow::Error),
 }
 
 #[derive(Debug, Error)]
@@ -352,7 +352,6 @@ where
     K: KeyCodec + Clone + Ord,
     V: ValueCodec + Clone,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
-    StorageError: From<S::Error>,
 {
     pub fn new(storage: S, order: usize) -> Result<BPlusTree<K, V, S>, TreeError> {
         let root_node = Node::Leaf {
@@ -476,12 +475,13 @@ where
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
         // Find insertion point
         loop {
-            match self.storage.read_node_view(current_id).map_err(|e| e.into())? {
+            match self.storage.read_node_view(current_id)? {
                 Some(node) => match &node {
                     NodeView::Leaf { .. } => {
                         // Found the leaf node, return the path and node
                         let decoded_node =
-                            self.storage.read_node(current_id)?.ok_or_else(|| {
+                            self.storage.read_node(current_id)?
+                            .ok_or_else(|| {
                                 TreeError::NodeNotFound(format!(
                                     "Leaf node with ID {} not found",
                                     current_id
@@ -730,13 +730,7 @@ where
                 .into());
             }
             // Reclaim the original child node and update the child pointer
-            track.reclaim(children[insert_pos]).map_err(|e| {
-                TreeError::BackendAny(format!(
-                    "Failed to reclaim node {}: {}",
-                    children[insert_pos],
-                    e.to_string()
-                ))
-            })?;
+            track.reclaim(children[insert_pos]);
             children[insert_pos] = updated_child_id;
             // Propagate up the path
             updated_child_id = self.write_node(&parent_node, track)?;
@@ -770,7 +764,7 @@ where
             // Insert the split key and adjust children
             keys.insert(insert_pos, key);
             // Reclaim the original child node
-            track.reclaim(children[insert_pos])?;
+            track.reclaim(children[insert_pos]);
             children[insert_pos] = left;
             // Replace and insert the new children
             children.insert(insert_pos + 1, right);
@@ -1015,7 +1009,7 @@ where
                         // handle root node underflow
                         if path.is_empty() {
                             if children.len() == 1 {
-                                track.reclaim(parent_id)?;
+                                track.reclaim(parent_id);
                                 track.record_staged_height(self.get_height().saturating_sub(1));
                                 return Ok(children[0]); // If the root has only one child, replace the root with that child
                             } else {
@@ -1116,9 +1110,9 @@ where
         let new_node_id = self.write_node(node, track)?;
         let new_left_node_id = self.write_node(&left_sibling, track)?;
 
-        track.reclaim(children[left_child_idx])?;
+        track.reclaim(children[left_child_idx]);
         children[left_child_idx] = new_left_node_id;
-        track.reclaim(children[idx])?;
+        track.reclaim(children[idx]);
         children[idx] = new_node_id;
 
         Ok(true)
@@ -1203,9 +1197,9 @@ where
         let new_node_id = self.write_node(node, track)?;
         let new_right_node_id = self.write_node(&right_sibling, track)?;
 
-        track.reclaim(children[idx])?;
+        track.reclaim(children[idx]);
         children[idx] = new_node_id;
-        track.reclaim(children[idx + 1])?;
+        track.reclaim(children[idx + 1]);
         children[idx + 1] = new_right_node_id;
 
         Ok(true)
@@ -1245,9 +1239,9 @@ where
                 let merged_node = self.merge_nodes(&mut left_sibling, node)?;
                 let merged_node_id = self.write_node(&merged_node, track)?;
                 // Update the parent node
-                track.reclaim(children[idx])?; // Reclaim the left sibling node
+                track.reclaim(children[idx]); // Reclaim the left sibling node
                 children.remove(idx);
-                track.reclaim(children[idx - 1])?; // Reclaim the left sibling node
+                track.reclaim(children[idx - 1]); // Reclaim the left sibling node
                 children[idx - 1] = merged_node_id; // Update the left sibling with the merged node ID
                 // Update the parent keys
                 if !parent_keys.is_empty() {
@@ -1274,9 +1268,9 @@ where
                 let merged_node = self.merge_nodes(&mut left_sibling, node)?;
                 let merged_node_id = self.write_node(&merged_node, track)?;
                 // Update the parent node
-                track.reclaim(children[idx])?; // Reclaim the left sibling node
+                track.reclaim(children[idx]); // Reclaim the left sibling node
                 children.remove(idx);
-                track.reclaim(children[idx - 1])?; // Reclaim the left sibling node
+                track.reclaim(children[idx - 1]); // Reclaim the left sibling node
                 children[idx - 1] = merged_node_id; // Update the left sibling with the merged node
                 Ok(Some(merged_node_id))
             }
@@ -1324,9 +1318,9 @@ where
                 let merged_node = self.merge_nodes(node, &mut right_sibling)?;
                 let merged_node_id = self.write_node(&merged_node, track)?;
                 // Update the parent node
-                track.reclaim(children[right_idx])?; // Reclaim the right sibling node
+                track.reclaim(children[right_idx]); // Reclaim the right sibling node
                 children.remove(right_idx); // Remove the current node
-                track.reclaim(children[idx])?; // Reclaim the left sibling node
+                track.reclaim(children[idx]); // Reclaim the left sibling node
                 children[idx] = merged_node_id; // Update the left sibling with the merged node
                 // Update the parent keys
                 if !parent_keys.is_empty() {
@@ -1353,9 +1347,9 @@ where
                 let merged_node = self.merge_nodes(node, &mut right_sibling)?;
                 let merged_node_id = self.write_node(&merged_node, track)?;
                 // Update the parent node
-                track.reclaim(children[right_idx])?; // Reclaim the right sibling node
+                track.reclaim(children[right_idx]); // Reclaim the right sibling node
                 children.remove(right_idx); // Remove the right sibling
-                track.reclaim(children[idx])?; // Reclaim the left sibling node
+                track.reclaim(children[idx]); // Reclaim the left sibling node
                 children[idx] = merged_node_id; // Update the left sibling with the merged node
                 Ok(Some(merged_node_id))
             }
