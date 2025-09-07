@@ -447,4 +447,65 @@ mod tests {
         assert_eq!(retrieved_value, 999);
         assert_eq!(retrieved_key, key.as_bytes());
     }
+
+    #[test]
+    fn test_internal_page_removals() {
+        let mut page = InternalPage::new();
+        let keys = ["key1", "key2key2", "key3key3key3"];
+        let children = vec![1, 2, 3];
+
+        // Insert multiple entries
+        for (&key, &child) in keys.iter().zip(&children) {
+            assert!(page.insert_entry(key.as_bytes(), child).is_ok());
+        }
+
+        // Remove the second entry
+        assert!(page.remove_entry_at(1).is_ok());
+
+        // Check remaining entries
+        let (retrieved_key, retrieved_child) = page.get_entry(0).unwrap();
+        assert_eq!(retrieved_key, keys[0].as_bytes());
+        assert_eq!(retrieved_child, children[0]);
+
+        let (retrieved_key, retrieved_child) = page.get_entry(1).unwrap();
+        assert_eq!(retrieved_key, keys[2].as_bytes());
+        assert_eq!(retrieved_child, children[2]);
+
+        // Ensure entry count is updated
+        assert_eq!(page.header.entry_count, 2);
+    }
+
+    #[test]
+    fn test_internal_page_split() {
+        let mut page = InternalPage::new();
+        let keys = ["key1", "key2key2", "key3key3key3", "key4key4key4key4", "key5key5key5key5key5"];
+        let children = vec![1, 2, 3, 4, 5];
+        // Insert multiple entries
+        page.header.leftmost_child = 0;
+        for (&key, &child) in keys.iter().zip(&children) {
+            assert!(page.insert_entry(key.as_bytes(), child).is_ok());
+        }
+        // Split the page at index 2
+        // This should move "key3key3key3" and "key4key4key4key4" to
+        // the new page
+        let new_page = page.split_off(2).unwrap();
+        // Check original page entries
+        assert_eq!(page.header.entry_count, 2);
+        let (retrieved_key, retrieved_child) = page.get_entry(0).unwrap();
+        assert_eq!(retrieved_key, keys[0].as_bytes());
+        assert_eq!(retrieved_child, children[0]);
+        let (retrieved_key, retrieved_child) = page.get_entry(1).unwrap();
+        assert_eq!(retrieved_key, keys[1].as_bytes());
+        assert_eq!(retrieved_child, children[1]);
+        // Check new page entries
+        assert_eq!(new_page.header.entry_count, 3);
+        let (retrieved_key, retrieved_child) = new_page.get_entry(0).unwrap();
+        assert_eq!(retrieved_key, keys[2].as_bytes());
+        assert_eq!(retrieved_child, children[2]);
+        let (retrieved_key, retrieved_child) = new_page.get_entry(1).unwrap();
+        assert_eq!(retrieved_key, keys[3].as_bytes());
+        assert_eq!(retrieved_child, children[3]);
+        // Check leftmost child of new page
+        assert_eq!(new_page.header.leftmost_child, children[1]);
+    }
 }
