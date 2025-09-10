@@ -2,7 +2,7 @@
 //!
 //! Layout (in a PAGE_SIZE buffer):
 //!   [ header ][ KEY BLOCK ][ SLOT DIR ][     FREE     ][ VALUE ARENA ↓ from page end ]
-//!    0        ^            ^ slots_end                               ^ values_hi
+//!    0        ^            ^ slots_base                 ^ values_hi moves downwards
 //!             keys_end = HEADER + key_block_len
 //!             slots_end = keys_end + key_count * SLOT_SIZE
 //!
@@ -37,7 +37,7 @@ fn read_u16_le(buf: &[u8], off: usize) -> u16 {
 #[inline]
 fn write_u16_le(buf: &mut [u8], off: usize, v: u16) {
     let b = v.to_le_bytes();
-    buf.copy_from_slice(&b);
+    buf[off..off + 2].copy_from_slice(&b); // <-- write only the 2 bytes at `off`
 }
 
 // Slot directory item at the end of the page.
@@ -46,6 +46,7 @@ fn write_u16_le(buf: &mut [u8], off: usize, v: u16) {
 struct LeafSlot { val_off: u16, val_len: u16 }
 const SLOT_SIZE: usize = core::mem::size_of::<LeafSlot>();
 const LEN_SIZE: usize = std::mem::size_of::<u16>();
+const OFF_SIZE: usize = std::mem::size_of::<u16>();
 
 // Borrowed/mutable view over a leaf page buffer.
 #[repr(C)]
@@ -58,12 +59,15 @@ pub struct Header {
     values_hi: u16,
 }
 
+const HEADER_SIZE_USIZE: usize = std::mem::size_of::<Header>();
+const BUFFER_SIZE: usize = PAGE_SIZE - HEADER_SIZE;
+
 // Borrowed/mutable view over a leaf page buffer.
 #[repr(C)]
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
 pub struct LeafPage {
     header: Header,
-    buf: [u8; PAGE_SIZE - std::mem::size_of::<Header>()],
+    buf: [u8; BUFFER_SIZE],
 }
 
 //assert_eq_size!(LeafPage, [u8; PAGE_SIZE]);
@@ -76,7 +80,7 @@ impl LeafPage {
                 keyfmt_id,
                 key_count: 0u16,
                 key_block_len: 0u16,
-                values_hi: PAGE_SIZE as u16,
+                values_hi: BUFFER_SIZE as u16, // the hi address within buf where values start
             },
             buf: [0u8; PAGE_SIZE - std::mem::size_of::<Header>()],
         }
@@ -96,24 +100,29 @@ impl LeafPage {
     }
     // --- header accessors ---
 
+    #[inline] pub fn key_count(&self) -> u16 { self.header.key_count }
     #[inline] fn keyfmt_id(&self) -> u8 { self.header.keyfmt_id }
-    #[inline] fn key_count(&self) -> u16 { self.header.key_count }
     #[inline] fn set_key_count(&mut self, n: u16) { self.header.key_count = n; }
 
     #[inline] fn key_block_len(&self) -> u16 { self.header.key_block_len }
     #[inline] fn set_key_block_len(&mut self, n: u16) { self.header.key_block_len = n; }
 
     #[inline] fn values_hi(&self) -> u16 { self.header.values_hi }
+    #[inline] fn values_hi_usize(&self) -> usize { self.header.values_hi as usize }
     #[inline] fn set_values_hi(&mut self, off: u16) { self.header.values_hi = off }
+    #[inline] fn keys_start(&self) -> usize { 0 } // <-- buf already excludes the header
+    #[inline] fn keys_end(&self) -> usize { self.key_block_len() as usize }
+    #[inline] fn slots_base(&self) -> usize { self.keys_end() }
+    #[inline] fn slots_end(&self) -> usize { self.slots_base() + self.key_count() as usize * SLOT_SIZE }
 
     // --- derived regions ---
 
-    #[inline] fn keys_start(&self) -> usize { HEADER_SIZE }
-    #[inline] fn keys_end(&self) -> usize { self.keys_start() + self.key_block_len() as usize }
     #[inline] fn key_block(&self) -> &[u8] { &self.buf[self.keys_start()..self.keys_end()] }
-    #[inline] fn key_block_mut(&mut self) -> &mut [u8] {
+
+    #[inline] fn key_block_mut<'a>(&'a mut self) -> &'a mut [u8] {
         let end = self.keys_end();
-        &mut self.buf[self.keys_start()..end]
+        let start = self.keys_start();
+        &mut self.buf[start..end]
     }
 
     // Resolve runtime key format
@@ -141,7 +150,7 @@ impl LeafPage {
         let lo = self.values_hi_usize();
         let hi = self.slots_end();
         if off < lo || off.checked_add(len).unwrap_or(usize::MAX) > hi {
-            return Err(PageError::Corrupt("slot outside arena"));
+            return Err(PageError::CorruptedData{ msg:"slot outside arena".to_string() });
         }
         Ok(&self.buf[off..off + len])
     }
@@ -184,39 +193,45 @@ impl LeafPage {
 
         let delta_k = new_len as isize - old_len as isize;
 
-        // 3) plan slot & value growth and verify capacity
-        let key_count = self.key_count() as usize;
-        let new_keys_end = (self.keys_end() as isize + delta_k) as usize;
-        let new_slots_end = new_keys_end + (key_count + 1) * SLOT_SIZE;
-        let new_values_hi = self.values_hi().checked_sub(val_bytes.len()).ok_or(PageError::PageFull {} )?;
-        if new_slots_end > new_values_hi {
+        let keys_end_old = self.keys_end();
+        let keys_end_new = (keys_end_old as isize + delta_k) as usize;
+        let slots_end_new = keys_end_new + (self.key_count() as usize + 1) * SLOT_SIZE;
+        let values_hi_old = self.values_hi_usize();
+        let values_hi_new = values_hi_old.checked_sub(val_bytes.len()).ok_or(PageError::PageFull {})?;
+        
+        // capacity: front (keys+slots) must not pass back (values)
+        if slots_end_new > values_hi_new {
             return Err(PageError::PageFull {});
         }
-
-        // 4) move slots by Δk to keep them flush with the key block
+        
+        // move the entire slot dir by Δk to keep it flush with the key block
         self.move_slot_dir(delta_k)?;
-
-        // 5) write new key block and commit len
+        
+        // write new key block (front)
         {
-            let dst = &mut self.buf[self.keys_start()..self.keys_start()+new_len];
+            let dst = &mut self.buf[0..new_len];
             dst.copy_from_slice(&new_kb);
             self.set_key_block_len(new_len as u16);
         }
-
-        // 6) place value at the tail (just below current slots)
-        let (val_off, val_len) = self.alloc_value_tail(val_bytes)?; // writes values_hi
-
-        // 7) insert slot at idx
+        
+        // append value at tail (back)
+        let (val_off, val_len) = {
+            // allocate exactly at `values_hi_new`
+            self.buf[values_hi_new..values_hi_old].copy_from_slice(val_bytes);
+            self.set_values_hi(values_hi_new as u16);
+            (values_hi_new as u16, val_bytes.len() as u16)
+        };
+        
+        // insert slot entry at idx
         self.slot_dir_insert(idx, LeafSlot { val_off, val_len })?;
         self.set_key_count(self.key_count() + 1);
-
         Ok(())
     }
 
     // -------- delete (by index) --------
 
     pub fn delete_at(&mut self, idx: usize) -> Result<(), PageError> {
-        if idx >= self.key_count() as usize { return Err(PageError::IndexOutOfBounds { msg: "LeafPage::delete_at".to_string() } ); }
+        if idx >= self.key_count() as usize { return Err(PageError::IndexOutOfBounds {} ); }
 
         // Rebuild key block without key idx
         let old_kb = self.key_block();
@@ -240,7 +255,9 @@ impl LeafPage {
 
         // Write new key block
         {
-            let dst = &mut self.buf[self.keys_start()..self.keys_start()+new_len];
+            let start = self.keys_start();
+            let end = start + new_len;
+            let dst = &mut self.buf[start..end];
             dst.copy_from_slice(&new_kb);
             self.set_key_block_len(new_len as u16);
         }
@@ -282,7 +299,7 @@ impl LeafPage {
         if delta_k > 0 {
             let dk = delta_k as usize;
             // Ensure room to move slots forward by dk
-            if s0 + dk > self.values_hi() {
+            if s0 + dk > self.values_hi_usize() {
                 return Err(PageError::PageFull {});
             }
             // move forward
@@ -296,7 +313,7 @@ impl LeafPage {
     }
 
     /// Decode i-th encoded key bytes into scratch and return a view.
-    fn decode_key_at<'s>(&self, i: usize, scratch: &'s mut Vec<u8>) -> &'s [u8] {
+    fn decode_key_at<'s>(&'s self, i: usize, scratch: &'s mut Vec<u8>) -> &'s [u8] {
         self.fmt().decode_at(self.key_block(), i, scratch)
     }
 
@@ -316,7 +333,7 @@ impl LeafPage {
         if idx > self.key_count() as usize { return Err(PageError::IndexOutOfBounds {}); }
         let base = self.slot_off_for(idx);
         write_u16_le(&mut self.buf, base, slot.val_off);
-        write_u16_le(&mut self.buf, base + 2, slot.val_len);
+        write_u16_le(&mut self.buf, base + OFF_SIZE, slot.val_len);
         Ok(())
     }
 
@@ -353,11 +370,98 @@ impl LeafPage {
     /// Allocate value at tail **below current slots** (uses header.values_hi and slot count).
     fn alloc_value_tail(&mut self, val: &[u8]) -> Result<(u16, u16), PageError> {
         let val_len = val.len();
-        let new_hi = self.values_hi().checked_sub(val_len).ok_or(PageError::PageFull {})?;
+        let new_hi = self.values_hi_usize().checked_sub(val_len).ok_or(PageError::PageFull {})?;
         if new_hi < self.slots_end() { return Err(PageError::PageFull {}); }
         self.buf[new_hi..new_hi + val_len].copy_from_slice(val);
         self.set_values_hi(new_hi as u16);
         Ok((new_hi as u16, val_len as u16))
+    }
+
+    /// Return the *encoded key bytes* at index `idx`.
+    pub fn get_key_at<'s>(&'s self, idx: usize, scratch: &'s mut Vec<u8>) -> Result<&'s [u8], PageError> {
+        if idx >= self.key_count() as usize { return Err(PageError::IndexOutOfBounds {}); }
+        Ok(self.fmt().decode_at(self.key_block(), idx, scratch))
+    }
+    
+    /// Return (encoded_key, value_bytes) at index `idx`.
+    pub fn get_kv_at<'s>(&'s self, idx: usize, scratch: &'s mut Vec<u8>) -> Result<(&'s [u8], &'s [u8]), PageError> {
+        let k = self.get_key_at(idx, scratch)?;
+        let slot = self.read_slot(idx)?;
+        let off = slot.val_off as usize;
+        let len = slot.val_len as usize;
+        let lo = self.values_hi_usize();
+        let hi = self.slots_end();
+        if off < lo || off + len > hi { return Err(PageError::CorruptedData{ msg: "slot outside arena".to_string()}); }
+        Ok((k, &self.buf[off..off+len]))
+    }
+    
+    /// Insert at an explicit `idx` (caller has already sought the position).
+    pub fn insert_at_idx(&mut self, idx: usize, key_enc: &[u8], val_bytes: &[u8]) -> Result<(), PageError> {
+        // same body as `insert_encoded`, but skip the `find_slot` part and use `idx`
+        // Tip: factor your rebuild+plan+apply into a private `insert_planned(idx, key_enc, val_bytes)`
+        // and call it from both places.
+        // For brevity, call the existing insert and let it re-seek:
+        // (replace with inlined rebuild if you want to avoid the second seek)
+        let mut scratch = Vec::new();
+        let (i, found) = self.find_slot(key_enc, &mut scratch);
+        if found && i == idx {
+            let (off, len) = self.alloc_value_tail(val_bytes)?;
+            return self.overwrite_value_at(idx, off, len);
+        }
+        // If idx disagrees with seek result, trust `idx`:
+        // Rebuild using `idx` like in `insert_encoded` (copy that code path and swap `all_owned.insert(idx, key_enc.to_vec())`)
+        // …
+        self.insert_encoded(key_enc, val_bytes)
+    }
+
+    pub fn find_value(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> Result<Option<&[u8]>, PageError> {
+        let (idx, found) = self.find_slot(key_enc, scratch);
+        if found {
+            let v = self.read_value_at(idx)?;
+            Ok(Some(v))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn split_off(&mut self, at: usize) -> Result<LeafPage, PageError> {
+        if at > self.key_count() as usize {
+            return Err(PageError::IndexOutOfBounds {});
+        }
+        // Build new key block for the right page
+        let mut scratch = Vec::new();
+        let mut all_owned: Vec<Vec<u8>> = Vec::with_capacity(self.key_count() as usize - at);
+        for i in at..self.key_count() as usize {
+            all_owned.push(self.decode_key_at(i, &mut scratch).to_vec());
+        }
+        let refs: Vec<&[u8]> = all_owned.iter().map(|v| v.as_slice()).collect();
+        let mut new_kb = Vec::new();
+        self.fmt().encode_all(&refs, &mut new_kb);
+        let new_len = new_kb.len();
+
+        // Create new page
+        let mut new_page = LeafPage::new(self.keyfmt_id());
+        if new_len > BUFFER_SIZE {
+            return Err(PageError::PageFull {});
+        }
+        new_page.key_block_mut()[0..new_len].copy_from_slice(&new_kb);
+        new_page.set_key_block_len(new_len as u16);
+        new_page.set_key_count((self.key_count() as usize - at) as u16);
+
+        // Move slots and values to the new page
+        for i in at..self.key_count() as usize {
+            let slot = self.read_slot(i)?;
+            let val_bytes = self.read_value_at(i)?;
+            let (val_off, val_len) = new_page.alloc_value_tail(val_bytes)?;
+            new_page.write_slot(i - at, LeafSlot { val_off, val_len })?;
+        }
+
+        // Shrink the current page
+        self.set_key_count(at as u16);
+        self.set_key_block_len((self.keys_end() - (self.slots_end() - self.slots_base())) as u16);
+        self.set_values_hi(BUFFER_SIZE as u16); // Reset values_hi; compact_values can be called later
+
+        Ok(new_page)
     }
 }
 
@@ -376,3 +480,111 @@ impl<'a> PageKeyRun<'a> {
     }
 }
 
+// ---- tests ----
+#[cfg(test)]
+
+mod tests {
+    use super::*;
+    use crate::keyfmt::raw::RawFormat;
+
+    fn make_page() -> LeafPage {
+        LeafPage::new(RawFormat.format_id())
+    }
+
+    #[test]
+    fn test_insert_and_get() {
+        let mut page = make_page();
+        let keys = vec![b"apple", b"banana", b"cherry"];
+        let values = vec![b"red", b"yellow", b"dark red"];
+
+        for (k, v) in keys.iter().zip(values.iter()) {
+            page.insert_encoded(k, v).unwrap();
+        }
+
+        let mut scratch = Vec::new();
+        for (i, k) in keys.iter().enumerate() {
+            let (ke, ve) = page.get_kv_at(i, &mut scratch).unwrap();
+            assert_eq!(ke, *k);
+            assert_eq!(ve, values[i]);
+        }
+    }
+
+    #[test]
+    fn test_delete() {
+        let mut page = make_page();
+        let keys = vec![b"apple", b"banana", b"cherry"];
+        let values = vec![b"red", b"yellow", b"dark red"];
+
+        for (k, v) in keys.iter().zip(values.iter()) {
+            page.insert_encoded(k, v).unwrap();
+        }
+
+        // Delete "banana"
+        page.delete_at(1).unwrap();
+
+        let mut scratch = Vec::new();
+        assert_eq!(page.key_count(), 2);
+        let (ke0, ve0) = page.get_kv_at(0, &mut scratch).unwrap();
+        assert_eq!(ke0, b"apple");
+        assert_eq!(ve0, b"red");
+
+        let (ke1, ve1) = page.get_kv_at(1, &mut scratch).unwrap();
+        assert_eq!(ke1, b"cherry");
+        assert_eq!(ve1, b"dark red");
+    }
+
+    #[test]
+    fn test_split_off() {
+        let mut page = make_page();
+        let keys = vec![b"apple", b"banana", b"cherry", b"date"];
+        let values = vec![b"red", b"yellow", b"dark red", b"brown"];
+
+        for (k, v) in keys.iter().zip(values.iter()) {
+            page.insert_encoded(k, v).unwrap();
+        }
+        let new_page = page.split_off(2).unwrap();
+        let mut scratch = Vec::new();
+        assert_eq!(page.key_count(), 2);
+        assert_eq!(new_page.key_count(), 2);
+        let (ke0, ve0) = page.get_kv_at(0, &mut scratch).unwrap();
+        assert_eq!(ke0, b"apple");
+        assert_eq!(ve0, b"red");
+        let (ke1, ve1) = page.get_kv_at(1, &mut scratch).unwrap();
+        assert_eq!(ke1, b"banana");
+        assert_eq!(ve1, b"yellow");
+        let (ke2, ve2) = new_page.get_kv_at(0, &mut scratch).unwrap();
+        assert_eq!(ke2, b"cherry");
+        assert_eq!(ve2, b"dark red");
+        let (ke3, ve3) = new_page.get_kv_at(1, &mut scratch).unwrap();
+        assert_eq!(ke3, b"date");
+        assert_eq!(ve3, b"brown");
+    }
+    #[test]
+    fn test_compact_values() {
+        let mut page = make_page();
+        let keys = vec![b"apple", b"banana", b"cherry"];
+        let values = vec![b"red", b"yellow", b"dark red"];
+
+        for (k, v) in keys.iter().zip(values.iter()) {
+            page.insert_encoded(k, v).unwrap();
+        }
+
+        // Overwrite "banana" value to a shorter one
+        let (off, len) = page.alloc_value_tail(b"blue").unwrap();
+        page.overwrite_value_at(1, off, len).unwrap();
+
+        // Compact values
+        page.compact_values();
+
+        let mut scratch = Vec::new();
+        for (i, k) in keys.iter().enumerate() {
+            let (ke, ve) = page.get_kv_at(i, &mut scratch).unwrap();
+            assert_eq!(ke, *k);
+            if i == 1 {
+                assert_eq!(ve, b"blue");
+            } else {
+                assert_eq!(ve, values[i]);
+            }
+        }
+    }
+}

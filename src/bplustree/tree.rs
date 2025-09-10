@@ -726,16 +726,7 @@ where
         VC::encode_value(&value, val_buf.as_mut())
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
 
-        // Find the insertion point in the internal node
-        match leaf_node.lower_bound(key_buf.as_ref()) {
-            Ok(i) => {
-                // Key exists, replace the value
-                leaf_node.replace_value_at(i, &val_buf)?;
-            }
-            Err(i) => {
-                leaf_node.insert_at(i, &key_buf, Some(&val_buf), None)?;
-            },
-        };
+        leaf_node.insert(&key_buf, Some(&val_buf), None)?;
 
         track.record_staged_size(self.get_size() + 1); // Update staged size
         track.record_staged_height(self.get_height()); // Update staged height - could be increased later
@@ -1100,34 +1091,22 @@ where
             {
                 Some(node) => match &node {
                     NodeView::Leaf { .. } => {
-                        match node.lower_bound(encode_buf.as_ref()) {
-                            Ok(i) => {
-                                let val = node.value_at(i)?;
-                                match val {
-                                    Some(val) => {
-                                        return Ok(Some(VC::decode_value(val.as_ref())?));
-                                    }
-                                    None => return Ok(None), // Key not found
-                                }
+                         let val = match node.search_value(encode_buf.as_ref())? {
+                            Some(val) => {
+                                return Ok(Some(VC::decode_value(val.as_ref())?));
                             }
-                            Err(_i) => return Ok(None),
+                            None => return Ok(None), // Key not found
                         };
                     }
                     NodeView::Internal { .. } => {
-                        // Find the insertion point in the internal node
-                        let i = match node.lower_bound(encode_buf.as_ref()) {
-                            Ok(i) => i + 1,
-                            Err(i) => i,
+                         let child = match node.search_child(encode_buf.as_ref())? {
+                            Some(child) => {
+                                current_id = child; // Move to the child node
+                            }
+                            None => return Err(TreeError::BackendAny(
+                                "Child pointer not found in search".to_string(),
+                                )),
                         };
-                        let child = node.child_ptr_at(i)?; // Move to the child node
-                        if let Some(child_id) = child {
-                            current_id = child_id; // Move to the child node
-                        } else {
-                            TreeError::BackendAny(format!(
-                                "Internal node cannot retrieve child at index {}",
-                                i
-                            ));
-                        }
                     }
                 },
                 None => {

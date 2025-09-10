@@ -174,10 +174,11 @@ where
 {
     fn decode(buf: &[u8; PAGE_SIZE]) -> Result<Node<K, V>, CodecError> {
         let node_type = u8::from_le_bytes(
-            buf[0..8]
+            buf[0..1]
                 .try_into()
                 .map_err(|e| CodecError::FromSliceError { source: e })?,
         );
+        let scratch: &mut Vec<u8> = &mut Vec::with_capacity(MAX_KEY_SIZE);
         match node_type {
             LEAF_NODE_TAG => {
                 // Leaf node
@@ -189,9 +190,9 @@ where
                 };
 
                 if let Node::Leaf { keys, values } = &mut leaf {
-                    for i in 0..page. as usize {
+                    for i in 0..page.key_count() as usize {
                         let (key_bytes, value_bytes) = page
-                            .get_entry(i)
+                            .get_kv_at(i, scratch.as_mut())
                             .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;
                         keys.push(KC::decode_key(key_bytes)?);
                         values.push(VC::decode_value(value_bytes)?);
@@ -229,7 +230,7 @@ where
     {
         match node {
             Node::Leaf { keys, values } => {
-                let mut page = LeafPage::new();
+                let mut page = LeafPage::new(0u8);
                 {
                     let mut encode_buf_key: Vec<u8> = Vec::with_capacity(MAX_KEY_SIZE);
                     let mut encode_buf_val: Vec<u8> = Vec::with_capacity(MAX_VAL_SIZE);
@@ -240,7 +241,7 @@ where
                             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
                         VC::encode_value(value_ref, encode_buf_val.as_mut())
                             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
-                        page.insert_entry(&encode_buf_key, &encode_buf_val)
+                        page.insert_encoded(&encode_buf_key, &encode_buf_val)
                             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
                     }
                 }
@@ -269,8 +270,9 @@ where
 
 impl NoopNodeViewCodec {
     pub fn decode(buf: &[u8; PAGE_SIZE]) -> Result<NodeView, CodecError> {
-        let node_type = u64::from_le_bytes(
-            buf[0..8]
+        
+        let node_type = u8::from_le_bytes(
+            buf[0..1]
                 .try_into()
                 .map_err(|e| CodecError::FromSliceError { source: e })?,
         );
@@ -291,9 +293,6 @@ impl NoopNodeViewCodec {
                 msg: "Invalid node type tag in page".to_string(),
             }),
         }
-        leaf::LeafPage::from_bytes(buf)
-            .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })
-            .map(|page| NodeView::Leaf { page: *page })
     }
 
     pub fn encode(node: &NodeView) -> Result<[u8; PAGE_SIZE], CodecError> {

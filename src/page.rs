@@ -1,5 +1,4 @@
 pub mod internal_page;
-pub mod leaf_page;
 pub mod leaf;
 
 pub use internal_page::InternalPage;
@@ -25,6 +24,8 @@ pub enum PageError {
         #[from]
         source: std::array::TryFromSliceError,
     },
+    #[error("Corrupted page data: {msg}")]
+    CorruptedData { msg: String },
     #[error("Error converting from byte slice")]
     FromBytesError { msg: String },
     #[error("IO error: {source}")]

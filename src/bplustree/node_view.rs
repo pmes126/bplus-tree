@@ -23,10 +23,13 @@ impl NodeView {
     }
 
     #[inline]
-    pub fn key_bytes_at(&self, idx: usize) -> &[u8] {
+    pub fn key_bytes_at(&self, idx: usize) -> Result<&[u8]> {
         match self {
-            NodeView::Internal { page } => page.key_bytes_at(idx).unwrap(),
-            NodeView::Leaf { page } => page.key_bytes_at(idx).unwrap(),
+            NodeView::Internal { page } => Ok(page.key_bytes_at(idx)?),
+            NodeView::Leaf { page } => {
+                let mut scratch = Vec::new();
+                Ok(page.get_key_at(idx, &mut scratch)?)
+            }
         }
     }
 
@@ -34,23 +37,29 @@ impl NodeView {
     pub fn keys_len(&self) -> usize {
         match self {
             NodeView::Internal { page } => page.header.entry_count as usize,
-            NodeView::Leaf { page } => page.header.entry_count as usize,
+            NodeView::Leaf { page } => page.key_count() as usize,
         }
     }
 
-    /// Lower bound using bytewise compare
-    pub fn lower_bound(&self, probe: &[u8]) -> Result<usize, usize> {
-        let mut lo = 0usize;
-        let mut hi = self.keys_len();
-        while lo < hi {
-            let mid = (lo + hi) / 2;
-            match self.key_bytes_at(mid).cmp(probe) {
-                Ordering::Less => lo = mid + 1,    // move to the right
-                Ordering::Equal => return Ok(mid), // found exact match
-                Ordering::Greater => hi = mid,
+    pub fn search_value(&self, probe: &[u8]) -> Result<Option<Vec<u8>>> {
+        match self {
+            NodeView::Internal { .. } => Ok(None), // Internal nodes do not store values
+            NodeView::Leaf { page } => {
+                let mut scratch = Vec::new();
+                let val_bytes = page.find_value(probe, &mut scratch)?;
+                val_bytes.map_or(Ok(None), |v| Ok(Some(v.to_vec())))
             }
         }
-        Err(lo) // return the insertion point   
+    }
+
+    pub fn search_child(&self, _probe: &[u8]) -> Result<Option<NodeId>> {
+        match self {
+            NodeView::Leaf { .. } => Ok(None), // Leaf nodes do not have children
+            // Internal nodes: find the child pointer for the given key
+            NodeView::Internal { .. } => {
+                Ok(None) // Placeholder: Implement child pointer search
+            }
+        }
     }
 
     /// Get the child pointer at index i
@@ -74,7 +83,7 @@ impl NodeView {
         match self {
             NodeView::Internal { .. } => Ok(None), // Internal nodes do not store values
             NodeView::Leaf { page } => {
-                let value = page.value_bytes_at(i)?;
+                let value = page.read_value_at(i)?;
                 Ok(Some(value.to_vec()))
             }
         }
@@ -89,7 +98,8 @@ impl NodeView {
                 Ok(key.to_vec())
             }
             NodeView::Leaf { page } => {
-                let key = page.key_bytes_at(i)?;
+                let mut scratch = Vec::new();
+                let key = page.get_key_at(i, &mut scratch)?;
                 Ok(key.to_vec())
             }
         }
@@ -101,10 +111,9 @@ impl NodeView {
         self.key_at(0)
     }
 
-    /// Insert a key-value pair or key-child pointer into the node at a given index
-    pub fn insert_at(
+    /// Insert a key-value pair or key-child pointer into the node
+    pub fn insert(
         &mut self,
-        idx: usize,
         key: &[u8],
         value: Option<&[u8]>,
         child_ptr: Option<u64>,
@@ -112,7 +121,7 @@ impl NodeView {
         match self {
             NodeView::Internal { page } => {
                 if let Some(ptr) = child_ptr {
-                    page.insert_entry_at(idx, key, ptr)
+                    page.insert_entry(key, ptr)
                         .map_err(|e| anyhow::anyhow!(e))
                 } else {
                     Err(anyhow::anyhow!(
@@ -122,7 +131,7 @@ impl NodeView {
             }
             NodeView::Leaf { page } => {
                 if let Some(val) = value {
-                    page.insert_entry_at(idx, key, val)
+                    page.insert_encoded(key, val)
                         .map_err(|e| anyhow::anyhow!(e))
                 } else {
                     Err(anyhow::anyhow!("Leaf nodes require a value for insertion"))
