@@ -172,7 +172,7 @@ impl NodeView {
     pub fn entry_count(&self) -> usize {
         match self {
             NodeView::Internal { page } => page.header.entry_count as usize,
-            NodeView::Leaf { page } => page.header.entry_count as usize,
+            NodeView::Leaf { page } => page.key_count() as usize,
         }
     }
 

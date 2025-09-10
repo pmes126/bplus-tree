@@ -424,44 +424,106 @@ impl LeafPage {
         }
     }
 
-    pub fn split_off(&mut self, at: usize) -> Result<LeafPage, PageError> {
-        if at > self.key_count() as usize {
+    /// Split at `idx` (0 < idx < n). Moves [idx..n) into a new right page.
+    /// Returns (right_page, pivot_key_bytes).
+    pub fn split_off_at(&mut self, idx: usize) -> Result<(LeafPage, Vec<u8>), PageError> {
+        let n = self.key_count() as usize;
+        if idx == 0 || idx >= n {
             return Err(PageError::IndexOutOfBounds {});
         }
-        // Build new key block for the right page
+
+        let fmt = self.fmt();
+        let cap_left  = self.buf.len();
+        let cap_right = self.buf.len(); // same size page
+
+        // 1) Collect owned keys/values for both halves.
         let mut scratch = Vec::new();
-        let mut all_owned: Vec<Vec<u8>> = Vec::with_capacity(self.key_count() as usize - at);
-        for i in at..self.key_count() as usize {
-            all_owned.push(self.decode_key_at(i, &mut scratch).to_vec());
-        }
-        let refs: Vec<&[u8]> = all_owned.iter().map(|v| v.as_slice()).collect();
-        let mut new_kb = Vec::new();
-        self.fmt().encode_all(&refs, &mut new_kb);
-        let new_len = new_kb.len();
+        let mut left_keys:  Vec<Vec<u8>> = Vec::with_capacity(idx);
+        let mut left_vals:  Vec<Vec<u8>> = Vec::with_capacity(idx);
+        let mut right_keys: Vec<Vec<u8>> = Vec::with_capacity(n - idx);
+        let mut right_vals: Vec<Vec<u8>> = Vec::with_capacity(n - idx);
+        let mut total_left_vals  = 0usize;
+        let mut total_right_vals = 0usize;
 
-        // Create new page
-        let mut new_page = LeafPage::new(self.keyfmt_id());
-        if new_len > BUFFER_SIZE {
-            return Err(PageError::PageFull {});
-        }
-        new_page.key_block_mut()[0..new_len].copy_from_slice(&new_kb);
-        new_page.set_key_block_len(new_len as u16);
-        new_page.set_key_count((self.key_count() as usize - at) as u16);
-
-        // Move slots and values to the new page
-        for i in at..self.key_count() as usize {
+        for i in 0..n {
+            let k = fmt.decode_at(self.key_block(), i, &mut scratch).to_vec();
             let slot = self.read_slot(i)?;
-            let val_bytes = self.read_value_at(i)?;
-            let (val_off, val_len) = new_page.alloc_value_tail(val_bytes)?;
-            new_page.write_slot(i - at, LeafSlot { val_off, val_len })?;
+            let off = slot.val_off as usize;
+            let len = slot.val_len as usize;
+            let lo  = self.values_hi_usize();
+            let hi  = self.slots_end();
+            if off < lo || off.checked_add(len).unwrap_or(usize::MAX) > hi {
+                return Err(PageError::CorruptedData{ msg: "slot outside arena".to_string()});
+            }
+            let v = self.buf[off..off + len].to_vec();
+
+            if i < idx {
+                total_left_vals += len;
+                left_keys.push(k);
+                left_vals.push(v);
+            } else {
+                total_right_vals += len;
+                right_keys.push(k);
+                right_vals.push(v);
+            }
         }
 
-        // Shrink the current page
-        self.set_key_count(at as u16);
-        self.set_key_block_len((self.keys_end() - (self.slots_end() - self.slots_base())) as u16);
-        self.set_values_hi(BUFFER_SIZE as u16); // Reset values_hi; compact_values can be called later
+        // 2) Encode key blocks (raw+restarts builds the tail automatically).
+        let mut left_kb = Vec::new();
+        let mut right_kb = Vec::new();
+        {
+            let lrefs: Vec<&[u8]> = left_keys.iter().map(|x| x.as_slice()).collect();
+            let rrefs: Vec<&[u8]> = right_keys.iter().map(|x| x.as_slice()).collect();
+            fmt.encode_all(&lrefs, &mut left_kb);
+            fmt.encode_all(&rrefs, &mut right_kb);
+        }
 
-        Ok(new_page)
+        // 3) Capacity checks (bytes): key_block + slots + values
+        let need_left  = left_kb.len()  + left_keys.len()  * SLOT_SIZE + total_left_vals;
+        let need_right = right_kb.len() + right_keys.len() * SLOT_SIZE + total_right_vals;
+        if need_left  > cap_left  { return Err(PageError::CorruptedData{ msg: "left overflow".to_string()}); }
+        if need_right > cap_right { return Err(PageError::PageFull {}); }
+
+        // 4) Build RIGHT page compactly.
+        let mut right = LeafPage::new(self.keyfmt_id());
+        {
+            // key block
+            right.buf[..right_kb.len()].copy_from_slice(&right_kb);
+            right.set_key_block_len(right_kb.len() as u16);
+            // values packed from tail + slots after key block
+            let mut write = cap_right;
+            for (i, vb) in right_vals.iter().enumerate() {
+                let len = vb.len();
+                write = write.checked_sub(len).ok_or(PageError::PageFull {})?;
+                right.buf[write..write + len].copy_from_slice(vb);
+                let base = right_kb.len() + i * SLOT_SIZE;
+                write_u16_le(&mut right.buf, base, write as u16);
+                write_u16_le(&mut right.buf, base + 2, len as u16);
+            }
+            right.set_values_hi(write as u16);
+            right.set_key_count(right_keys.len() as u16);
+        }
+
+        // 5) Rebuild LEFT page compactly (in place).
+        {
+            self.buf[..left_kb.len()].copy_from_slice(&left_kb);
+            self.set_key_block_len(left_kb.len() as u16);
+            let mut write = cap_left;
+            for (i, vb) in left_vals.iter().enumerate() {
+                let len = vb.len();
+                write = write.checked_sub(len).ok_or(PageError::PageFull {})?;
+                self.buf[write..write + len].copy_from_slice(vb);
+                let base = left_kb.len() + i * SLOT_SIZE;
+                write_u16_le(&mut self.buf, base, write as u16);
+                write_u16_le(&mut self.buf, base + 2, len as u16);
+            }
+            self.set_values_hi(write as u16);
+            self.set_key_count(left_keys.len() as u16);
+        }
+
+        // 6) Pivot = first key on right.
+        let pivot = right_keys.first().expect("right non-empty").clone();
+        Ok((right, pivot))
     }
 }
 
