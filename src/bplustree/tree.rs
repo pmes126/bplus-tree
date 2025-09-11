@@ -700,7 +700,7 @@ where
     ) -> Result<NodeId, TreeError> {
         let _guard = self.epoch_mgr.pin();
         let mut path = self.get_insertion_path_undecoded_view(&key, root_id)?;
-        let (leaf_node_id, _idx) = path.pop().ok_or_else(|| {
+        let (leaf_node_id, idx) = path.pop().ok_or_else(|| {
             TreeError::BackendAny("Insertion path is empty, tree might be corrupted".to_string())
         })?;
         let mut leaf_node = self

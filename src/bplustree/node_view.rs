@@ -144,6 +144,19 @@ impl NodeView {
         }
     }
 
+    /// Insert a key-value pair into a leaf node for a given index
+    pub fn insert_at(&mut self, idx: usize, key: &[u8], value: &[u8]) -> Result<(), anyhow::Error> {
+        match self {
+            NodeView::Internal { .. } => Err(anyhow::anyhow!(
+                "Internal nodes do not store values, cannot insert"
+            )),
+            NodeView::Leaf { page } => {
+                page.insert_at_idx(idx, key, value)
+                    .map_err(|e| anyhow::anyhow!(e))
+            }
+        }
+    }
+
     /// Remove the entry at a given index from the node
     #[inline]
     pub fn delete_at(&mut self, idx: usize) -> Result<(), anyhow::Error> {

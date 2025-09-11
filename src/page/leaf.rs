@@ -551,32 +551,33 @@ impl<'a> PageKeyRun<'a> {
 }
 
 // ---- tests ----
-//#[cfg(test)]
-//mod tests {
-//    use super::*;
-//    use crate::keyfmt::raw::RawFormat;
-//
-//    fn make_page() -> LeafPage {
-//        LeafPage::new(RawFormat.format_id())
-//    }
-//
-//    #[test]
-//    fn test_insert_and_get() {
-//        let mut page = make_page();
-//        let keys = vec![b"apple", b"banana", b"cherry"];
-//        let values = vec![b"red", b"yellow", b"dark red"];
-//
-//        for (k, v) in keys.iter().zip(values.iter()) {
-//            page.insert_encoded(k, v).unwrap();
-//        }
-//
-//        let mut scratch = Vec::new();
-//        for (i, k) in keys.iter().enumerate() {
-//            let (ke, ve) = page.get_kv_at(i, &mut scratch).unwrap();
-//            assert_eq!(ke, *k);
-//            assert_eq!(ve, values[i]);
-//        }
-//    }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keyfmt::raw::RawFormat;
+
+    fn make_page() -> LeafPage {
+        LeafPage::new(RawFormat.format_id())
+    }
+
+    #[test]
+    fn test_insert_and_get() {
+        let mut page = make_page();
+        let keys = ["apple", "banana", "cherry"];
+        let values = ["red", "yellow", "dark red"];
+
+        for (k, v) in keys.iter().zip(values.iter()) {
+            page.insert_encoded(k.as_bytes(), v.as_bytes()).unwrap();
+        }
+
+        let mut scratch = Vec::new();
+        for (i, k) in keys.iter().enumerate() {
+            let (ke, ve) = page.get_kv_at(i, &mut scratch).unwrap();
+            assert_eq!(*ke, *k.as_bytes());
+            assert_eq!(*ve, *values[i].as_bytes());
+        }
+    }
+}
 //
 //    #[test]
 //    fn test_delete() {
