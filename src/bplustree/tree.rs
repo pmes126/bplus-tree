@@ -726,7 +726,7 @@ where
         VC::encode_value(&value, val_buf.as_mut())
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
 
-        leaf_node.insert(&key_buf, Some(&val_buf), None)?;
+        leaf_node.insert_at(idx, &key_buf, &val_buf)?;
 
         track.record_staged_size(self.get_size() + 1); // Update staged size
         track.record_staged_height(self.get_height()); // Update staged height - could be increased later
