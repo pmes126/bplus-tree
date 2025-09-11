@@ -20,13 +20,6 @@ use crate::layout::PAGE_SIZE; // const PAGE_SIZE: usize
 use crate::page::LEAF_NODE_TAG;
 use crate::page::PageError;
 
-// ------ header (packed via manual offsets; no unsafe) ------
-
-const HDR_KIND: usize = 0;             // u8: 0x01 for leaf
-const HDR_KEYFMT_ID: usize = 1;        // u8
-const HDR_KEY_COUNT: usize = 2;        // u16 LE
-const HDR_KEY_BLOCK_LEN: usize = 4;    // u16 LE
-const HDR_VALUES_HI: usize = 6;        // u16 LE
 pub const HEADER_SIZE: usize = 8;
 
 #[inline]
@@ -107,7 +100,6 @@ impl LeafPage {
     #[inline] fn key_block_len(&self) -> u16 { self.header.key_block_len }
     #[inline] fn set_key_block_len(&mut self, n: u16) { self.header.key_block_len = n; }
 
-    #[inline] fn values_hi(&self) -> u16 { self.header.values_hi }
     #[inline] fn values_hi_usize(&self) -> usize { self.header.values_hi as usize }
     #[inline] fn set_values_hi(&mut self, off: u16) { self.header.values_hi = off }
     #[inline] fn keys_start(&self) -> usize { 0 } // <-- buf already excludes the header
@@ -154,8 +146,7 @@ impl LeafPage {
         let off = slot.val_off as usize;
         let len = slot.val_len as usize;
         let lo = self.values_hi_usize();
-        let hi = self.slots_end();
-        if off < lo || off.checked_add(len).unwrap_or(usize::MAX) > hi {
+        if off < lo  {
             return Err(PageError::CorruptedData{ msg:"slot outside arena".to_string() });
         }
         Ok(&self.buf[off..off + len])
@@ -193,7 +184,7 @@ impl LeafPage {
         }
         all_owned.insert(idx, key_enc.to_vec());
 
-        let mut refs: Vec<&[u8]> = all_owned.iter().map(|v| v.as_slice()).collect();
+        let refs: Vec<&[u8]> = all_owned.iter().map(|v| v.as_slice()).collect();
         let mut new_kb = Vec::new();
         self.fmt().encode_all(&refs, &mut new_kb);
         let new_len = new_kb.len();
@@ -333,7 +324,7 @@ impl LeafPage {
     fn read_slot(&self, idx: usize) -> Result<LeafSlot, PageError> {
         if idx >= self.key_count() as usize { return Err(PageError::IndexOutOfBounds {}); }
         let base = self.slot_off_for(idx);
-        Ok(LeafSlot { val_off: read_u16_le(&self.buf, base), val_len: read_u16_le(&self.buf, base + 2) })
+        Ok(LeafSlot { val_off: read_u16_le(&self.buf, base), val_len: read_u16_le(&self.buf, base + OFF_SIZE) })
     }
 
     fn write_slot(&mut self, idx: usize, slot: LeafSlot) -> Result<(), PageError> {
@@ -398,6 +389,7 @@ impl LeafPage {
         let len = slot.val_len as usize;
         let lo = self.values_hi_usize();
         let hi = self.slots_end();
+        println!("ERROR FROM GET KV AT off={} len={} lo={} hi={}", off, len, lo, hi);
         if off < lo || off + len > hi { return Err(PageError::CorruptedData{ msg: "slot outside arena".to_string()}); }
         Ok((k, &self.buf[off..off+len]))
     }
