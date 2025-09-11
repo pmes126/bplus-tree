@@ -19,7 +19,7 @@ fn commit_happy_path() {
         trx.insert(i, format!("value_{}", i)).expect("insert");
     }
 
-    trx.commit().expect("commit");
+    trx.commit(&tree).expect("commit");
 
     let _root_id = tree.get_root_id();
     for i in 0..100 {
@@ -73,7 +73,7 @@ fn commit_with_random_inserts() {
         trx.insert(key, format!("value_{}", key)).expect("insert");
     }
 
-    trx.commit().expect("commit");
+    trx.commit(&tree).expect("commit");
 
     for &key in &keys {
         assert_eq!(
@@ -92,14 +92,14 @@ fn contending_parallel_transactions() {
         for i in 0..10 {
             let t = tree.clone();
             s.spawn(move || {
-                let mut trx = WriteTransaction::new(t);
+                let mut trx = WriteTransaction::new(t.clone());
                 for j in 0..100 {
                     let sleep_duration = rand::thread_rng().gen_range(1..10);
                     std::thread::sleep(std::time::Duration::from_millis(sleep_duration));
                     trx.insert(i * 100 + j, format!("value_{}", i * 100 + j))
                         .expect("insert");
                 }
-                trx.commit().expect("commit");
+                trx.commit(&t).expect("commit");
             });
         }
     });
@@ -123,10 +123,10 @@ fn commit_with_conflicting_transactions() {
     t2.insert(42, "value_42_t2".to_string()).expect("insert t2");
 
     // Commit the first transaction
-    t1.commit().expect("commit t1");
+    t1.commit(&tree).expect("commit t1");
 
     // Now try to commit the second transaction, which should fail due to conflict
-    t2.commit().expect("commit t2");
+    t2.commit(&tree).expect("commit t2");
 
     tree.search(&42).expect("get").map_or_else(
         || panic!("Key 42 should exist after t1 commit"),
@@ -158,7 +158,7 @@ fn commit_failure_should_reclaim_nodes() {
     //let deffered = tree.get_epoch_mgr().get_deferred_pages();
     //assert!(!deffered.is_empty(), "Deferred pages should not be empty after failed commit");
 
-    match trx.commit() {
+    match trx.commit(&tree) {
         Ok(_) => println!("Commit succeeded unexpectedly"),
         Err(e) => assert!(matches!(e, anyhow::Error { .. })),
     }
@@ -169,7 +169,7 @@ fn commit_failure_should_reclaim_nodes() {
     }
 
     // Attempt to commit, overwrite values
-    match trx.commit() {
+    match trx.commit(&tree) {
         Ok(_) => println!("Commit succeeded unexpectedly"),
         Err(e) => assert!(matches!(e, anyhow::Error { .. })),
     }
@@ -192,7 +192,7 @@ fn noop_tx_commit_no_side_effects() {
     let mut trx = WriteTransaction::new(tree.clone());
 
     // No operations, just commit
-    trx.commit().expect("commit with no operations");
+    trx.commit(&tree).expect("commit with no operations");
 
     // Ensure the tree is still empty
     assert!(
@@ -226,7 +226,7 @@ fn node_reclamation_in_tx_commit() {
     );
 
     // Commit the transaction
-    trx.commit().expect("commit");
+    trx.commit(&tree).expect("commit");
 
     let deffered = tree.get_epoch_mgr().get_deferred_pages();
 

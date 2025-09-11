@@ -12,7 +12,7 @@ pub trait KeyBlockFormat: Send + Sync + 'static {
     fn format_id(&self) -> u8;
 
     /// Binary search in the key block; returns (insertion idx, found).
-    fn seek(&self, block: &[u8], needle: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize, KeyFmtError>;
+    fn seek(&self, block: &[u8], needle: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize>;
 
     /// Decode the i-th *encoded key bytes* into `scratch` and return a view.
     fn decode_at<'s>(&self, block: &'s [u8], i: usize, scratch: &'s mut Vec<u8>) -> &'s [u8];

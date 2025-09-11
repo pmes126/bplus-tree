@@ -9,7 +9,7 @@ use crate::bplustree::EpochManager;
 use crate::bplustree::epoch::COMMIT_COUNT;
 use crate::bplustree::{Node, NodeView};
 use crate::codec::{CodecError, KeyCodec, ValueCodec};
-use crate::codec::bincode::{BeU64};
+use crate::codec::bincode::{BeU64, RawBuf, Utf8};
 use crate::metadata;
 use crate::metadata::{
     Metadata, {METADATA_PAGE_1, METADATA_PAGE_2},
@@ -338,7 +338,7 @@ where
         root_id: NodeId,
         start: &K,
         end: &K,
-    ) -> Result<Option<BPlusTreeIter<'a, K, V, S>>, TreeError> {
+    ) -> Result<Option<BPlusTreeIter<'a, K, V, KC, VC, S>>, TreeError> {
         self.inner.search_range(root_id, start, end)
     }
 
@@ -346,7 +346,7 @@ where
         &'a self,
         start: &K,
         end: &K,
-    ) -> Result<Option<BPlusTreeIter<'a, K, V, S>>, TreeError> {
+    ) -> Result<Option<BPlusTreeIter<'a, K, V, KC, VC, S>>, TreeError> {
         let root_id = self.inner.get_root_id();
         self.inner.search_range(root_id, start, end)
     }
@@ -1097,7 +1097,7 @@ where
                                     return Ok(None);
                                 };
                                 let value = VC::decode_value(vb)?;
-                                Ok(Some(value))
+                                return Ok(Some(value));
                             }
                             Err(_i) => return Ok(None), // Key not found
                         };
@@ -1136,7 +1136,7 @@ where
         root_id: NodeId,
         start: &K,
         end: &K,
-    ) -> Result<Option<BPlusTreeIter<'a, K, V, S>>, TreeError> {
+    ) -> Result<Option<BPlusTreeIter<'a, K, V, KC, VC, S>>, TreeError> {
         if start > end {
             return Ok(None); // Invalid range
         }
@@ -1207,7 +1207,7 @@ where
         }
 
         // materialize the leaf node for easy underflow handling
-        let node = Node::from_node_view(leaf_node)?;
+        let node = Node::from_node_view::<KC, VC>(leaf_node)?;
         let new_root_id = self.handle_underflow(path, node, track)?;
         Ok(DeleteResult::Deleted(new_root_id))
     }
@@ -1954,7 +1954,7 @@ mod tests {
     #[test]
     fn commit_happy_path() {
         let storage = TestStorage::new(); // Reset the test storage state
-        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let test_harness = test_tree::<u64, u64, BeU64, BeU64, TestStorage>(storage, 128);
         let tree = test_harness.tree;
 
         let base = BaseVersion {
@@ -1979,7 +1979,7 @@ mod tests {
     #[test]
     fn commit_happy_path_2() {
         let storage = TestStorage::new(); // Reset the test storage state
-        let h = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let h = test_tree::<u64, u64, BeU64, BeU64, TestStorage>(storage, 128);
         let base = BaseVersion {
             committed_ptr: h.tree.metadata_ptr(),
         };
@@ -2012,7 +2012,7 @@ mod tests {
     fn commit_aborts_on_conflict() {
         let storage = TestStorage::new(); // Reset the test storage state
         storage.inject_commit_failure(true);
-        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let test_harness = test_tree::<u64, u64, BeU64, BeU64, TestStorage>(storage, 128);
         let tree = test_harness.tree;
         let _mocks = test_harness.storage;
         let base = BaseVersion {
@@ -2033,7 +2033,7 @@ mod tests {
     #[test]
     fn txn_id_is_strictly_monotonic() {
         let storage = TestStorage::new(); // Reset the test storage state
-        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
+        let h = test_tree::<u64, Vec<u8>, BeU64, RawBuf, TestStorage>(storage, 128);
         let mut prev = h.tree.metadata().txn_id;
 
         for i in 0..5 {
@@ -2065,7 +2065,7 @@ mod tests {
     #[test]
     fn slot_follows_txn_mod2() {
         let storage = TestStorage::new(); // Reset the test storage state
-        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
+        let h = test_tree::<u64, Vec<u8>, BeU64, RawBuf, TestStorage>(storage, 128);
         for i in 0..6 {
             let base = BaseVersion {
                 committed_ptr: h.tree.metadata_ptr(),
@@ -2090,7 +2090,7 @@ mod tests {
     fn commit_metadata_write_failure_is_abort() {
         let storage = TestStorage::new(); // Reset the test storage state
         storage.inject_commit_failure(true);
-        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let test_harness = test_tree::<u64, u64, BeU64, BeU64, TestStorage>(storage, 128);
         let tree = test_harness.tree;
         let _mocks = test_harness.storage;
         let base = BaseVersion {
@@ -2117,7 +2117,7 @@ mod tests {
     fn flush_failure_after_cas_keeps_published_state() {
         let storage = TestStorage::new(); // Reset the test storage state
         storage.inject_flush_failure(true);
-        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let test_harness = test_tree::<u64, u64, BeU64, BeU64, TestStorage>(storage, 128);
         let tree = test_harness.tree;
         let _mocks = test_harness.storage;
         let base = BaseVersion {

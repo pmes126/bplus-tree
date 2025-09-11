@@ -109,6 +109,7 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
 
 impl<S: PageStorage, K, V, KC, VC> NodeStorage<K, V, KC, VC> for FileStore<S>
 where
+    S: Send + Sync + 'static,
     K: Clone + Ord,
     V: Clone,
     KC: KeyCodec<K>,

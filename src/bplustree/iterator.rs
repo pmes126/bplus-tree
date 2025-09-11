@@ -11,11 +11,13 @@ struct TraversalFrame {
     index: usize,
 }
 
-pub struct BPlusTreeIter<'a, K, V, S>
+pub struct BPlusTreeIter<'a, K, V, KC, VC, S>
 where
-    K: KeyCodec + Ord,
-    V: ValueCodec,
-    S: NodeStorage<K, V>,
+    K: Clone + Ord,
+    V: Clone,
+    KC: KeyCodec<K>,
+    VC: ValueCodec<V>,
+    S: NodeStorage<K, V, KC, VC>,
 {
     storage: &'a S,
     current_leaf: Option<Node<K, V>>,
@@ -24,6 +26,7 @@ where
     end: K,
     stack: Vec<TraversalFrame>,
     reader_guard: ReaderGuard,
+    _Phantom: std::marker::PhantomData<(KC, VC)>,
 }
 
 struct LeafCursor<'a, K, V> {
@@ -33,11 +36,13 @@ struct LeafCursor<'a, K, V> {
     pos: usize,
 }
 
-impl<'a, K: Clone, V, S> BPlusTreeIter<'a, K, V, S>
+impl<'a, K, V, KC, VC, S> BPlusTreeIter<'a, K, V, KC, VC, S>
 where
-    S: NodeStorage<K, V>,
-    K: KeyCodec + Ord,
-    V: ValueCodec,
+    K: Clone + Ord,
+    V: Clone,
+    KC: KeyCodec<K>,
+    VC: ValueCodec<V>,
+    S: NodeStorage<K, V, KC, VC>,
 {
     pub fn new(
         storage: &'a S,
@@ -54,6 +59,7 @@ where
             end: end.clone(),
             index: 0,
             reader_guard: epoch_mgr.pin(),
+            _Phantom: std::marker::PhantomData,
         };
         let _ = iter.descend_to_leaf(root_id, Some(start));
         iter
@@ -99,11 +105,13 @@ where
     }
 }
 
-impl<'a, K, V, S> Iterator for BPlusTreeIter<'a, K, V, S>
+impl<'a, K, V, KC, VC, S> Iterator for BPlusTreeIter <'a, K, V, KC, VC, S>
 where
-    S: NodeStorage<K, V>,
-    K: KeyCodec + Clone + Ord,
-    V: ValueCodec + Clone,
+    K: Clone + Ord,
+    V: Clone,
+    KC: KeyCodec<K>,
+    VC: ValueCodec<V>,
+    S: NodeStorage<K, V, KC, VC>,
 {
     type Item = Result<(K, V), TreeError>;
 

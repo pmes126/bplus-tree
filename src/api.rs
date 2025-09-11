@@ -12,6 +12,7 @@ use std::marker::PhantomData;
 
 use crate::bplustree::iterator::BPlusTreeIter;
 use crate::bplustree::tree::{BPlusTree, BaseVersion, SharedBPlusTree, StagedMetadata};
+use crate::codec::bincode::RawBuf;
 use crate::codec::{KeyCodec, ValueCodec};
 use crate::storage::{MetadataStorage, NodeStorage};
 
@@ -41,18 +42,18 @@ pub type Result<T> = std::result::Result<T, ApiError>;
 #[derive(Clone)]
 pub struct DbBytes<S>
 where
-    S: NodeStorage<Vec<u8>, Vec<u8>> + MetadataStorage + Send + Sync + 'static,
+    S: NodeStorage<Vec<u8>, Vec<u8>, RawBuf, RawBuf> + MetadataStorage + Send + Sync + 'static,
 {
-    inner: SharedBPlusTree<Vec<u8>, Vec<u8>, S>,
+    inner: SharedBPlusTree<Vec<u8>, Vec<u8>, RawBuf, RawBuf, S>,
 }
 
 impl<S> DbBytes<S>
 where
-    S: NodeStorage<Vec<u8>, Vec<u8>> + MetadataStorage + Send + Sync + 'static,
+    S: NodeStorage<Vec<u8>, Vec<u8>, RawBuf, RawBuf> + MetadataStorage + Send + Sync + 'static,
 {
     /// Build from a storage backend and a B+tree order.
     pub fn new(storage: S, order: usize) -> Result<Self> {
-        let tree = BPlusTree::<Vec<u8>, Vec<u8>, S>::new(storage, order)?;
+        let tree = BPlusTree::<Vec<u8>, Vec<u8>, RawBuf, RawBuf, S>::new(storage, order)?;
         Ok(Self {
             inner: SharedBPlusTree::new(tree),
         })
@@ -124,7 +125,7 @@ where
     }
 
     /// Begin a batched write transaction (single commit).
-    pub fn begin_write(&self) -> Result<WriteTxnBytes<S>> {
+    pub fn begin_write(&self) -> Result<WriteTxnBytes> {
         Ok(WriteTxnBytes::new(self.inner.clone()))
     }
 }
@@ -132,14 +133,14 @@ where
 // Streaming iterator (bytes)
 pub struct BytesIter<'a, S>
 where
-    S: NodeStorage<Vec<u8>, Vec<u8>> + MetadataStorage + Send + Sync + 'static,
+    S: NodeStorage<Vec<u8>, Vec<u8>, RawBuf, RawBuf> + MetadataStorage + Send + Sync + 'static,
 {
-    inner: BPlusTreeIter<'a, Vec<u8>, Vec<u8>, S>,
+    inner: BPlusTreeIter<'a, Vec<u8>, Vec<u8>, RawBuf, RawBuf, S>,
 }
 
 impl<'a, S> Iterator for BytesIter<'a, S>
 where
-    S: NodeStorage<Vec<u8>, Vec<u8>> + MetadataStorage + Send + Sync + 'static,
+    S: NodeStorage<Vec<u8>, Vec<u8>, RawBuf, RawBuf> + MetadataStorage + Send + Sync + 'static,
 {
     type Item = Result<(Vec<u8>, Vec<u8>)>;
     fn next(&mut self) -> Option<Self::Item> {
@@ -152,24 +153,28 @@ where
 // ============================
 
 #[derive(Clone)]
-pub struct TypedDb<K, V, S>
+pub struct TypedDb<K, V, KC, VC, S>
 where
-    K: KeyCodec + Ord + Clone,
-    V: ValueCodec + Clone,
-    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+    K: Ord + Clone,
+    V: Clone,
+    KC: KeyCodec<K>,
+    VC: ValueCodec<V>,
+    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
 {
-    inner: SharedBPlusTree<K, V, S>,
+    inner: SharedBPlusTree<K, V, KC, VC, S>,
     _pd: PhantomData<(K, V)>,
 }
 
-impl<K, V, S> TypedDb<K, V, S>
+impl<K, V, KC, VC, S> TypedDb<K, V, KC, VC, S>
 where
-    K: KeyCodec + Ord + Clone,
-    V: ValueCodec + Clone,
-    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+    K: Ord + Clone,
+    V: Clone,
+    KC: KeyCodec<K>,
+    VC: ValueCodec<V>,
+    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
 {
     /// Build typed DB from your existing typed tree.
-    pub fn from_tree(tree: BPlusTree<K, V, S>) -> Self {
+    pub fn from_tree(tree: BPlusTree<K, V, KC, VC, S>) -> Self {
         Self {
             inner: SharedBPlusTree::new(tree).clone(),
             _pd: PhantomData,
@@ -210,30 +215,36 @@ where
         Ok(())
     }
 
-    pub fn scan_range<'a>(&'a self, start: &K, end: &K) -> Result<Option<TypedIter<'a, K, V, S>>> {
+    pub fn scan_range<'a>(&'a self, start: &K, end: &K) -> Result<Option<TypedIter<'a, K, V, KC, VC, S>>> {
         let it_opt = self.inner.search_in_range(start, end)?;
-        Ok(it_opt.map(|inner| TypedIter { inner }))
+        Ok(it_opt.map(|inner| TypedIter { inner, _pd: PhantomData }))
     }
 
-    pub fn begin_write(&self) -> Result<TypedWriteTxn<K, V, S>> {
+    pub fn begin_write(&self) -> Result<TypedWriteTxn<K, V>> {
         Ok(TypedWriteTxn::new(self.inner.clone()))
     }
 }
 
 // Streaming iterator (typed)
-pub struct TypedIter<'a, K, V, S>
+pub struct TypedIter<'a, K, V, KC, VC, S>
 where
-    K: KeyCodec + Ord,
-    V: ValueCodec,
-    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+    K: Clone + Ord,
+    V: Clone,
+    KC: KeyCodec<K>,
+    VC: ValueCodec<V>,
+    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
 {
-    inner: BPlusTreeIter<'a, K, V, S>,
+    inner: BPlusTreeIter<'a, K, V, KC, VC, S>,
+    _pd: PhantomData<(KC, VC)>,
 }
-impl<'a, K, V, S> Iterator for TypedIter<'a, K, V, S>
+
+impl<'a, K, V, KC, VC, S> Iterator for TypedIter<'a, K, V, KC, VC, S>
 where
-    K: KeyCodec + Ord + Clone,
-    V: ValueCodec + Clone,
-    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+    K: Clone + Ord ,
+    V: Clone,
+    KC: KeyCodec<K>,
+    VC: ValueCodec<V>,
+    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
 {
     type Item = Result<(K, V)>;
     fn next(&mut self) -> Option<Self::Item> {
@@ -286,19 +297,21 @@ impl<S> DbBuilder<S> {
     /// Build the **bytes-level** API (Vec<u8> keys/values).
     pub fn build_bytes(self) -> Result<DbBytes<S>>
     where
-        S: NodeStorage<Vec<u8>, Vec<u8>> + MetadataStorage + Send + Sync + 'static,
+        S: NodeStorage<Vec<u8>, Vec<u8>, RawBuf, RawBuf> + MetadataStorage + Send + Sync + 'static,
     {
         DbBytes::new(self.storage, self.opts.order)
     }
 
     /// Build the **typed** API using your KeyCodec/ValueCodec.
-    pub fn build_typed<K, V>(self) -> Result<TypedDb<K, V, S>>
+    pub fn build_typed<K, V, KC, VC>(self) -> Result<TypedDb<K, V, KC, VC, S>>
     where
-        K: KeyCodec + Ord + Clone,
-        V: ValueCodec + Clone,
-        S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+        K: Ord + Clone,
+        V: Clone,
+        KC: KeyCodec<K>,
+        VC: ValueCodec<V>,
+        S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
     {
-        let tree = BPlusTree::<K, V, S>::new(self.storage, self.opts.order)?;
+        let tree = BPlusTree::<K, V, KC, VC, S>::new(self.storage, self.opts.order)?;
         Ok(TypedDb::from_tree(tree))
     }
 }
@@ -306,7 +319,7 @@ impl<S> DbBuilder<S> {
 // ============================================================
 
 /// Bytes-level write txn (Vec<u8>, Vec<u8>)
-pub type WriteTxnBytes<S> = WriteTxn<Vec<u8>, Vec<u8>, S>;
+pub type WriteTxnBytes = WriteTxn<Vec<u8>, Vec<u8>>;
 
 /// Typed write txn (K, V)
-pub type TypedWriteTxn<K, V, S> = WriteTxn<K, V, S>;
+pub type TypedWriteTxn<K, V> = WriteTxn<K, V>;

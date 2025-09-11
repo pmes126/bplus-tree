@@ -49,21 +49,25 @@ where
         matches!(self, Node::Internal { .. })
     }
 
-    pub fn from_node_view(node_view: NodeView) -> Result<Self, crate::codec::CodecError> {
+    pub fn from_node_view<KC, VC>(node_view: NodeView) -> Result<Self, crate::codec::CodecError> 
+    where
+        KC: crate::codec::KeyCodec<K>,
+        VC: crate::codec::ValueCodec<V>,
+    {
         match node_view {
             NodeView::Internal { page } => {
                 let page_raw = page.to_bytes()
                     .map_err(|e| crate::codec::CodecError::EncodeFailure {
                          msg: e.to_string(),
                     })?;
-                DefaultNodeCodec::decode(page_raw)
+                <DefaultNodeCodec as NodeCodec<K, V, KC, VC>>::decode(page_raw)
             }
             NodeView::Leaf { page } => {
                 let page_raw = page.to_bytes()
                     .map_err(|e| crate::codec::CodecError::EncodeFailure {
                          msg: e.to_string(),
                     })?;
-                DefaultNodeCodec::decode(page_raw)
+                <DefaultNodeCodec as NodeCodec<K, V, KC, VC>>::decode(page_raw)
             }
         }
     }

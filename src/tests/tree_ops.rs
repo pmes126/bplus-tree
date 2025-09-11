@@ -2,6 +2,7 @@ use crate::bplustree::tree::StagedMetadata;
 use crate::bplustree::tree::{BPlusTree, BaseVersion, CommitError, SharedBPlusTree};
 use crate::storage::file_store::FileStore;
 use crate::storage::page_store::PageStore;
+use crate::codec::bincode::{BeU64, RawBuf, Utf8}; 
 use crate::tests::common::{load_tree, make_tree, make_tree_generic};
 
 use anyhow::Result;
@@ -167,7 +168,7 @@ fn write_and_read_values_multiple() -> Result<(), anyhow::Error> {
 fn write_and_read_multiple_string_as_key() -> Result<(), anyhow::Error> {
     let dir = TempDir::new().unwrap();
     let order = 20;
-    let tree = make_tree_generic::<String, String>(&dir, order).expect("create tree");
+    let tree = make_tree_generic::<String, String, Utf8, Utf8>(&dir, order).expect("create tree");
 
     let mut root_id = tree.get_root_id();
 
@@ -194,7 +195,7 @@ fn write_and_read_multiple_string_as_key() -> Result<(), anyhow::Error> {
 #[test]
 fn write_and_read_string_as_key() -> Result<(), anyhow::Error> {
     let dir = TempDir::new().unwrap();
-    let tree = make_tree_generic::<String, String>(&dir, 3).expect("create tree");
+    let tree = make_tree_generic::<String, String, Utf8, Utf8>(&dir, 3).expect("create tree");
     let key = "key1".to_string();
     let value = "value1".to_string();
     let res = tree.insert(key.clone(), value.clone());
@@ -496,7 +497,7 @@ fn insert_duplicate_keys_should_overwrite_value() -> Result<()> {
 
     let order = 4; // B+ tree order
     let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-    let tree = SharedBPlusTree::new(BPlusTree::<String, String, FileStore<PageStore>>::new(
+    let tree = SharedBPlusTree::new(BPlusTree::<String, String, Utf8, Utf8, FileStore<PageStore>>::new(
         store, order,
     )?);
     let mut root_id = tree.get_root_id();
