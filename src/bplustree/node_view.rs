@@ -160,7 +160,7 @@ impl NodeView {
                 "Internal nodes do not store values, cannot insert"
             )),
             NodeView::Leaf { page } => {
-                page.insert_at_idx(idx, key, value)
+                page.insert_at(idx, key, value)
                     .map_err(|e| anyhow::anyhow!(e))
             }
         }

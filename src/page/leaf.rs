@@ -139,7 +139,6 @@ impl LeafPage {
         let len = slot.val_len as usize;
         let lo = self.values_hi_usize();
         if off < lo  {
-            println!("ERROR COMMING FROM READ_VALUE_AT HERE");
             return Err(PageError::CorruptedData{ msg:"slot outside arena".to_string() });
         }
         Ok(&self.buf[off..off + len])
@@ -153,6 +152,60 @@ impl LeafPage {
     // -------- slot access --------
     // -------- insert (encoded key & value) --------
 
+    pub fn insert_at(
+        &mut self,
+        idx: usize,
+        key_enc: &[u8],
+        val_bytes: &[u8],
+    ) -> Result<(), PageError> {
+        let mut scratch = Vec::new();
+
+        // Plan and get delta_k
+        let kb = self.key_block(); // &[u8]
+        let (range, insert_bytes) = self.fmt().insert_plan(kb, idx, key_enc, &mut scratch);
+        let delta_k = insert_bytes.len() as isize;
+
+        // CAPACITY
+        let keys_end_old = self.keys_end();
+        let keys_end_new = (keys_end_old as isize + delta_k) as usize;
+        let slots_end_new = keys_end_new + (self.key_count() as usize + 1) * SLOT_SIZE;
+        let values_hi_new = self.values_hi_usize().checked_sub(val_bytes.len()).ok_or(PageError::PageFull{})?;
+        if slots_end_new > values_hi_new { return Err(PageError::PageFull{}); }
+
+        // Move slot dir by Δk to stay flush
+        self.move_slot_dir(delta_k)?;
+
+        // SPLICE inside the key-block region (one copy_within + one write)
+        //
+        // key block before: |<-- range --><-- rest -->| 
+        // key block after:  |<-- insert_bytes --><--range--><-- rest -->|
+        let ks = self.keys_start();
+        let old_len = self.key_block_len() as usize;
+        let new_len = (old_len as isize + delta_k) as usize;
+        self.set_key_block_len(new_len as u16);
+
+        // shift tail
+        let tail_src_start = ks + range.start;
+        let tail_src_end   = ks + old_len;
+        let tail_dst_start = (tail_src_start as isize + delta_k) as usize;
+        self.buf.copy_within(tail_src_start..tail_src_end, tail_dst_start);
+
+        // write replacement bytes
+        let hole_start = ks + range.start;
+
+        self.buf[hole_start .. hole_start + insert_bytes.len()].copy_from_slice(&insert_bytes);
+
+        // adjust format metadata (restart offsets etc.)
+        //let kb_final = &mut self.buf[ks..ks + new_len];
+        //self.fmt().adjust_after_splice(kb_final, range.start, delta_k, idx);
+
+        // Append value + insert slot
+        let (val_off, val_len) = self.alloc_value_tail(val_bytes)?;
+        self.slot_dir_insert(idx, LeafSlot { val_off, val_len })?;
+        self.set_key_count(self.key_count() + 1);
+        Ok(())
+    }
+
     pub fn insert_encoded(&mut self, key_enc: &[u8], val_bytes: &[u8]) -> Result<(), PageError> {
         // 1) find position
         let mut scratch = Vec::new();
@@ -161,62 +214,12 @@ impl LeafPage {
             Ok(idx) => { 
                let (val_off, val_len) = self.alloc_value_tail(val_bytes)?; // respects slot region
                self.overwrite_value_at(idx, val_off, val_len)?;
+                println!("Overwrote existing key at index {}", idx);
                return Ok(());
             },
             Err(_idx) => _idx, // not found, use insertion point
         };
-
-        // 2) build new key block bytes (correctness-first: rebuild whole block)
-        let old_kb = self.key_block();
-        let old_len = old_kb.len();
-
-        let mut all_owned: Vec<Vec<u8>> = Vec::with_capacity(self.key_count() as usize + 1);
-        for i in 0..self.key_count() as usize {
-            let k = self.decode_key_at(i, &mut scratch);
-            all_owned.push(k.to_vec());
-        }
-        all_owned.insert(idx, key_enc.to_vec());
-
-        let refs: Vec<&[u8]> = all_owned.iter().map(|v| v.as_slice()).collect();
-        let mut new_kb = Vec::new();
-        self.fmt().encode_all(&refs, &mut new_kb);
-        let new_len = new_kb.len();
-
-        let delta_k = new_len as isize - old_len as isize;
-
-        let keys_end_old = self.keys_end();
-        let keys_end_new = (keys_end_old as isize + delta_k) as usize;
-        let slots_end_new = keys_end_new + (self.key_count() as usize + 1) * SLOT_SIZE;
-        let values_hi_old = self.values_hi_usize();
-        let values_hi_new = values_hi_old.checked_sub(val_bytes.len()).ok_or(PageError::PageFull {})?;
-        
-        // capacity: front (keys+slots) must not pass back (values)
-        if slots_end_new > values_hi_new {
-            return Err(PageError::PageFull {});
-        }
-        
-        // move the entire slot dir by Δk to keep it flush with the key block
-        self.move_slot_dir(delta_k)?;
-        
-        // write new key block (front)
-        {
-            let dst = &mut self.buf[0..new_len];
-            dst.copy_from_slice(&new_kb);
-            self.set_key_block_len(new_len as u16);
-        }
-        
-        // append value at tail (back)
-        let (val_off, val_len) = {
-            // allocate exactly at `values_hi_new`
-            self.buf[values_hi_new..values_hi_old].copy_from_slice(val_bytes);
-            self.set_values_hi(values_hi_new as u16);
-            (values_hi_new as u16, val_bytes.len() as u16)
-        };
-        
-        // insert slot entry at idx
-        self.slot_dir_insert(idx, LeafSlot { val_off, val_len })?;
-        self.set_key_count(self.key_count() + 1);
-        Ok(())
+        self.insert_at(idx, key_enc, val_bytes)
     }
 
     // -------- delete (by index) --------
@@ -381,27 +384,6 @@ impl LeafPage {
         Ok((k, v))
     }
     
-    /// Insert at an explicit `idx` (caller has already sought the position).
-    pub fn insert_at_idx(&mut self, idx: usize, key_enc: &[u8], val_bytes: &[u8]) -> Result<(), PageError> {
-        // same body as `insert_encoded`, but skip the `find_slot` part and use `idx`
-        // Tip: factor your rebuild+plan+apply into a private `insert_planned(idx, key_enc, val_bytes)`
-        // and call it from both places.
-        // For brevity, call the existing insert and let it re-seek:
-        // (replace with inlined rebuild if you want to avoid the second seek)
-        let mut scratch = Vec::new();
-        if let Ok(i) = self.find_slot(key_enc, &mut scratch) {
-            if i == idx {
-                let (off, len) = self.alloc_value_tail(val_bytes)?;
-                return self.overwrite_value_at(idx, off, len);
-            }
-        }   
-
-        // If idx disagrees with seek result, trust `idx`:
-        // Rebuild using `idx` like in `insert_encoded` (copy that code path and swap `all_owned.insert(idx, key_enc.to_vec())`)
-        // …
-        self.insert_encoded(key_enc, val_bytes)
-    }
-
     pub fn find_value(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> Result<Option<&[u8]>, PageError> {
         if let Ok(idx) = self.find_slot(key_enc, scratch) {
             let v = self.read_value_at(idx)?;
@@ -440,7 +422,6 @@ impl LeafPage {
             let lo  = self.values_hi_usize();
             let hi  = self.slots_end();
             if off < lo || off.checked_add(len).unwrap_or(usize::MAX) > hi {
-            println!("ERROR COMMING FROM SPLIT_OFF HERE");
                 return Err(PageError::CorruptedData{ msg: "slot outside arena".to_string()});
             }
             let v = self.buf[off..off + len].to_vec();
@@ -520,13 +501,8 @@ struct PageKeyRun<'a> {
 }
 
 impl<'a> PageKeyRun<'a> {
-    
     fn seek(&self, needle: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
         self.fmt.seek(self.body, needle, scratch)
-    }
-
-    fn rebuild_window(&self, start: usize, end: usize, new_keys: &[&[u8]], out: &mut Vec<u8>) {
-        self.fmt.rebuild_window(self.body, start, end, new_keys, out)
     }
 }
 
@@ -543,8 +519,8 @@ mod tests {
     #[test]
     fn test_insert_and_get() {
         let mut page = make_page();
-        let keys = ["apple", "banana", "cherry", "blueberry"];
-        let values = ["red", "yellow", "dark red", "blue"];
+        let keys = ["apple", "banana", "blueberry", "cherry"];
+        let values = ["red", "yellow", "blue", "dark red"];
 
         let kv_len = keys.len();
 
@@ -565,8 +541,8 @@ mod tests {
     fn test_get_key_at_idx() {
         let mut page = make_page();
 
-        let keys = ["apple", "banana", "cherry", "blueberry"];
-        let values = ["red", "yellow", "dark red", "blue"];
+        let keys = ["apple", "banana", "blueberry", "cherry"];
+        let values = ["red", "yellow", "blue", "dark red"];
 
         for (k, v) in keys.iter().zip(values.iter()) {
             page.insert_encoded(k.as_bytes(), v.as_bytes()).unwrap();
@@ -574,8 +550,12 @@ mod tests {
         let mut scratch = Vec::new();
 
         for i in 0..keys.len() {
-            let idx = page.lower_bound(keys[i].as_bytes(), &mut scratch).expect("inserted value not found");
-            let key = page.get_key_at(idx, &mut scratch).expect("Could retrieve key");
+            let idx = page.lower_bound(keys[i].as_bytes(), &mut scratch); //.expect("inserted value not found");
+            let s = match idx {
+                Ok(i) => i,
+                Err(i) => i,
+            };
+            let key = page.get_key_at(s, &mut scratch).expect("Could not retrieve key");
             assert_eq!(*keys[i].as_bytes(), *key);
         }
     }
@@ -597,6 +577,8 @@ mod tests {
         let mut scratch = Vec::new();
 
         for i in 0..kv_len {
+            let key = page.get_key_at(i, &mut scratch).expect("Cannot retrieve key at idx");
+            assert_eq!(*keys_sorted[i].as_bytes(), *key);
             let (k, v) = page.get_kv_at(i, &mut scratch).expect("Cannot retrieve KV entry at idx");
             assert_eq!(*keys_sorted[i].as_bytes(), *k);
             assert_eq!(*values_sorted[i].as_bytes(), *v);

@@ -10,26 +10,48 @@ pub enum KeyFmtError {
 pub trait KeyBlockFormat: Send + Sync + 'static {
     /// Stable on-disk id; store this in the page header.
     fn format_id(&self) -> u8;
-
+ 
+    // -----------layout / capacity--------
+    // -----------lookups / scans (read-only)--------
     /// Binary search in the key block; returns (insertion idx, found).
     fn seek(&self, block: &[u8], needle: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize>;
-
     /// Decode the i-th *encoded key bytes* into `scratch` and return a view.
     fn decode_at<'s>(&self, block: &'s [u8], i: usize, scratch: &'s mut Vec<u8>) -> &'s [u8];
-
+    /// Decodes the length of an entry and returns the Range of bytes for the entry.
+    fn entry_range(&self, block: &[u8], idx: usize) -> std::ops::Range<usize>;
+    /// Count the number of entries in the block.
+    fn count(&self, p: &[u8]) -> usize;
+    // ---------- plan phase (no mutation) ----------
+    /// Byte delta if we insert `new_key` at logical index `idx`.
+    /// Positive = grows, negative = shrinks.
+    fn get_insert_delta(&self, block: &[u8], idx: usize, new_key: &[u8], scratch: &mut Vec<u8>) -> isize;
+    /// Byte delta if we delete the key at `idx`.
+    fn get_delete_delta(&self, block: &[u8], idx: usize, scratch: &mut Vec<u8>) -> isize;
     /// Re-encode the entire block from a sorted list of encoded keys.
     /// (Start with this; optimize to window rebuild later.)
     fn encode_all(&self, keys: &[&[u8]], out: &mut Vec<u8>);
-
-    /// Re-encode a small window [start..end) replacing it with `new_keys` (sorted).
-    /// Write bytes into `out` (caller will splice them back into the page region).
-    fn rebuild_window(
+    // ---------- mutate phase (do mutation) ----------
+    /// PLAN: return the byte range in the `block` to replace, this is occupied by the previous
+    /// value and the exact bytes to insert there.
+    /// `delta = insert_bytes.len() as isize - (range.end - range.start) as isize`
+    fn insert_plan(
         &self,
         block: &[u8],
-        start: usize,
-        end: usize,
-        new_keys: &[&[u8]],
-        out: &mut Vec<u8>,
+        idx: usize,
+        new_key: &[u8],
+        scratch: &mut Vec<u8>,
+    ) -> (std::ops::Range<usize>, Vec<u8>);
+
+    /// After the splice was applied to the page buffer, adjust any **format metadata**
+    /// inside the final key-block (e.g., restart offsets) affected by the splice.
+    /// - `splice_at` is the start byte within the key-block where you inserted/replaced
+    /// - `delta` is the net size change (positive = grew)
+    fn adjust_after_splice(
+        &self,
+        block_final: &mut [u8],
+        splice_at: usize,
+        delta: isize,
+        idx: usize,
     );
 }
 
