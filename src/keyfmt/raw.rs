@@ -104,6 +104,19 @@ impl KeyBlockFormat for RawFormat {
             out.extend_from_slice(k);
         }
     }
+
+    fn split_into(&self, block: &[u8], idx: usize, left_out: &mut Vec<u8>, right_out: &mut Vec<u8>) {
+        let n = self.count(block);
+        let split_at = if idx < n {
+            self.entry_range(block, idx).start
+        } else {
+            block.len()
+        };
+        left_out.clear();
+        left_out.extend_from_slice(&block[..split_at]);
+        right_out.clear();
+        right_out.extend_from_slice(&block[split_at..]);
+    }
 }
 
 // helpers

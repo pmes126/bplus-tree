@@ -407,104 +407,56 @@ impl LeafPage {
         }
     }
 
-    /// Split at `idx` (0 < idx < n). Moves [idx..n) into a new right page.
-    /// Returns (right_page, pivot_key_bytes).
-    pub fn split_off_at(&mut self, idx: usize) -> Result<LeafPage, PageError> {
-        let n = self.key_count() as usize;
-        if idx == 0 || idx >= n {
-            return Err(PageError::IndexOutOfBounds {});
-        }
+    /// Split this leaf into `right`, returning the encoded separator (first key of `right`).
+    /// Does *not* decode all keys; the format handles right-block fixups internally.
+    pub fn split_off_into(&mut self, split_idx: usize, right: &mut LeafPage) -> Result<Vec<u8>, PageError> {
+        let key_count = self.key_count() as usize;
+        let kb = self.key_block(); // entries region only
 
-        let fmt = self.fmt();
-        let cap_left  = self.buf.len();
-        let cap_right = self.buf.len(); // same size page
-
-        // 1) Collect owned keys/values for both halves.
-        let mut scratch = Vec::new();
-        let mut left_keys:  Vec<Vec<u8>> = Vec::with_capacity(idx);
-        let mut left_vals:  Vec<Vec<u8>> = Vec::with_capacity(idx);
-        let mut right_keys: Vec<Vec<u8>> = Vec::with_capacity(n - idx);
-        let mut right_vals: Vec<Vec<u8>> = Vec::with_capacity(n - idx);
-        let mut total_left_vals  = 0usize;
-        let mut total_right_vals = 0usize;
-
-        for i in 0..n {
-            let k = fmt.decode_at(self.key_block(), i, &mut scratch).to_vec();
-            let slot = self.read_slot(i)?;
-            let off = slot.val_off as usize;
-            let len = slot.val_len as usize;
-            let lo  = self.values_hi_usize();
-            let hi  = self.slots_end();
-            if off < lo || off.checked_add(len).unwrap_or(usize::MAX) > hi {
-                return Err(PageError::CorruptedData{ msg: "slot outside arena".to_string()});
-            }
-            let v = self.buf[off..off + len].to_vec();
-
-            if i < idx {
-                total_left_vals += len;
-                left_keys.push(k);
-                left_vals.push(v);
-            } else {
-                total_right_vals += len;
-                right_keys.push(k);
-                right_vals.push(v);
-            }
-        }
-
-        // 2) Encode key blocks (raw+restarts builds the tail automatically).
+        // 2) ask the format to produce left/right key-block bytes
         let mut left_kb = Vec::new();
         let mut right_kb = Vec::new();
-        {
-            let lrefs: Vec<&[u8]> = left_keys.iter().map(|x| x.as_slice()).collect();
-            let rrefs: Vec<&[u8]> = right_keys.iter().map(|x| x.as_slice()).collect();
-            fmt.encode_all(&lrefs, &mut left_kb);
-            fmt.encode_all(&rrefs, &mut right_kb);
+        self.fmt().split_into(kb, split_idx, &mut left_kb, &mut right_kb);
+    
+        // 3) BEFORE we change key_count, snapshot the slots for the right side
+        let mut moved_slots = Vec::with_capacity(key_count - split_idx);
+        for i in split_idx..key_count {
+            moved_slots.push(self.read_slot(i)?);
         }
-
-        // 3) Capacity checks (bytes): key_block + slots + values
-        let need_left  = left_kb.len()  + left_keys.len()  * SLOT_SIZE + total_left_vals;
-        let need_right = right_kb.len() + right_keys.len() * SLOT_SIZE + total_right_vals;
-        if need_left  > cap_left  { return Err(PageError::CorruptedData{ msg: "left overflow".to_string()}); }
-        if need_right > cap_right { return Err(PageError::PageFull {}); }
-
-        // 4) Build RIGHT page compactly.
-        let mut right = LeafPage::new(self.keyfmt_id());
+    
+        // 4) Shrink left page's key-block in place (move slot-dir by Δk and overwrite)
+        let old_len = kb.len();
+        let delta_k = left_kb.len() as isize - old_len as isize; // negative
+        self.move_slot_dir(delta_k)?;
+        let ks = self.keys_start();
+        self.buf[ks .. ks + left_kb.len()].copy_from_slice(&left_kb);
+        self.set_key_block_len(left_kb.len() as u16);
+        // Reduce key_count to the left count; we don't need to physically shift slots—just drop count.
+        self.set_key_count(split_idx as u16);
+    
+        // 5) Init the right page with the right key-block
         {
-            // key block
-            right.buf[..right_kb.len()].copy_from_slice(&right_kb);
+            let ks_r = right.keys_start();
+            right.buf[ks_r .. ks_r + right_kb.len()].copy_from_slice(&right_kb);
             right.set_key_block_len(right_kb.len() as u16);
-            // values packed from tail + slots after key block
-            let mut write = cap_right;
-            for (i, vb) in right_vals.iter().enumerate() {
-                let len = vb.len();
-                write = write.checked_sub(len).ok_or(PageError::PageFull {})?;
-                right.buf[write..write + len].copy_from_slice(vb);
-                let base = right_kb.len() + i * SLOT_SIZE;
-                write_u16_le(&mut right.buf, base, write as u16);
-                write_u16_le(&mut right.buf, base + 2, len as u16);
-            }
-            right.set_values_hi(write as u16);
-            right.set_key_count(right_keys.len() as u16);
+            right.set_key_count((key_count - split_idx) as u16);
         }
-
-        // 5) Rebuild LEFT page compactly (in place).
-        {
-            self.buf[..left_kb.len()].copy_from_slice(&left_kb);
-            self.set_key_block_len(left_kb.len() as u16);
-            let mut write = cap_left;
-            for (i, vb) in left_vals.iter().enumerate() {
-                let len = vb.len();
-                write = write.checked_sub(len).ok_or(PageError::PageFull {})?;
-                self.buf[write..write + len].copy_from_slice(vb);
-                let base = left_kb.len() + i * SLOT_SIZE;
-                write_u16_le(&mut self.buf, base, write as u16);
-                write_u16_le(&mut self.buf, base + 2, len as u16);
-            }
-            self.set_values_hi(write as u16);
-            self.set_key_count(left_keys.len() as u16);
+    
+        // 6) Copy values referenced by moved slots into the right page's value arena,
+        //    and write its slot dir in-order. Left page keeps old bytes as garbage.
+        for (i, slot) in moved_slots.iter().enumerate() {
+            let off = slot.val_off as usize;
+            let len = slot.val_len as usize;
+            let v = &self.buf[off .. off + len];
+            let (new_off, new_len) = right.alloc_value_tail(v)?;
+            right.write_slot(i, LeafSlot { val_off: new_off, val_len: new_len })?;
         }
-
-        Ok(right)
+    
+        // 7) Separator = first key of right page (encoded key bytes)
+        let mut scratch = Vec::new();
+        let sep = self.fmt().decode_at(&right.key_block(), 0, &mut scratch).to_vec();
+    
+        Ok(sep)
     }
 }
 
@@ -634,13 +586,14 @@ mod tests {
     #[test]
     fn test_split_off() {
         let mut page = make_page();
+        let mut new_page = make_page();
         let keys = ["apple", "banana", "cherry", "date"];
         let values = ["red", "yellow", "dark red", "brown"];
 
         for (k, v) in keys.iter().zip(values.iter()) {
             page.insert_encoded(k.as_bytes(), v.as_bytes()).unwrap();
         }
-        let new_page = page.split_off_at(2).unwrap();
+        let new_page = page.split_off_into(2, split_off_at).unwrap();
         let mut scratch = Vec::new();
         assert_eq!(page.key_count(), 2);
         assert_eq!(new_page.key_count(), 2);

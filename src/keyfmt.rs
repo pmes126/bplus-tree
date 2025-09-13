@@ -53,6 +53,21 @@ pub trait KeyBlockFormat: Send + Sync + 'static {
         delta: isize,
         idx: usize,
     );
+
+    /// Split the key block at logical entry `idx`, writing valid left/right blocks.
+    /// Implementations must avoid full re-encode:
+    /// - Raw: just slice at the entry boundary.
+    /// - Raw+Restarts: slice + keep only restart offsets on each side, shifting them relative to side.
+    /// - Prefix+Restarts: left = prefix of entries (no change); right = make entry `idx` a restart
+    ///   (re-encode *only* that first right entry), keep subsequent entry bytes as-is, and rebuild
+    ///   the right restart table relative to the new block. No need to decode all keys.
+    fn split_into(
+        &self,
+        block: &[u8],
+        idx: usize,
+        left_out: &mut Vec<u8>,
+        right_out: &mut Vec<u8>,
+    );
 }
 
 /// Runtime-configurable enum (handy for TreeConfig);
