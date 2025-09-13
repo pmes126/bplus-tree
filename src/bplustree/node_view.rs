@@ -196,7 +196,8 @@ impl NodeView {
                 Ok(NodeView::Internal { page: new_page })
             }
             NodeView::Leaf { page } => {
-                let new_page = page.split_off_at(idx).map_err(|e| anyhow::anyhow!(e))?;
+                let mut new_page = LeafPage::new(page.fmt().format_id());
+                page.split_off_into(idx, &mut new_page).map_err(|e| anyhow::anyhow!(e))?;
                 Ok(NodeView::Leaf { page: new_page })
             }
         }
