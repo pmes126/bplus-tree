@@ -234,8 +234,8 @@ where
         let mut collector = TransactionTracker::new();
         let new_root_id = self
             .inner
-            .insert_inner(key, value, root_id, &mut collector)?;
-            //.insert_inner_view(key, value, root_id, &mut collector)?;
+            //.insert_inner(key, value, root_id, &mut collector)?;
+            .insert_inner_view(key, value, root_id, &mut collector)?;
         let write_res = WriteResult {
             new_root_id,
             reclaimed_nodes: std::mem::take(&mut collector.reclaimed),
@@ -706,6 +706,7 @@ where
         let (leaf_node_id, idx) = path.pop().ok_or_else(|| {
             TreeError::BackendAny("Insertion path is empty, tree might be corrupted".to_string())
         })?;
+        println!("Inserting k: {:?}, v: {:?} at leaf_id: {}", key, value, leaf_node_id);
         let mut leaf_node = self
             .storage
             .read_node_view(leaf_node_id)?
@@ -728,16 +729,27 @@ where
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
         VC::encode_value(&value, val_buf.as_mut())
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
-
-        leaf_node.insert_at(idx, &key_buf, &val_buf)?;
+        match leaf_node.lower_bound(&key_buf) {
+            Ok(i) => {
+                leaf_node.replace_at(i, &val_buf)?;
+            }
+            Err(i) => {
+                leaf_node.insert_at(i, &key_buf, &val_buf)?;
+            }
+        }
 
         track.record_staged_size(self.get_size() + 1); // Update staged size
         track.record_staged_height(self.get_height()); // Update staged height - could be increased later
 
         if leaf_node.keys_len() > self.max_keys {
-            self.handle_leaf_split_view(path, leaf_node, track)
+            println!("Leaf node exceeded max keys, splitting");
+            let leaf_node = Node::from_node_view::<KC, VC>(leaf_node)?;
+            self.handle_leaf_split(path, leaf_node, track)
         } else {
-            self.write_and_propagate_view(path, &leaf_node, track)
+            println!("Calling write and propagate view");
+            //self.write_and_propagate_view(path, &leaf_node, track)
+            let leaf_node = Node::from_node_view::<KC, VC>(leaf_node)?;
+            self.write_and_propagate(path, &leaf_node, track)
         }
     }
 
@@ -1098,6 +1110,7 @@ where
                     NodeView::Leaf { .. } => {
                         match node.lower_bound(encode_buf.as_ref()) {
                             Ok(i) => {
+                                println!("Found key at index {} in leaf node {}", i, current_id);
                                 let Some(vb) = node.value_bytes_at(i)? else {
                                     return Ok(None);
                                 };

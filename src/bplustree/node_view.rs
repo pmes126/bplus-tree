@@ -166,6 +166,20 @@ impl NodeView {
         }
     }
 
+    /// Replace the value at a given index in a leaf node
+    #[inline]
+    pub fn replace_at(&mut self, idx: usize, value: &[u8]) -> Result<(), anyhow::Error> {
+        match self {
+            NodeView::Internal { .. } => Err(anyhow::anyhow!(
+                "Internal nodes do not store values, cannot replace"
+            )),
+            NodeView::Leaf { page } => {
+                page.overwrite_value_at(idx, value)
+                    .map_err(|e| anyhow::anyhow!(e))
+            }
+        }
+    }
+
     /// Remove the entry at a given index from the node
     #[inline]
     pub fn delete_at(&mut self, idx: usize) -> Result<(), anyhow::Error> {

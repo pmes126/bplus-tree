@@ -146,7 +146,7 @@ impl LeafPage {
     }
 
     /// Overwrite metadata to point to a new location (doesn't move the old bytes).
-    pub fn overwrite_value_at(&mut self, idx: usize, val_off: u16, val_len: u16) -> Result<(), PageError> {
+    pub fn overwrite_slot_at(&mut self, idx: usize, val_off: u16, val_len: u16) -> Result<(), PageError> {
         self.write_slot(idx, LeafSlot { val_off, val_len })
     }
 
@@ -161,6 +161,7 @@ impl LeafPage {
     ) -> Result<(), PageError> {
         let mut scratch = Vec::new();
 
+        // scratch
         // Plan and get delta_k
         let kb = self.key_block(); // &[u8]
         let (range, insert_bytes) = self.fmt().insert_plan(kb, idx, key_enc, &mut scratch);
@@ -214,7 +215,7 @@ impl LeafPage {
         let idx = match self.find_slot(key_enc, &mut scratch) {
             Ok(idx) => { 
                let (val_off, val_len) = self.alloc_value_tail(val_bytes)?; // respects slot region
-               self.overwrite_value_at(idx, val_off, val_len)?;
+               self.overwrite_slot_at(idx, val_off, val_len)?;
                return Ok(());
             },
             Err(_idx) => _idx, // not found, use insertion point
@@ -222,6 +223,10 @@ impl LeafPage {
         self.insert_at(idx, key_enc, val_bytes)
     }
 
+    pub fn overwrite_value_at(&mut self, idx: usize, val_bytes: &[u8]) -> Result<(), PageError> {
+        let (val_off, val_len) = self.alloc_value_tail(val_bytes)?; // respects slot region
+        self.overwrite_slot_at(idx, val_off, val_len)
+    }
     // -------- delete (by index) --------
 
     pub fn delete(&mut self, key_enc: &[u8]) -> Result<(), PageError> {
