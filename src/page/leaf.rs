@@ -139,7 +139,6 @@ impl LeafPage {
         let off = slot.val_off as usize;
         let len = slot.val_len as usize;
         let lo = self.values_hi_usize();
-        println!("read_value_at idx={} slot={:?} lo={} hi={} off={} len={}", idx, slot, lo, self.buf.len(), off, len);
         if off < lo  {
             return Err(PageError::CorruptedData{ msg:"slot outside arena".to_string() });
         }
@@ -216,7 +215,6 @@ impl LeafPage {
             Ok(idx) => { 
                let (val_off, val_len) = self.alloc_value_tail(val_bytes)?; // respects slot region
                self.overwrite_value_at(idx, val_off, val_len)?;
-                println!("Overwrote existing key at index {}", idx);
                return Ok(());
             },
             Err(_idx) => _idx, // not found, use insertion point
@@ -246,43 +244,34 @@ impl LeafPage {
         let kb = self.key_block(); // &[u8]
         //let (range, insert_bytes) = self.fmt().insert_plan(kb, idx, key_enc, &mut scratch);
         let range = self.fmt().entry_range(kb, idx);
-        //let delta_k = - (range.end as isize - range.start as isize);
+        //let delta_k = - (range.end as isize - range.start + 1 as isize);
         let delta_k = range.end - range.start;
 
-        // CAPACITY
-        //let keys_end_old = self.keys_end();
-        //let keys_end_new = (keys_end_old as isize + delta_k) as usize;
-        //let slots_end_new = keys_end_new + (self.key_count() as usize + 1) * SLOT_SIZE;
-        let values_hi_new = self.values_hi_usize() + delta_k;
-        //if slots_end_new > values_hi_new { return Err(PageError::PageFull{}); }
-
+        let delta_k : isize = delta_k.try_into().map_err(|_e| PageError::CorruptedData{ msg: "negative delta_k".to_string() })?;
         // SPLICE inside the key-block region (one copy_within + one write)
         //
         // key block before: |<-- range --><-- rest -->| 
         // key block after:  |<-- insert_bytes --><--range--><-- rest -->|
         let ks = self.keys_start();
-        let new_len : u16 = (self.key_block_len() as isize - delta_k as isize).try_into()
-            .map_err(|_e| PageError::CorruptedData{ msg: "negative key block length".to_string() })?;
+        let new_len : u16 = (self.key_block_len() as isize - delta_k).try_into()
+            .map_err(|_e| PageError::CorruptedData{ msg: "block length out of range".to_string() })?;
 
+        // remove value slot
+        self.slot_dir_remove(idx)?;
         // Shift tail part
-        let tail_src_start = ks + range.start;
-        let tail_src_end   = ks + range.end;
-        let tail_dst_start = tail_src_start;
-        self.buf.copy_within(tail_src_start..tail_src_end, tail_dst_start);
-        
-        // Adjust key block length
-        self.set_key_block_len(new_len);
+        let tail_src_start = ks + range.end;
+        //let tail_src_end   = self.keys_end();
+        let tail_src_end   = self.slots_end();
+        let tail_dst = ks + range.start;
+        self.buf.copy_within(tail_src_start..tail_src_end, tail_dst);
 
         // adjust format metadata (restart offsets etc.)
         //let kb_final = &mut self.buf[ks..ks + new_len];
         //self.fmt().adjust_after_splice(kb_final, range.start, delta_k, idx);
 
-        // remove value slot
-        self.slot_dir_remove(idx)?;
-        // Move slot dir by Δk to stay flush
-        self.move_slot_dir(-(delta_k as isize))?;
-        self.set_values_hi(values_hi_new as u16); // <-- no change
+        // Adjust key block length
         self.set_key_count(self.key_count().saturating_sub(1));
+        self.set_key_block_len(new_len);
         Ok(())
     }
 
@@ -311,12 +300,10 @@ impl LeafPage {
     /// Move the entire slot directory by Δk bytes to keep it flush with the key block.
     fn move_slot_dir(&mut self, delta_k: isize) -> Result<(), PageError> {
         if delta_k == 0 { return Ok(()); }
-        println!("move_slot_dir by delta_k = {}", delta_k);
-        let k0 = self.keys_end();   // current end of keys (before commit of new len)
-        let s0 = self.slots_end();  // current end of slots
-        let dst = (k0 as isize + delta_k) as usize;
-        println!("move_slot_dir by delta_k={} keys_end={} slots_end={} dst={}", delta_k, k0, s0, dst);
-        self.buf.copy_within(k0..s0, dst);
+        let from = self.slots_base();
+        let to = self.slots_end();
+        let dst = (from as isize + delta_k) as usize;
+        self.buf.copy_within(from..to, dst);
         Ok(())
     }
 
@@ -359,17 +346,30 @@ impl LeafPage {
         Ok(())
     }
 
+    // Remove slot at idx, shifting left.
+    // |-- idx --|-- idx+1 --| ... |-- last --|
+    // |len off  |len off    | ... |len off   |
+    // |<---------- kc * SLOT_SIZE ----------->|
     fn slot_dir_remove(&mut self, idx: usize) -> Result<(), PageError> {
         let kc = self.key_count() as usize;
         if idx >= kc { return Err(PageError::IndexOutOfBounds {}); }
-        let base = self.slots_base();
+        let base = self.slots_base(); // keys_end
+
+        if idx == kc - 1 {
+            // last slot, nothing to shift, just zero it (optional)
+            //let last = base + (kc - 1) * SLOT_SIZE;
+            //for b in &mut self.buf[last..last + SLOT_SIZE] { *b = 0; }
+            return Ok(());
+        }
+
         let from = base + (idx + 1) * SLOT_SIZE;
-        let to   = base + kc * SLOT_SIZE;
+        let to  = base + (kc) * SLOT_SIZE;
+        let dest = base + idx * SLOT_SIZE;
         // shift left by one
-        self.buf.copy_within(from..to, from - SLOT_SIZE);
+        self.buf.copy_within(from..to, dest);
         // zero last slot (optional)
-        let last = base + (kc - 1) * SLOT_SIZE;
-        for b in &mut self.buf[last..last + SLOT_SIZE] { *b = 0; }
+        //let last = base + (kc - 1) * SLOT_SIZE;
+        //for b in &mut self.buf[last..last + SLOT_SIZE] { *b = 0; }
         Ok(())
     }
 
@@ -609,30 +609,26 @@ mod tests {
             page.insert_encoded(k.as_bytes(), v.as_bytes()).unwrap();
         }
 
-        // Delete "banana"
         page.delete_at(1).unwrap();
 
         let mut scratch = Vec::new();
         assert_eq!(page.key_count(), 2);
         let (ke0, ve0) = page.get_kv_at(0, &mut scratch).unwrap();
+
         assert_eq!(ke0, b"apple");
         assert_eq!(ve0, b"red");
 
         let (ke1, ve1) = page.get_kv_at(1, &mut scratch).unwrap();
         assert_eq!(ke1, b"cherry");
-        println!("ke1: {:?}", String::from_utf8(ke1.to_vec()));
-        println!("ve1: {:?}", String::from_utf8(ve1.to_vec()));
         assert_eq!(ve1, b"dark red");
   
-        //page.delete_at(1).unwrap();
-        //let res = page.get_kv_at(1, &mut scratch);
-        //assert!(res.is_err());
+        page.delete_at(1).unwrap();
+        let res = page.get_kv_at(1, &mut scratch);
+        assert!(res.is_err());
 
-        //let (ke0, ve0) = page.get_kv_at(0, &mut scratch).unwrap();
-        //assert_eq!(ke0, b"apple");
-        //println!("ke0: {:?}", String::from_utf8(ke0.to_vec()));
-        //println!("ve0: {:?}", String::from_utf8(ve0.to_vec()));
-        //assert_eq!(ve0, b"dark red");
+        let (ke0, ve0) = page.get_kv_at(0, &mut scratch).unwrap();
+        assert_eq!(ke0, b"apple");
+        assert_eq!(ve0, b"red");
     }
 }
 //
