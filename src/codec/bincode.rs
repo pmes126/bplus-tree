@@ -207,16 +207,19 @@ where
                 let page = InternalPage::from_bytes(buf)
                     .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;
                 let mut internal = Node::Internal {
-                    keys: Vec::with_capacity(page.header.entry_count as usize),
-                    children: Vec::with_capacity(page.header.entry_count as usize + 1), // +1 for rightmost child
+                    keys: Vec::with_capacity(page.key_count() as usize),
+                    children: Vec::with_capacity(page.key_count() as usize + 1), // +1 for rightmost child
                 };
+                let scratch: &mut Vec<u8> = &mut Vec::with_capacity(MAX_KEY_SIZE);
                 if let Node::Internal { keys, children } = &mut internal {
-                    children.push(page.header.leftmost_child); // Add the leftmost child pointer
-                    for i in 0..page.header.entry_count as usize {
-                        let (key_bytes, child_ptr) = page
-                            .get_entry(i)
+                    for i in 0..page.key_count() as usize {
+                        let key_bytes = page.get_key_at(i, scratch.as_mut())
                             .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;
                         keys.push(KC::decode_key(key_bytes)?);
+                    }
+                    for i in 0..page.key_count() as usize  + 1 {
+                        let child_ptr = page.get_child_at(i)
+                            .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;
                         children.push(child_ptr);
                     }
                 }
@@ -252,15 +255,14 @@ where
                     .copied()
             }
             Node::Internal { keys, children } => {
-                let mut page = InternalPage::new();
-                page.header.leftmost_child = children[0]; // Set the leftmost child pointer and skip it
+                let mut page = InternalPage::new(0u8);
                 let entries = keys.iter().zip(children.iter().skip(1));
                 let mut encode_buf: Vec<u8> = Vec::with_capacity(MAX_KEY_SIZE);
                 for (key_ref, child_ref) in entries {
                     encode_buf.resize(KC::encoded_len(key_ref), 0);
                     KC::encode_key(key_ref, encode_buf.as_mut())
                         .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
-                    page.insert_entry(&encode_buf, *child_ref)
+                    page.insert_encoded(&encode_buf, *child_ref)
                         .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
                 }
                 page.to_bytes()

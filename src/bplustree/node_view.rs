@@ -25,7 +25,7 @@ impl NodeView {
     #[inline]
     pub fn keys_len(&self) -> usize {
         match self {
-            NodeView::Internal { page } => page.header.entry_count as usize,
+            NodeView::Internal { page } => page.key_count() as usize,
             NodeView::Leaf { page } => page.key_count() as usize,
         }
     }
@@ -55,11 +55,8 @@ impl NodeView {
     pub fn child_ptr_at(&self, i: usize) -> Result<Option<u64>> {
         match self {
             NodeView::Internal { page } => {
-                if i == 0 {
-                    return Ok(Some(page.header.leftmost_child)); // No child pointer for index 0
-                }
                 let idx = i - 1; // Internal nodes have child pointers at i-1
-                page.child_at(idx).map(Some).map_err(|e| anyhow::anyhow!(e))
+                page.get_child_at(idx).map(Some).map_err(|e| anyhow::anyhow!(e))
             }
             NodeView::Leaf { .. } => Ok(None), // Leaf pages don't have children, but we return 0
         }
@@ -80,13 +77,13 @@ impl NodeView {
     /// Get the key at index i
     #[inline]
     pub fn key_at(&self, i: usize) -> Result<Vec<u8>> {
+        let mut scratch = Vec::new();
         match self {
             NodeView::Internal { page } => {
-                let key = page.key_bytes_at(i)?;
+                let key = page.get_key_at(i, &mut scratch)?;
                 Ok(key.to_vec())
             }
             NodeView::Leaf { page } => {
-                let mut scratch = Vec::new();
                 let key = page.get_key_at(i, &mut scratch)?;
                 Ok(key.to_vec())
             }
@@ -134,7 +131,7 @@ impl NodeView {
         match self {
             NodeView::Internal { page } => {
                 if let Some(ptr) = child_ptr {
-                    page.insert_entry(key, ptr)
+                    page.insert_encoded(key, ptr)
                         .map_err(|e| anyhow::anyhow!(e))
                 } else {
                     Err(anyhow::anyhow!(
@@ -197,7 +194,7 @@ impl NodeView {
     #[inline]
     pub fn entry_count(&self) -> usize {
         match self {
-            NodeView::Internal { page } => page.header.entry_count as usize,
+            NodeView::Internal { page } => page.key_count() as usize,
             NodeView::Leaf { page } => page.key_count() as usize,
         }
     }
@@ -221,14 +218,9 @@ impl NodeView {
     pub fn replace_child_at(&mut self, idx: usize, child_ptr: u64) -> Result<(), anyhow::Error> {
         match self {
             NodeView::Internal { page } => {
-                if idx == 0 {
-                    page.header.leftmost_child = child_ptr;
-                    Ok(())
-                } else {
-                    let child_idx = idx;
-                    page.replace_child_at(child_idx, child_ptr)
-                        .map_err(|e| anyhow::anyhow!(e))
-                }
+                 let child_idx = idx;
+                 page.replace_child_at(child_idx, child_ptr)
+                     .map_err(|e| anyhow::anyhow!(e))
             }
             NodeView::Leaf { .. } => Err(anyhow::anyhow!(
                 "Leaf nodes do not have children to replace"

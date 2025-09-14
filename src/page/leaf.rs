@@ -227,6 +227,29 @@ impl LeafPage {
         let (val_off, val_len) = self.alloc_value_tail(val_bytes)?; // respects slot region
         self.overwrite_slot_at(idx, val_off, val_len)
     }
+
+    /// Return the *encoded key bytes* at index `idx`.
+    pub fn get_key_at<'s>(&'s self, idx: usize, scratch: &'s mut Vec<u8>) -> Result<&'s [u8], PageError> {
+        if idx >= self.key_count() as usize { return Err(PageError::IndexOutOfBounds {}); }
+        Ok(self.fmt().decode_at(self.key_block(), idx, scratch))
+    }
+    
+    /// Return (encoded_key, value_bytes) at index `idx`.
+    pub fn get_kv_at<'s>(&'s self, idx: usize, scratch: &'s mut Vec<u8>) -> Result<(&'s [u8], &'s [u8]), PageError> {
+        let k = self.get_key_at(idx, scratch)?;
+        let v = self.read_value_at(idx)?;
+        Ok((k, v))
+    }
+    
+    pub fn find_value(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> Result<Option<&[u8]>, PageError> {
+        if let Ok(idx) = self.find_slot(key_enc, scratch) {
+            let v = self.read_value_at(idx)?;
+            Ok(Some(v))
+        } else {
+            Ok(None)
+        }
+    }
+
     // -------- delete (by index) --------
 
     pub fn delete(&mut self, key_enc: &[u8]) -> Result<(), PageError> {
@@ -388,28 +411,6 @@ impl LeafPage {
         self.buf[new_hi..new_hi + val_len].copy_from_slice(val);
         self.set_values_hi(new_hi as u16);
         Ok((new_hi as u16, val_len as u16))
-    }
-
-    /// Return the *encoded key bytes* at index `idx`.
-    pub fn get_key_at<'s>(&'s self, idx: usize, scratch: &'s mut Vec<u8>) -> Result<&'s [u8], PageError> {
-        if idx >= self.key_count() as usize { return Err(PageError::IndexOutOfBounds {}); }
-        Ok(self.fmt().decode_at(self.key_block(), idx, scratch))
-    }
-    
-    /// Return (encoded_key, value_bytes) at index `idx`.
-    pub fn get_kv_at<'s>(&'s self, idx: usize, scratch: &'s mut Vec<u8>) -> Result<(&'s [u8], &'s [u8]), PageError> {
-        let k = self.get_key_at(idx, scratch)?;
-        let v = self.read_value_at(idx)?;
-        Ok((k, v))
-    }
-    
-    pub fn find_value(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> Result<Option<&[u8]>, PageError> {
-        if let Ok(idx) = self.find_slot(key_enc, scratch) {
-            let v = self.read_value_at(idx)?;
-            Ok(Some(v))
-        } else {
-            Ok(None)
-        }
     }
 
     // ---- splitting ----
