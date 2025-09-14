@@ -56,7 +56,7 @@ impl NodeView {
         match self {
             NodeView::Internal { page } => {
                 let idx = i - 1; // Internal nodes have child pointers at i-1
-                page.get_child_at(idx).map(Some).map_err(|e| anyhow::anyhow!(e))
+                page.read_child_at(idx).map(Some).map_err(|e| anyhow::anyhow!(e))
             }
             NodeView::Leaf { .. } => Ok(None), // Leaf pages don't have children, but we return 0
         }
@@ -203,12 +203,17 @@ impl NodeView {
     pub fn split_off(&mut self, idx: usize) -> Result<NodeView, anyhow::Error> {
         match self {
             NodeView::Internal { page } => {
-                let new_page = page.split_off(idx).map_err(|e| anyhow::anyhow!(e))?;
+                println!("Splitting internal node at index {} with format id {}", idx, page.fmt().format_id() );
+                let mut new_page = InternalPage::new(page.fmt().format_id());
+                page.split_off_into(idx, &mut new_page).map_err(|e| anyhow::anyhow!(e))?;
+                println!("Split new internal node has tag {}", new_page.kind());
                 Ok(NodeView::Internal { page: new_page })
             }
             NodeView::Leaf { page } => {
+                println!("Splitting leaf node at index {} with format id {}", idx, page.fmt().format_id() );
                 let mut new_page = LeafPage::new(page.fmt().format_id());
                 page.split_off_into(idx, &mut new_page).map_err(|e| anyhow::anyhow!(e))?;
+                println!("Split new leaf node has tag {}", new_page.kind());
                 Ok(NodeView::Leaf { page: new_page })
             }
         }

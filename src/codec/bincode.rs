@@ -1,5 +1,7 @@
 use crate::bplustree::{Node, NodeView};
 use crate::codec::{CodecError, KeyCodec, NodeCodec, ValueCodec};
+use crate::keyfmt::raw::RawFormat;
+use crate::keyfmt::{KeyFormat};
 use crate::layout::PAGE_SIZE;
 use crate::page::INTERNAL_NODE_TAG;
 use crate::page::InternalPage;
@@ -15,6 +17,8 @@ const MAX_VAL_SIZE: usize = 256; // Maximum key size for internal nodes
 pub struct BeU64;
 pub struct Utf8;
 pub struct RawBuf;
+
+const KEY_FORMAT : u8 = 0u8;
 
 impl KeyCodec<u64> for BeU64 {
     fn encode_key(key: &u64, out: &mut [u8]) -> Result<usize, CodecError> {
@@ -218,16 +222,19 @@ where
                         keys.push(KC::decode_key(key_bytes)?);
                     }
                     for i in 0..page.key_count() as usize  + 1 {
-                        let child_ptr = page.get_child_at(i)
+                        let child_ptr = page.read_child_at(i)
                             .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;
                         children.push(child_ptr);
                     }
                 }
                 Ok(internal)
             }
-            _ => Err(CodecError::DecodeFailure {
+            _ => {
+                println!("Invalid node type tag in DefaultNodeCodec: {}", node_type);
+                Err(CodecError::DecodeFailure {
                 msg: "Invalid node type tag in page".to_string(),
-            }),
+            })
+            }
         }
     }
 
@@ -235,7 +242,7 @@ where
     {
         match node {
             Node::Leaf { keys, values } => {
-                let mut page = LeafPage::new(0u8);
+                let mut page = LeafPage::new(KEY_FORMAT);
                 {
                     let mut encode_buf_key: Vec<u8> = Vec::with_capacity(MAX_KEY_SIZE);
                     let mut encode_buf_val: Vec<u8> = Vec::with_capacity(MAX_VAL_SIZE);
@@ -255,16 +262,21 @@ where
                     .copied()
             }
             Node::Internal { keys, children } => {
-                let mut page = InternalPage::new(0u8);
-                let entries = keys.iter().zip(children.iter().skip(1));
+                let mut page = InternalPage::new(KEY_FORMAT);
+                println!("Encoding Internal Node AT DefaulttCodec with kind {}", page.kind());
+                let leftmost_child = children.first().ok_or(CodecError::EncodeFailure { msg: "Internal node must have at least one child".to_string() })?;
+                page.write_child_at(0, *leftmost_child)
+                    .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
+
                 let mut encode_buf: Vec<u8> = Vec::with_capacity(MAX_KEY_SIZE);
-                for (key_ref, child_ref) in entries {
+                for (idx, (key_ref, child)) in keys.iter().zip(children.iter()).enumerate() {
                     encode_buf.resize(KC::encoded_len(key_ref), 0);
                     KC::encode_key(key_ref, encode_buf.as_mut())
                         .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
-                    page.insert_encoded(&encode_buf, *child_ref)
+                    page.insert_separator(idx, &encode_buf, *child)
                         .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
                 }
+                println!("Page kind after encode {}", page.kind());
                 page.to_bytes()
                     .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })
                     .copied()
@@ -276,11 +288,16 @@ where
 impl NoopNodeViewCodec {
     pub fn decode(buf: &[u8; PAGE_SIZE]) -> Result<NodeView, CodecError> {
         
-        let node_type = u8::from_le_bytes(
-            buf[0..1]
-                .try_into()
-                .map_err(|e| CodecError::FromSliceError { source: e })?,
-        );
+        //let node_type = u8::from_le_bytes(
+        //    buf[0..1]
+        //        .try_into()
+        //        .map_err(|e| CodecError::FromSliceError { source: e })?,
+        //);
+        
+        let node_type = buf.first().copied().ok_or(CodecError::DecodeFailure {
+            msg: "Buffer too small to read node type".to_string(),
+        })?;
+        println!("Decoding NoopNodeView, node_type: {}", node_type);
         match node_type {
             LEAF_NODE_TAG => {
                 // Leaf node
@@ -294,9 +311,12 @@ impl NoopNodeViewCodec {
                     .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;
                 Ok(NodeView::Internal { page: *page })
             }
-            _ => Err(CodecError::DecodeFailure {
-                msg: "Invalid node type tag in page".to_string(),
-            }),
+            _ => 
+            {
+                println!("Invalid node type tag in NoopNodeView: {}", node_type);
+                Err(CodecError::DecodeFailure {
+                msg: "Invalid node type tag in page".to_string() })
+            }
         }
     }
 

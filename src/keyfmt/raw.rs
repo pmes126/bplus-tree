@@ -8,6 +8,7 @@ pub struct RawFormat;
 const LEN_SIZE: usize = 2; // u16_le
 
 impl KeyBlockFormat for RawFormat {
+    #[inline]
     fn format_id(&self) -> u8 { 0 }
 
     #[inline]
@@ -84,6 +85,11 @@ impl KeyBlockFormat for RawFormat {
         bytes.extend_from_slice(&(new_key.len() as u16).to_le_bytes());
         bytes.extend_from_slice(new_key);
         (r, bytes)
+    }
+
+    fn delete_plan(&self, block: &[u8], idx: usize, _scratch: &mut Vec<u8>) -> (std::ops::Range<usize>, Vec<u8>) {
+        // Just remove this entry’s bytes; no replacement.
+        (self.entry_range(block, idx), Vec::new())
     }
 
     fn adjust_after_splice(&self, _block_final: &mut [u8], _splice_at: usize, _delta: isize, _idx: usize) {

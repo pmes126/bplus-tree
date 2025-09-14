@@ -91,6 +91,7 @@ impl LeafPage {
     }
     // --- header accessors ---
 
+    #[inline] pub fn kind(&self) -> u8 { self.header.kind }
     #[inline] pub fn key_count(&self) -> u16 { self.header.key_count }
     #[inline] fn keyfmt_id(&self) -> u8 { self.header.keyfmt_id }
     #[inline] fn set_key_count(&mut self, n: u16) { self.header.key_count = n; }
@@ -300,6 +301,7 @@ impl LeafPage {
         // Adjust key block length
         self.set_key_count(self.key_count().saturating_sub(1));
         self.set_key_block_len(new_len);
+        self.move_slot_dir(-delta_k)?;   
         Ok(())
     }
 
@@ -602,6 +604,7 @@ mod tests {
             page.insert_encoded(k.as_bytes(), v.as_bytes()).unwrap();
         }
         page.split_off_into(2, &mut new_page).unwrap();
+        assert_eq!(page.kind(), LEAF_NODE_TAG);
         let mut scratch = Vec::new();
         assert_eq!(page.key_count(), 2);
         assert_eq!(new_page.key_count(), 3);

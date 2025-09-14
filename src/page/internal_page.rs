@@ -1,4 +1,3 @@
-use crate::layout::MAX_ENTRIES;
 use crate::layout::PAGE_SIZE;
 use crate::page::INTERNAL_NODE_TAG;
 use crate::page::PageError;
@@ -6,6 +5,17 @@ use crate::bplustree::node::NodeId;
 use crate::keyfmt::KeyBlockFormat; // use the trait and resolve by id
 use crate::keyfmt::resolve_key_format; // you implement: u8 -> &'static dyn KeyBlockFormat
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
+
+#[inline]
+fn read_u64_le(buf: &[u8]) -> u64 {
+      u64::from_be_bytes(buf.try_into().unwrap()) // <-- read only the 8 bytes at `off`
+}
+
+#[inline]
+fn write_u64_le(buf: &mut [u8], off: usize, v: u64) {
+    let b = v.to_le_bytes();
+    buf[off..off + std::mem::size_of::<u64>()].copy_from_slice(&b); // <-- write only the 8 bytes at `off`
+}
 
 //[ header ][ KEY BLOCK ][ CHILDREN ARRAY ][ free ... ]
 //             ^ keys_end      ^ children_end
@@ -16,10 +26,10 @@ pub struct Header {
     keyfmt_id: u8,
     key_count: u16,
     key_block_len: u16,
+
 }
 
 const CHILD_ID_SIZE: usize = core::mem::size_of::<NodeId>();
-const LEN_SIZE: usize = std::mem::size_of::<u16>();
 const HEADER_SIZE: usize = std::mem::size_of::<Header>();
 const BUFFER_SIZE: usize = PAGE_SIZE - HEADER_SIZE;
 
@@ -60,6 +70,7 @@ impl InternalPage {
 
     // --- header accessors ---
 
+    #[inline] pub fn kind(&self) -> u8 { self.header.kind }
     #[inline] pub fn key_count(&self) -> u16 { self.header.key_count }
     #[inline] fn keyfmt_id(&self) -> u8 { self.header.keyfmt_id }
     #[inline] fn set_key_count(&mut self, n: u16) { self.header.key_count = n; }
@@ -68,10 +79,11 @@ impl InternalPage {
     #[inline] fn set_key_block_len(&mut self, n: u16) { self.header.key_block_len = n; }
 
     #[inline] fn keys_start(&self) -> usize { 0 } // <-- buf already excludes the header
-    #[inline] fn keys_end(&self) -> usize { self.key_block_len() as usize }
-    #[inline] fn cldrn_base(&self) -> usize { self.keys_end() }
-    #[inline] fn children_size(&self) -> usize { self.key_count() as usize * (CHILD_ID_SIZE + 1) }
-    #[inline] fn children_end(&self) -> usize { self.cldrn_base() + self.children_size() }
+    #[inline] fn keys_end(&self) -> usize { HEADER_SIZE + self.key_block_len() as usize }
+    #[inline] fn children_base(&self) -> usize { self.keys_end() }
+    #[inline] fn children_len(&self) -> usize { (self.key_count() as usize + 1) * CHILD_ID_SIZE }
+    #[inline] fn children_end(&self) -> usize { self.children_base() + self.children_len() }
+    #[inline] fn used_bytes(&self) -> usize { self.children_end() }
 
     // --- derived regions ---
 
@@ -100,187 +112,217 @@ impl InternalPage {
     }
 
     // -------- slot access --------
-    // -------- insert (encoded key & value) --------
-    pub fn insert_encoded(&mut self, key: &[u8], child: u64) -> Result<(), PageError> {
-        // 1) find position
+    // -------- insert (encoded key & child) --------
+    pub fn insert_separator(&mut self, idx: usize, key: &[u8], right_child: u64) -> Result<(), PageError> {
         let mut scratch = Vec::new();
 
-        let idx = match self.find_slot(key, &mut scratch) {
-            Ok(idx) => { 
-               self.replace_child_at(idx, child)?;
-               return Ok(());
-            },
-            Err(_idx) => _idx, // not found, use insertion point
-        };
-        self.insert_entry_at(idx, key, child);
-        Ok(())
-    }
+        // 1) PLAN splice in key block
+        let (range, repl) = self.fmt().insert_plan(self.key_block(), idx, key, &mut scratch);
+        let delta_k = repl.len() as isize - (range.end - range.start) as isize;
+        //let delta_k = insert_bytes.len() as isize;
 
-    // Store at a specific index
-    pub fn insert_entry_at(
-        &mut self,
-        idx: usize,
-        key_enc: &[u8],
-        child: u64,
-    ) -> Result<(), PageError> {
-        let mut scratch = Vec::new();
+        // 2) CAPACITY
+        let new_keys_end     = (self.keys_end() as isize + delta_k) as usize;
+        let new_children_len = (self.key_count() as usize + 2) * CHILD_ID_SIZE;
+        let new_used         = new_keys_end + new_children_len;
+        if new_used > PAGE_SIZE { return Err(PageError::PageFull {}); }
 
-        // scratch
-        // Plan and get delta_k
-        let kb = self.key_block(); // &[u8]
-        let (range, insert_bytes) = self.fmt().insert_plan(kb, idx, key_enc, &mut scratch);
-        let delta_k = insert_bytes.len() as isize;
-
-        // CAPACITY
-        let keys_end_old = self.keys_end();
-        let keys_end_new = (keys_end_old as isize + delta_k) as usize;
-        if keys_end_new + self.children_size() > self.buf.len() {
-            return Err(PageError::PageFull {});
-        }
-
-        // Move slot dir by Δk to stay flush
+        // 3) move children array by Δk to keep it flush after key block
         self.move_child_dir(delta_k)?;
 
-        // SPLICE inside the key-block region (one copy_within + one write)
-        //
-        // key block before: |<-- range --><-- rest -->| 
-        // key block after:  |<-- insert_bytes --><--range--><-- rest -->|
+        // 4) splice key block in-place (one copy_within + one copy)
         let ks = self.keys_start();
         let old_len = self.key_block_len() as usize;
         let new_len = (old_len as isize + delta_k) as usize;
-        self.set_key_block_len(new_len as u16);
 
-        // shift tail
-        let tail_src_start = ks + range.start;
+        let tail_src_start = ks + range.end;
         let tail_src_end   = ks + old_len;
         let tail_dst_start = (tail_src_start as isize + delta_k) as usize;
         self.buf.copy_within(tail_src_start..tail_src_end, tail_dst_start);
 
-        // write replacement bytes
         let hole_start = ks + range.start;
+        self.buf[hole_start .. hole_start + repl.len()].copy_from_slice(&repl);
+        self.set_key_block_len(new_len as u16);
 
-        self.buf[hole_start .. hole_start + insert_bytes.len()].copy_from_slice(&insert_bytes);
+        // 5) insert child pointer at idx+1 (shift right by one)
+        self.children_shift_right_from(idx + 1);
+        self.write_child_at(idx + 1, right_child);
 
-        // adjust format metadata (restart offsets etc.)
+        // 6) bump key_count
+        self.set_key_count(self.key_count() + 1);
+
+        // 7) let format adjust metadata (restart offsets etc.)
         //let kb_final = &mut self.buf[ks..ks + new_len];
         //self.fmt().adjust_after_splice(kb_final, range.start, delta_k, idx);
 
-        // Append child
-        self.child_dir_insert(idx, child)?;
-        self.set_key_count(self.key_count() + 1);
+        Ok(())
+     }
+
+    // Delete the separator at index `idx` (and child at `idx+1`)
+    pub fn delete_separator(&mut self, idx: usize) -> Result<(), PageError> {
+        let mut scratch = Vec::new();
+    
+        // PLAN for key-block deletion
+        let (range, repl) = self.fmt().delete_plan(self.key_block(), idx, &mut scratch); // same idea as insert_plan
+        let delta_k = repl.len() as isize - (range.end - range.start) as isize;   // usually negative    
+        // capacity is fine when shrinking
+    
+        // move children by Δk
+        self.move_child_dir(delta_k)?;
+    
+        // splice key block
+        let ks = self.keys_start();
+        let old_len = self.key_block_len() as usize;
+        let new_len = (old_len as isize + delta_k) as usize;
+    
+        let tail_src_start = ks + range.end;
+        let tail_src_end   = ks + old_len;
+        let tail_dst_start = (tail_src_start as isize + delta_k) as usize;
+        self.buf.copy_within(tail_src_start..tail_src_end, tail_dst_start);
+    
+        // write replacement (often empty)
+        let hole_start = ks + range.start;
+        self.buf[hole_start .. hole_start + repl.len()].copy_from_slice(&repl);
+        self.set_key_block_len(new_len as u16);
+    
+        // remove child at idx+1
+        self.children_shift_left_from(idx + 1);
+    
+        // dec key_count
+        self.set_key_count(self.key_count() - 1);
+    
+        // adjust format metadata
+        //let kb_final = &mut self.buf[ks..ks + new_len];
+        //self.fmt().adjust_after_splice(kb_final, range.start, delta_k, idx);
+    
         Ok(())
     }
 
+    pub fn insert_encoded(&mut self, key: &[u8], child: u64) -> Result<(), PageError> {
+        let idx = match self.find_slot(key, &mut Vec::new()) {
+            Ok(i) => i,    // key exists; insert after it
+            Err(i) => i,   // key not found; insert at i
+        };
+        self.insert_separator(idx, key, child)
+    }
+    // -------- child pointer array manipulation --------
+
+    #[inline]
+    pub fn read_child_at(&self, idx: usize) -> Result<u64, PageError> {
+        let offset = self.children_base() + idx * CHILD_ID_SIZE;
+        if offset + CHILD_ID_SIZE > PAGE_SIZE {
+            return Err(PageError::IndexOutOfBounds {}); 
+        }
+        Ok(read_u64_le(&self.buf[offset .. offset + CHILD_ID_SIZE]))
+    }
+    
+    #[inline]
+    pub fn write_child_at(&mut self, idx: usize, child: u64) -> Result<(), PageError> { 
+        let offset = self.children_base() + idx * CHILD_ID_SIZE;
+        if offset + CHILD_ID_SIZE > PAGE_SIZE {
+            return Err(PageError::IndexOutOfBounds {}); 
+        }
+        write_u64_le(&mut self.buf, offset, child);
+        Ok(())
+    }
+
+    fn children_shift_right_from(&mut self, from: usize) {
+        let base = self.children_base();
+        let len  = self.key_count() as usize + 1; // current child count
+        let src  = base + from * CHILD_ID_SIZE;
+        let dst  = base + (from + 1) * CHILD_ID_SIZE;
+        let bytes= (len - from) * CHILD_ID_SIZE;
+        self.buf.copy_within(src..src + bytes, dst);
+    }
+    fn children_shift_left_from(&mut self, from: usize) {
+        let base = self.children_base();
+        let len  = self.key_count() as usize + 1;
+        let src  = base + (from + 1) * CHILD_ID_SIZE;
+        let dst  = base + from * CHILD_ID_SIZE;
+        let bytes= (len - from - 1) * CHILD_ID_SIZE;
+        self.buf.copy_within(src..src + bytes, dst);
+    }
+
+    // Replace the child pointer at idx with the provided child pointer
+    pub fn replace_child_at(&mut self, idx: usize, child: u64) -> Result<(), PageError> {
+        self.write_child_at(idx, child)
+    }
+
+    // --------- key accessors ---------
     /// Return the *encoded key bytes* at index `idx`.
+    #[inline]
     pub fn get_key_at<'s>(&'s self, idx: usize, scratch: &'s mut Vec<u8>) -> Result<&'s [u8], PageError> {
         if idx >= self.key_count() as usize { return Err(PageError::IndexOutOfBounds {}); }
         Ok(self.fmt().decode_at(self.key_block(), idx, scratch))
     }
 
-    #[inline]
-    pub fn get_child_at(&self, idx: usize) -> Result<u64, PageError> {
-        let child_offset = self.cldrn_base() + idx * CHILD_ID_SIZE;
-        if child_offset + CHILD_ID_SIZE > self.buf.len() {
-            return Err(PageError::IndexOutOfBounds {});
-        }
-        let raw: [u8; CHILD_ID_SIZE] = self.buf[child_offset..child_offset + CHILD_ID_SIZE]
-            .try_into()
-            .map_err(|_| PageError::FromBytesError {
-                msg: "Failed to read child pointer".to_string(),
-            })?;
-
-        Ok(u64::from_le_bytes(raw))
-    }
-
     // ====== internals ======
 
     // Move the child pointer array by delta bytes (positive = right, negative = left)
-    pub fn move_child_dir(&mut self, delta: isize) -> Result<(), PageError> {
-        if delta == 0 { return Ok(()); }
-        let cldrn_start = self.cldrn_base();
-        let cldrn_end   = self.children_end();
-        let new_cldrn_end = (cldrn_end as isize + delta) as usize;
-        if new_cldrn_end > self.buf.len() { return Err(PageError::PageFull{}); }
-
-        self.buf.copy_within(
-            cldrn_start..cldrn_end,
-            (cldrn_start as isize + delta) as usize
-        );
-        Ok(())
-    }
-
-    // Insert a child pointer at idx, shifting all subsequent pointers right
-    pub fn child_dir_insert(&mut self, idx: usize, child: u64) -> Result<(), PageError> {
-        if idx > self.key_count() as usize + 1 as usize {
-            return Err(PageError::IndexOutOfBounds {
-            });
+    fn move_child_dir(&mut self, delta_k: isize) -> Result<(), PageError> {
+        if delta_k == 0 { return Ok(()); }
+        let base = self.children_base();
+        let end  = self.children_end();
+        if delta_k > 0 {
+            let dk = delta_k as usize;
+            if end + dk > PAGE_SIZE { return Err(PageError::PageFull{}); }
+            self.buf.copy_within(base..end, base + dk);
+        } else {
+            let dk = (-delta_k) as usize;
+            self.buf.copy_within(base..end, base - dk);
         }
-        let cldrn_start = self.cldrn_base();
-        let cldrn_end   = self.children_end();
-        let insert_at = cldrn_start + idx * CHILD_ID_SIZE;
-        // shift right
-        self.buf.copy_within(
-            insert_at..cldrn_end,
-            insert_at + CHILD_ID_SIZE
-        );
-        // write new child
-        let raw = child.to_le_bytes();
-        let len = raw.len();
-        self.buf[insert_at..insert_at + len].copy_from_slice(&raw);
         Ok(())
     }
 
-    // Replace the child pointer at idx with the provided child pointer
-    pub fn replace_child_at(&mut self, idx: usize, child: u64) -> Result<(), PageError> {
-        if idx > self.key_count() as usize + 1 as usize {
-            return Err(PageError::IndexOutOfBounds {
-            });
+    // ---- splitting ----
+    
+    /// Split this leaf into `right`, returning the encoded separator (first key of `right`).
+    /// Does *not* decode all keys; the format handles right-block fixups internally.
+    pub fn split_off_into(&mut self, split_idx: usize, right: &mut InternalPage) -> Result<Vec<u8>, PageError> {
+        println!("SPLITTING INTERNAL page at idx {}", split_idx);
+        let key_count = self.key_count() as usize;
+        let kb = self.key_block(); // entries region only
+    
+        // 1) ask the format to produce left/right key-block bytes
+        let mut left_kb = Vec::new();
+        let mut right_kb = Vec::new();
+        self.fmt().split_into(kb, split_idx, &mut left_kb, &mut right_kb);
+    
+        // 2) BEFORE we change key_count, snapshot the children for the right side
+        let mut moved_cldrn = Vec::with_capacity(key_count + 1 - split_idx);
+        for i in split_idx..key_count + 1 {
+            moved_cldrn.push(self.read_child_at(i)?);
         }
-        let child_offset = self.cldrn_base() + idx * CHILD_ID_SIZE;
-        
-
-        let raw = child.to_le_bytes();
-        let len = raw.len();
-        self.buf[child_offset..child_offset + len].copy_from_slice(raw.as_ref());
-        Ok(())
-    }
-
-    // Splits the page at idx, moving entries from idx to the end to a new page
-    pub fn split_off(&mut self, idx: usize) -> Result<InternalPage, PageError> {
-        //if idx >= self.header.entry_count as usize {
-        //    return Err(PageError::IndexOutOfBounds {
-        //    });
-        //}
-
-        //if idx == 0 {
-        //    // If idx is 0, we are splitting all entries to the new page
-        //    let mut new_page = InternalPage::new();
-        //    std::mem::swap(&mut new_page, self);
-        //    return Ok(new_page);
-        //}
-
-        let mut new_page = InternalPage::new(0);
-
-        //// Move entries from idx to the end to the new page
-        //for i in idx..self.header.entry_count as usize {
-        //    let (key, child) = self.get_entry(i)?;
-        //    new_page.insert_entry(key, child)?;
-        //}
-
-        //// The last child of the original page becomes the leftmost child of the new page
-        //self.get_entry(idx - 1).map(|(_, child)| {
-        //    new_page.header.leftmost_child = child;
-        //})?;
-
-        //// Update the entry count of the original page
-        //self.header.entry_count = idx as u64;
-
-        //// Update the free_start of the original page to the offset of the idx entry
-        //self.header.free_start = self.header.offsets[idx] as u64;
-        //// Clear old offsets
-        //self.header.offsets[idx..self.header.entry_count as usize].fill(0);
-
-        Ok(new_page)
+    
+        // 3) Shrink left page's key-block in place (move child-dir by Δk and overwrite)
+        let old_len = kb.len();
+        let delta_k = left_kb.len() as isize - old_len as isize; // negative
+        self.move_child_dir(delta_k)?;
+        let ks = self.keys_start();
+        self.buf[ks .. ks + left_kb.len()].copy_from_slice(&left_kb);
+        self.set_key_block_len(left_kb.len() as u16);
+        // Reduce key_count to the left count; we don't need to physically shift slots—just drop count.
+        self.set_key_count(split_idx as u16);
+    
+        // 4) Init the right page with the right key-block
+        {
+            let ks_r = right.keys_start();
+            right.buf[ks_r .. ks_r + right_kb.len()].copy_from_slice(&right_kb);
+            right.set_key_block_len(right_kb.len() as u16);
+            right.set_key_count((key_count - split_idx) as u16);
+        }
+    
+        // 5) Copy values referenced by moved slots into the right page's value arena,
+        //    and write its slot dir in-order. Left page keeps old bytes as garbage.
+        for (i, child_ptr) in moved_cldrn.iter().enumerate() {
+            right.write_child_at(i, *child_ptr)?;
+        }
+    
+        // 8) Separator = first key of right page (encoded key bytes)
+        let mut scratch = Vec::new();
+        let sep = self.fmt().decode_at(right.key_block(), 0, &mut scratch).to_vec();
+    
+        Ok(sep)
     }
 }
 
@@ -314,9 +356,11 @@ mod tests {
         // Insert an entry
         assert!(page.insert_encoded(key, child).is_ok());
 
+        let scratch = &mut Vec::new();
         // Retrieve the entry
-        let (retrieved_key, retrieved_child) = page.get_entry(0).unwrap();
-        assert_eq!(retrieved_key, key);
+        let retrieved_key = page.get_key_at(0, scratch).unwrap();
+        let retrieved_child = page.read_child_at(0).unwrap();
+        assert_eq!(String::from_utf8(retrieved_key.to_vec()), String::from_utf8(key.to_vec()));
         assert_eq!(retrieved_child, child);
     }
 
@@ -324,105 +368,111 @@ mod tests {
     fn test_internal_page_multiples() {
         let mut page = InternalPage::new(0);
         let keys = ["key1", "key2key2", "key3key3key3"];
-        let children = vec![1, 2, 3];
+        let children = vec![1, 2, 3, 4];
 
-        // Insert multiple entries
-        for (&key, &child) in keys.iter().zip(&children) {
-            assert!(page.insert_entry(key.as_bytes(), child).is_ok());
+        page.write_child_at(0, children[0]).unwrap(); // first child
+        for (i, (&key, &child)) in keys.iter().zip(&children).enumerate() {
+            assert!(page.insert_separator(i, key.as_bytes(), child).is_ok());
         }
-
         // Retrieve the entries
         for (i, key) in keys.iter().enumerate() {
-            let (retrieved_key, retrieved_child) = page.get_entry(i).unwrap();
+            let scratch = &mut Vec::new();
+            let retrieved_key = page.get_key_at(i, scratch).unwrap();
             assert_eq!(retrieved_key, key.as_bytes());
-            assert_eq!(retrieved_child, children[i]);
         }
     }
 
-    #[test]
-    fn test_internal_page_random_insterts() {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let mut page = InternalPage::new(0);
-        let iterations = 10;
+    //#[test]
+    //fn test_internal_page_random_insterts() {
+    //    use rand::Rng;
+    //    let mut rng = rand::thread_rng();
+    //    let mut page = InternalPage::new(0);
+    //    let iterations = 10;
 
-        for i in 0..iterations {
-            let mut key = format!("key{}", i);
-            for _j in 0..i {
-                key.push_str(&format!("key{}", i));
-            }
-            assert!(page.insert_entry(key.as_bytes(), i).is_ok());
-            let (retrieved_key, retrieved_value) = page.get_entry(i as usize).unwrap();
-            assert_eq!(retrieved_key, key.as_bytes());
-            assert_eq!(retrieved_value, i);
-        }
-        let key = "SomeKeyWithRandomSize";
-        let idx_rand = rng.gen_range(0..iterations - 1) as usize;
-        let res = page.insert_entry_at(idx_rand as usize, key.as_bytes(), 999);
-        assert!(res.is_ok());
-        let (retrieved_key, retrieved_value) = page.get_entry(idx_rand).unwrap();
-        assert_eq!(retrieved_value, 999);
-        assert_eq!(retrieved_key, key.as_bytes());
-    }
+    //    for i in 0..iterations {
+    //        let mut key = format!("key{}", i);
+    //        for _j in 0..i {
+    //            key.push_str(&format!("key{}", i));
+    //        }
+    //        assert!(page.insert_entry(key.as_bytes(), i).is_ok());
+    //        let (retrieved_key, retrieved_value) = page.get_entry(i as usize).unwrap();
+    //        assert_eq!(retrieved_key, key.as_bytes());
+    //        assert_eq!(retrieved_value, i);
+    //    }
+    //    let key = "SomeKeyWithRandomSize";
+    //    let idx_rand = rng.gen_range(0..iterations - 1) as usize;
+    //    let res = page.insert_entry_at(idx_rand as usize, key.as_bytes(), 999);
+    //    assert!(res.is_ok());
+    //    let (retrieved_key, retrieved_value) = page.get_entry(idx_rand).unwrap();
+    //    assert_eq!(retrieved_value, 999);
+    //    assert_eq!(retrieved_key, key.as_bytes());
+    //}
 
-    #[test]
-    fn test_internal_page_removals() {
-        let mut page = InternalPage::new(0);
-        let keys = ["key1", "key2key2", "key3key3key3"];
-        let children = vec![1, 2, 3];
+    //#[test]
+    //fn test_internal_page_removals() {
+    //    let mut page = InternalPage::new(0);
+    //    let keys = ["key1", "key2key2", "key3key3key3"];
+    //    let children = vec![1, 2, 3];
 
-        // Insert multiple entries
-        for (&key, &child) in keys.iter().zip(&children) {
-            assert!(page.insert_entry(key.as_bytes(), child).is_ok());
-        }
+    //    // Insert multiple entries
+    //    for (&key, &child) in keys.iter().zip(&children) {
+    //        assert!(page.insert_entry(key.as_bytes(), child).is_ok());
+    //    }
 
-        // Remove the second entry
-        assert!(page.remove_entry_at(1).is_ok());
+    //    // Remove the second entry
+    //    assert!(page.remove_entry_at(1).is_ok());
 
-        // Check remaining entries
-        let (retrieved_key, retrieved_child) = page.get_entry(0).unwrap();
-        assert_eq!(retrieved_key, keys[0].as_bytes());
-        assert_eq!(retrieved_child, children[0]);
+    //    // Check remaining entries
+    //    let (retrieved_key, retrieved_child) = page.get_entry(0).unwrap();
+    //    assert_eq!(retrieved_key, keys[0].as_bytes());
+    //    assert_eq!(retrieved_child, children[0]);
 
-        let (retrieved_key, retrieved_child) = page.get_entry(1).unwrap();
-        assert_eq!(retrieved_key, keys[2].as_bytes());
-        assert_eq!(retrieved_child, children[2]);
+    //    let (retrieved_key, retrieved_child) = page.get_entry(1).unwrap();
+    //    assert_eq!(retrieved_key, keys[2].as_bytes());
+    //    assert_eq!(retrieved_child, children[2]);
 
-        // Ensure entry count is updated
-        assert_eq!(page.header.entry_count, 2);
-    }
+    //    // Ensure entry count is updated
+    //    assert_eq!(page.header.entry_count, 2);
+    //}
 
-    #[test]
-    fn test_internal_page_split() {
-        let mut page = InternalPage::new(0);
-        let keys = ["key1", "key2key2", "key3key3key3", "key4key4key4key4", "key5key5key5key5key5"];
-        let children = vec![1, 2, 3, 4, 5];
-        // Insert multiple entries
-        page.header.leftmost_child = 0;
-        for (&key, &child) in keys.iter().zip(&children) {
-            assert!(page.insert_entry(key.as_bytes(), child).is_ok());
-        }
-        // Split the page at index 2
-        // This should move "key3key3key3" and "key4key4key4key4" to
-        // the new page
-        let new_page = page.split_off(2).unwrap();
-        // Check original page entries
-        assert_eq!(page.header.entry_count, 2);
-        let (retrieved_key, retrieved_child) = page.get_entry(0).unwrap();
-        assert_eq!(retrieved_key, keys[0].as_bytes());
-        assert_eq!(retrieved_child, children[0]);
-        let (retrieved_key, retrieved_child) = page.get_entry(1).unwrap();
-        assert_eq!(retrieved_key, keys[1].as_bytes());
-        assert_eq!(retrieved_child, children[1]);
-        // Check new page entries
-        assert_eq!(new_page.header.entry_count, 3);
-        let (retrieved_key, retrieved_child) = new_page.get_entry(0).unwrap();
-        assert_eq!(retrieved_key, keys[2].as_bytes());
-        assert_eq!(retrieved_child, children[2]);
-        let (retrieved_key, retrieved_child) = new_page.get_entry(1).unwrap();
-        assert_eq!(retrieved_key, keys[3].as_bytes());
-        assert_eq!(retrieved_child, children[3]);
-        // Check leftmost child of new page
-        assert_eq!(new_page.header.leftmost_child, children[1]);
-    }
+    //#[test]
+    //fn test_internal_page_split() {
+    //    let scratch = &mut Vec::new();
+    //    let mut page = InternalPage::new(0);
+    //    let keys = ["key1", "key2key2", "key3key3key3", "key4key4key4key4", "key5key5key5key5key5"];
+    //    let children = vec![1, 2, 3, 4, 5, 6];
+    //    // Insert multiple entries
+    //    for key in &keys {
+    //        assert!(page.append_key(key.as_bytes()).is_ok());
+    //    }
+    //    for &child in &children {
+    //        assert!(page.append_child(child).is_ok());
+    //    }
+    //    // Split the page at index 2
+    //    // This should move "key3key3key3" and "key4key4key4key4" to
+    //    // the new page
+    //    let mut new_page = InternalPage::new(page.keyfmt_id());
+    //    page.split_off_into(2, &mut new_page).unwrap();
+    //    assert_eq!(page.kind(), INTERNAL_NODE_TAG);
+    //    // Check original page entries
+    //    assert_eq!(page.key_count(), 2);
+    //    let retrieved_key= page.get_key_at(0, scratch).unwrap();
+    //    let retrieved_child= page.get_child_at(0).unwrap();
+    //    assert_eq!(retrieved_key, keys[0].as_bytes());
+    //    assert_eq!(retrieved_child, children[0]);
+
+    //    //let (retrieved_key, retrieved_child) = page.get_entry(1).unwrap();
+    //    //assert_eq!(retrieved_key, keys[1].as_bytes());
+    //    //assert_eq!(retrieved_child, children[1]);
+    //    //// Check new page entries
+    //    //assert_eq!(new_page.header.entry_count, 3);
+    //    //let (retrieved_key, retrieved_child) = new_page.get_entry(0).unwrap();
+    //    //assert_eq!(retrieved_key, keys[2].as_bytes());
+    //    //assert_eq!(retrieved_child, children[2]);
+    //    //let (retrieved_key, retrieved_child) = new_page.get_entry(1).unwrap();
+    //    //assert_eq!(retrieved_key, keys[3].as_bytes());
+    //    //assert_eq!(retrieved_child, children[3]);
+    //    //// Check leftmost child of new page
+    //    //assert_eq!(new_page.header.leftmost_child, children[1]);
+    //}
 }

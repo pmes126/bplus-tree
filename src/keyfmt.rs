@@ -41,7 +41,13 @@ pub trait KeyBlockFormat: Send + Sync + 'static {
         new_key: &[u8],
         scratch: &mut Vec<u8>,
     ) -> (std::ops::Range<usize>, Vec<u8>);
-
+    /// PLAN: return the byte range in the `block` to remove, and the exact bytes to insert there.
+    fn delete_plan(
+        &self,
+        block: &[u8],
+        idx: usize,
+        scratch: &mut Vec<u8>,
+    ) -> (std::ops::Range<usize>, Vec<u8>);
     /// After the splice was applied to the page buffer, adjust any **format metadata**
     /// inside the final key-block (e.g., restart offsets) affected by the splice.
     /// - `splice_at` is the start byte within the key-block where you inserted/replaced
@@ -71,8 +77,9 @@ pub trait KeyBlockFormat: Send + Sync + 'static {
 }
 
 /// Runtime-configurable enum (handy for TreeConfig);
+#[repr(u8)]
 pub enum KeyFormat {
-    Raw(raw::RawFormat),
+    Raw(raw::RawFormat) = 0,
     //Prefix(prefix::PrefixFormat),
 }
 
@@ -99,4 +106,8 @@ pub fn resolve_key_format(id: u8) -> Option<&'static dyn KeyBlockFormat> {
         //1 => Some(&PREFIX_FORMAT),
         _ => None,
     }
+}
+
+pub fn key_format_to_u8(fmt: &dyn KeyBlockFormat) -> u8 {
+    fmt.format_id()
 }
