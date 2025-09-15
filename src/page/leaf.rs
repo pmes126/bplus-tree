@@ -268,21 +268,19 @@ impl LeafPage {
 
     pub fn delete_at(&mut self, idx: usize) -> Result<(), PageError> {
         if idx >= self.key_count() as usize { return Err(PageError::IndexOutOfBounds {} ); }
+        let mut scratch = Vec::new();
 
         // Plan and get delta_k
         let kb = self.key_block(); // &[u8]
-        //let (range, insert_bytes) = self.fmt().insert_plan(kb, idx, key_enc, &mut scratch);
-        let range = self.fmt().entry_range(kb, idx);
-        //let delta_k = - (range.end as isize - range.start + 1 as isize);
-        let delta_k = range.end - range.start;
+        let (range, repl) = self.fmt().delete_plan(kb, idx, &mut scratch); // same idea as insert_plan
+        let delta_k = repl.len() as isize - (range.end - range.start) as isize;   // usually negative
 
-        let delta_k : isize = delta_k.try_into().map_err(|_e| PageError::CorruptedData{ msg: "negative delta_k".to_string() })?;
         // SPLICE inside the key-block region (one copy_within + one write)
         //
         // key block before: |<-- range --><-- rest -->| 
         // key block after:  |<-- insert_bytes --><--range--><-- rest -->|
         let ks = self.keys_start();
-        let new_len : u16 = (self.key_block_len() as isize - delta_k).try_into()
+        let new_len : u16 = (self.key_block_len() as isize + delta_k).try_into()
             .map_err(|_e| PageError::CorruptedData{ msg: "block length out of range".to_string() })?;
 
         // remove value slot
@@ -290,7 +288,7 @@ impl LeafPage {
         // Shift tail part
         let tail_src_start = ks + range.end;
         //let tail_src_end   = self.keys_end();
-        let tail_src_end   = self.slots_end();
+        let tail_src_end   = self.slots_end(); // shift everthing in the key block + slot dir
         let tail_dst = ks + range.start;
         self.buf.copy_within(tail_src_start..tail_src_end, tail_dst);
 
@@ -301,7 +299,6 @@ impl LeafPage {
         // Adjust key block length
         self.set_key_count(self.key_count().saturating_sub(1));
         self.set_key_block_len(new_len);
-        self.move_slot_dir(-delta_k)?;   
         Ok(())
     }
 

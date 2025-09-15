@@ -8,7 +8,7 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 #[inline]
 fn read_u64_le(buf: &[u8]) -> u64 {
-      u64::from_be_bytes(buf.try_into().unwrap()) // <-- read only the 8 bytes at `off`
+      u64::from_le_bytes(buf.try_into().unwrap()) // <-- read only the 8 bytes at `off`
 }
 
 #[inline]
@@ -48,8 +48,8 @@ impl InternalPage {
             header: Header {
                 kind: INTERNAL_NODE_TAG,
                 keyfmt_id,
-                key_count: 0,
-                key_block_len: 0,
+                key_count: 0u16,
+                key_block_len: 0u16,
             },
             buf: [0u8; BUFFER_SIZE],
         }
@@ -79,7 +79,7 @@ impl InternalPage {
     #[inline] fn set_key_block_len(&mut self, n: u16) { self.header.key_block_len = n; }
 
     #[inline] fn keys_start(&self) -> usize { 0 } // <-- buf already excludes the header
-    #[inline] fn keys_end(&self) -> usize { HEADER_SIZE + self.key_block_len() as usize }
+    #[inline] fn keys_end(&self) -> usize { self.key_block_len() as usize }
     #[inline] fn children_base(&self) -> usize { self.keys_end() }
     #[inline] fn children_len(&self) -> usize { (self.key_count() as usize + 1) * CHILD_ID_SIZE }
     #[inline] fn children_end(&self) -> usize { self.children_base() + self.children_len() }
@@ -118,8 +118,16 @@ impl InternalPage {
 
         // 1) PLAN splice in key block
         let (range, repl) = self.fmt().insert_plan(self.key_block(), idx, key, &mut scratch);
-        let delta_k = repl.len() as isize - (range.end - range.start) as isize;
-        //let delta_k = insert_bytes.len() as isize;
+       // let delta_k = repl.len() as isize - (range.end - range.start) as isize;
+        let delta_k = repl.len() as isize;
+        
+        println!("INSERT sep at idx {}: key {:?} (len {}) + child {}, delta_k = {}", idx, String::from_utf8(key.to_vec()), key.len(), right_child, delta_k);
+        println!("range to replace in key-block: {:?}, repl.len = {}", range, repl.len());
+
+        // CAPACITY
+        let keys_end_old = self.keys_end();
+        let keys_end_new = (keys_end_old as isize + delta_k) as usize;
+        let children_end_new = keys_end_new + (self.key_count() as usize + 2) * CHILD_ID_SIZE;
 
         // 2) CAPACITY
         let new_keys_end     = (self.keys_end() as isize + delta_k) as usize;
@@ -134,15 +142,19 @@ impl InternalPage {
         let ks = self.keys_start();
         let old_len = self.key_block_len() as usize;
         let new_len = (old_len as isize + delta_k) as usize;
+        self.set_key_block_len(new_len as u16);
 
+        println!("old_len = {}, new_len = {}", old_len, new_len);
         let tail_src_start = ks + range.end;
         let tail_src_end   = ks + old_len;
-        let tail_dst_start = (tail_src_start as isize + delta_k) as usize;
-        self.buf.copy_within(tail_src_start..tail_src_end, tail_dst_start);
+        let tail_dst = (tail_src_start as isize + delta_k) as usize;
+
+        println!("Moving tail of key-block: src = {}..{}, dst = {}", tail_src_start, tail_src_end, tail_dst);
+
+        self.buf.copy_within(tail_src_start..tail_src_end, tail_dst);
 
         let hole_start = ks + range.start;
         self.buf[hole_start .. hole_start + repl.len()].copy_from_slice(&repl);
-        self.set_key_block_len(new_len as u16);
 
         // 5) insert child pointer at idx+1 (shift right by one)
         self.children_shift_right_from(idx + 1);
@@ -160,15 +172,14 @@ impl InternalPage {
 
     // Delete the separator at index `idx` (and child at `idx+1`)
     pub fn delete_separator(&mut self, idx: usize) -> Result<(), PageError> {
+        if idx >= self.key_count() as usize { return Err(PageError::IndexOutOfBounds {} ); }
         let mut scratch = Vec::new();
     
         // PLAN for key-block deletion
         let (range, repl) = self.fmt().delete_plan(self.key_block(), idx, &mut scratch); // same idea as insert_plan
-        let delta_k = repl.len() as isize - (range.end - range.start) as isize;   // usually negative    
+        let delta_k = repl.len() as isize - (range.end - range.start) as isize;   // usually negative
+        println!("DELETE key at idx {}: range {:?}, repl.len = {}, delta_k = {}", idx, range, repl.len(), delta_k);
         // capacity is fine when shrinking
-    
-        // move children by Δk
-        self.move_child_dir(delta_k)?;
     
         // splice key block
         let ks = self.keys_start();
@@ -187,6 +198,9 @@ impl InternalPage {
     
         // remove child at idx+1
         self.children_shift_left_from(idx + 1);
+    
+        // move children by Δk
+        self.move_child_dir(delta_k)?;
     
         // dec key_count
         self.set_key_count(self.key_count() - 1);
@@ -210,15 +224,17 @@ impl InternalPage {
     #[inline]
     pub fn read_child_at(&self, idx: usize) -> Result<u64, PageError> {
         let offset = self.children_base() + idx * CHILD_ID_SIZE;
+        println!("READ child at idx {} offset={}", idx, offset);
         if offset + CHILD_ID_SIZE > PAGE_SIZE {
             return Err(PageError::IndexOutOfBounds {}); 
         }
         Ok(read_u64_le(&self.buf[offset .. offset + CHILD_ID_SIZE]))
     }
-    
+
     #[inline]
     pub fn write_child_at(&mut self, idx: usize, child: u64) -> Result<(), PageError> { 
         let offset = self.children_base() + idx * CHILD_ID_SIZE;
+        println!("WRITE child at idx {} offset={}", idx, offset);
         if offset + CHILD_ID_SIZE > PAGE_SIZE {
             return Err(PageError::IndexOutOfBounds {}); 
         }
@@ -364,7 +380,7 @@ mod tests {
         let scratch = &mut Vec::new();
         // Retrieve the entry
         let retrieved_key = page.get_key_at(0, scratch).unwrap();
-        let retrieved_child = page.read_child_at(0).unwrap();
+        let retrieved_child = page.read_child_at(1).unwrap();
         assert_eq!(String::from_utf8(retrieved_key.to_vec()), String::from_utf8(key.to_vec()));
         assert_eq!(retrieved_child, child);
     }
@@ -375,7 +391,9 @@ mod tests {
         let keys = ["key1", "key2key2", "key3key3key3"];
         let children = vec![1, 2, 3, 4];
 
-        page.write_child_at(0, children[0]).unwrap(); // first child
+        page.write_leftmost_child(children[0]).unwrap(); // first child
+        assert_eq!(page.read_child_at(0).unwrap(), children[0]);
+
         for (i, (&key, &child)) in keys.iter().zip(&children).enumerate() {
             assert!(page.insert_separator(i, key.as_bytes(), child).is_ok());
         }
@@ -387,31 +405,35 @@ mod tests {
         }
     }
 
-    //#[test]
-    //fn test_internal_page_random_insterts() {
-    //    use rand::Rng;
-    //    let mut rng = rand::thread_rng();
-    //    let mut page = InternalPage::new(0);
-    //    let iterations = 10;
+    #[test]
+    fn test_internal_page_random_insterts() {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let mut page = InternalPage::new(0);
+        let iterations = 10;
+        let scratch = &mut Vec::new();
 
-    //    for i in 0..iterations {
-    //        let mut key = format!("key{}", i);
-    //        for _j in 0..i {
-    //            key.push_str(&format!("key{}", i));
-    //        }
-    //        assert!(page.insert_entry(key.as_bytes(), i).is_ok());
-    //        let (retrieved_key, retrieved_value) = page.get_entry(i as usize).unwrap();
-    //        assert_eq!(retrieved_key, key.as_bytes());
-    //        assert_eq!(retrieved_value, i);
-    //    }
-    //    let key = "SomeKeyWithRandomSize";
-    //    let idx_rand = rng.gen_range(0..iterations - 1) as usize;
-    //    let res = page.insert_entry_at(idx_rand as usize, key.as_bytes(), 999);
-    //    assert!(res.is_ok());
-    //    let (retrieved_key, retrieved_value) = page.get_entry(idx_rand).unwrap();
-    //    assert_eq!(retrieved_value, 999);
-    //    assert_eq!(retrieved_key, key.as_bytes());
-    //}
+        page.write_leftmost_child(0).unwrap(); // first child
+        for i in 0..iterations {
+            let mut key = format!("key{}", i);
+            for _j in 0..i {
+                key.push_str(&format!("key{}", i));
+            }
+            assert!(page.insert_separator(i, key.as_bytes(), i as u64 + 1).is_ok());
+            let retrieved_key = page.get_key_at(i, scratch).unwrap();
+            assert_eq!(retrieved_key, key.as_bytes());
+            let retrieved_child = page.read_child_at(i + 1).unwrap();
+            assert_eq!(retrieved_child, i as u64 + 1);
+        }
+        let key = "SomeKeyWithRandomSize";
+        let idx_rand = rng.gen_range(0..iterations - 1) as usize;
+        let res = page.insert_separator(idx_rand as usize, key.as_bytes(), 999);
+        assert!(res.is_ok());
+        let retrieved_value = page.read_child_at(idx_rand + 1).unwrap();
+        let retrieved_key = page.get_key_at(idx_rand, scratch).unwrap();
+        assert_eq!(retrieved_value, 999);
+        assert_eq!(retrieved_key, key.as_bytes());
+    }
 
     //#[test]
     //fn test_internal_page_removals() {
