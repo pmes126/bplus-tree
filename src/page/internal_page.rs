@@ -121,8 +121,8 @@ impl InternalPage {
        // let delta_k = repl.len() as isize - (range.end - range.start) as isize;
         let delta_k = repl.len() as isize;
         
-        println!("INSERT sep at idx {}: key {:?} (len {}) + child {}, delta_k = {}", idx, String::from_utf8(key.to_vec()), key.len(), right_child, delta_k);
-        println!("range to replace in key-block: {:?}, repl.len = {}", range, repl.len());
+        //println!("INSERT sep at idx {}: key {:?} (len {}) + child {}, delta_k = {}", idx, String::from_utf8(key.to_vec()), key.len(), right_child, delta_k);
+        //println!("range to replace in key-block: {:?}, repl.len = {}", range, repl.len());
 
         // CAPACITY
         let keys_end_old = self.keys_end();
@@ -144,12 +144,12 @@ impl InternalPage {
         let new_len = (old_len as isize + delta_k) as usize;
         self.set_key_block_len(new_len as u16);
 
-        println!("old_len = {}, new_len = {}", old_len, new_len);
+        //println!("old_len = {}, new_len = {}", old_len, new_len);
         let tail_src_start = ks + range.end;
         let tail_src_end   = ks + old_len;
         let tail_dst = (tail_src_start as isize + delta_k) as usize;
 
-        println!("Moving tail of key-block: src = {}..{}, dst = {}", tail_src_start, tail_src_end, tail_dst);
+        //println!("Moving tail of key-block: src = {}..{}, dst = {}", tail_src_start, tail_src_end, tail_dst);
 
         self.buf.copy_within(tail_src_start..tail_src_end, tail_dst);
 
@@ -178,7 +178,7 @@ impl InternalPage {
         // PLAN for key-block deletion
         let (range, repl) = self.fmt().delete_plan(self.key_block(), idx, &mut scratch); // same idea as insert_plan
         let delta_k = repl.len() as isize - (range.end - range.start) as isize;   // usually negative
-        println!("DELETE key at idx {}: range {:?}, repl.len = {}, delta_k = {}", idx, range, repl.len(), delta_k);
+        //println!("DELETE key at idx {}: range {:?}, repl.len = {}, delta_k = {}", idx, range, repl.len(), delta_k);
         // capacity is fine when shrinking
     
         // splice key block
@@ -224,7 +224,7 @@ impl InternalPage {
     #[inline]
     pub fn read_child_at(&self, idx: usize) -> Result<u64, PageError> {
         let offset = self.children_base() + idx * CHILD_ID_SIZE;
-        println!("READ child at idx {} offset={}", idx, offset);
+        //println!("READ child at idx {} offset={}", idx, offset);
         if offset + CHILD_ID_SIZE > PAGE_SIZE {
             return Err(PageError::IndexOutOfBounds {}); 
         }
@@ -234,7 +234,7 @@ impl InternalPage {
     #[inline]
     pub fn write_child_at(&mut self, idx: usize, child: u64) -> Result<(), PageError> { 
         let offset = self.children_base() + idx * CHILD_ID_SIZE;
-        println!("WRITE child at idx {} offset={}", idx, offset);
+        //println!("WRITE child at idx {} offset={}", idx, offset);
         if offset + CHILD_ID_SIZE > PAGE_SIZE {
             return Err(PageError::IndexOutOfBounds {}); 
         }
@@ -300,7 +300,7 @@ impl InternalPage {
     /// Split this leaf into `right`, returning the encoded separator (first key of `right`).
     /// Does *not* decode all keys; the format handles right-block fixups internally.
     pub fn split_off_into(&mut self, split_idx: usize, right: &mut InternalPage) -> Result<Vec<u8>, PageError> {
-        println!("SPLITTING INTERNAL page at idx {}", split_idx);
+        //println!("SPLITTING INTERNAL page at idx {}", split_idx);
         let key_count = self.key_count() as usize;
         let kb = self.key_block(); // entries region only
     

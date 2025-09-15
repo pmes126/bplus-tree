@@ -508,6 +508,7 @@ where
     ) -> Result<(Vec<PathNode>, bool), TreeError> {
         let mut path = vec![];
         let mut current_id = root_id;
+        println!("Finding insertion path for key: {:?}", key);
 
         let mut encode_buf = vec![0u8; KC::encoded_len(key)];
         KC::encode_key(key, encode_buf.as_mut())
@@ -520,6 +521,7 @@ where
                         let mut found = false;
                         let i = match node.lower_bound(encode_buf.as_ref()) {
                             Ok(i) => {
+                                println!("Key found in leaf at index {}: {:?}", i, key);
                                 found = true;
                                 i
                             }
@@ -588,7 +590,6 @@ where
         let (leaf_node_id, idx) = path.pop().ok_or_else(|| {
             TreeError::BackendAny("Insertion path is empty, tree might be corrupted".to_string())
         })?;
-        println!("Inserting k: {:?}, v: {:?} at leaf_id: {}", key, value, leaf_node_id);
         let mut leaf_node = self
             .storage
             .read_node_view(leaf_node_id)?
@@ -606,6 +607,8 @@ where
         };
 
         if found {
+            println!("Inserting key at index {}: {:?}", idx, key);
+            println!("Key {:?} already exists, replacing value", key);
             leaf_node.replace_at(idx, &val_buf)?;
         } else {
             leaf_node.insert_at(idx, &key_buf, &val_buf)?;
@@ -615,10 +618,10 @@ where
         track.record_staged_height(self.get_height()); // Update staged height - could be increased later
 
         if leaf_node.keys_len() > self.max_keys {
-            println!("Leaf node exceeded max keys, splitting");
+            println!("Leaf node exceeded max keys, splitting for inssertion of key: {:?}", key);
             self.handle_leaf_split(path, leaf_node, track)
         } else {
-            println!("Calling write and propagate view");
+            //println!("Calling write and propagate view");
             self.write_and_propagate_view(path, &leaf_node, track)
             //let leaf_node = Node::from_node_view::<KC, VC>(leaf_node)?;
             //self.write_and_propagate(path, &leaf_node, track)
@@ -847,6 +850,7 @@ where
             if keys.len() <= self.max_keys {
                 return self.write_and_propagate(path, &node, track);
             }
+            println!("Splitting internal node during propagation");
             // Handle internal node split
             let SplitResult::SplitNodes {
                 left_node,

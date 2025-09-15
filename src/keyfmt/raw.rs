@@ -56,7 +56,6 @@ impl KeyBlockFormat for RawFormat {
         // classic binary search over entries
         let mut lo = 0usize;
         let mut hi = count_entries(block);
-        println!("seek raw n={} needle={:?}", hi, needle);
         while lo < hi {
             let mid = (lo + hi) / LEN_SIZE;
             let k = self.decode_at(block, mid, scratch);
@@ -149,10 +148,10 @@ impl KeyBlockFormat for RawFormat {
 // helpers
 fn count_entries(mut p: &[u8]) -> usize {
     let mut n = 0;
-    println!("count_entries: p.len={}", p.len());
+    //println!("count_entries: p.len={}", p.len());
     while p.len() >= LEN_SIZE {
         let len = u16::from_le_bytes([p[0], p[1]]) as usize;
-        println!("count_entries: entry {} len={} val={:?}", n, len, String::from_utf8(p[0..len].to_vec()));
+        //println!("count_entries: entry {} len={} val={:?}", n, len, String::from_utf8(p[0..len].to_vec()));
         let need = LEN_SIZE + len;
         if p.len() < need { break; }
         n += 1;

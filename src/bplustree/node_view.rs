@@ -55,7 +55,7 @@ impl NodeView {
     pub fn child_ptr_at(&self, i: usize) -> Result<Option<u64>> {
         match self {
             NodeView::Internal { page } => {
-                let idx = i - 1; // Internal nodes have child pointers at i-1
+                let idx = i.saturating_sub(1); // Internal nodes have child pointers at i-1
                 page.read_child_at(idx).map(Some).map_err(|e| anyhow::anyhow!(e))
             }
             NodeView::Leaf { .. } => Ok(None), // Leaf pages don't have children, but we return 0
@@ -99,20 +99,9 @@ impl NodeView {
     /// Find the insertion index for a given key
     pub fn lower_bound(&self, probe: &[u8]) -> Result<usize, usize> {
         match self {
-            NodeView::Internal { .. } => {
-                let mut lo = 0usize;
-                        let mut hi = self.keys_len();
-                        while lo < hi {
-                            let mid = (lo + hi) / 2;
-                            let k =self.key_at(mid)
-                                    .map_err(|_e| 0usize)?;
-                            match k.cmp(&probe.to_vec()) {
-                                Ordering::Less => lo = mid + 1,    // move to the right
-                                Ordering::Equal => return Ok(mid), // found exact match
-                                Ordering::Greater => hi = mid,
-                    }
-                }
-                Err(lo) // Placeholder: Implement binary search for internal nodes
+            NodeView::Internal { page } => {
+                let mut scratch = Vec::new();
+                page.lower_bound(probe, &mut scratch)
             }
             NodeView::Leaf { page } => {
                 let mut scratch = Vec::new();

@@ -225,6 +225,7 @@ impl LeafPage {
     }
 
     pub fn overwrite_value_at(&mut self, idx: usize, val_bytes: &[u8]) -> Result<(), PageError> {
+        println!("overwrite_value_at idx={} val_bytes.len={}", idx, val_bytes.len());
         let (val_off, val_len) = self.alloc_value_tail(val_bytes)?; // respects slot region
         self.overwrite_slot_at(idx, val_off, val_len)
     }

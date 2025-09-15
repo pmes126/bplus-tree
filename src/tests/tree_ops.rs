@@ -1,16 +1,16 @@
-//use crate::bplustree::tree::StagedMetadata;
-//use crate::bplustree::tree::{BPlusTree, BaseVersion, CommitError, SharedBPlusTree};
-//use crate::storage::file_store::FileStore;
-//use crate::storage::page_store::PageStore;
-//use crate::codec::bincode::{BeU64, RawBuf, Utf8}; 
-//use crate::tests::common::{load_tree, make_tree, make_tree_generic};
-//
-//use anyhow::Result;
-//use rand::Rng;
-//use rand::seq::SliceRandom;
-//use rand::thread_rng;
-//use tempfile::TempDir;
-//
+use crate::bplustree::tree::StagedMetadata;
+use crate::bplustree::tree::{BPlusTree, BaseVersion, CommitError, SharedBPlusTree};
+use crate::storage::file_store::FileStore;
+use crate::storage::page_store::PageStore;
+use crate::codec::bincode::{BeU64, RawBuf, Utf8}; 
+use crate::tests::common::{load_tree, make_tree, make_tree_generic};
+
+use anyhow::Result;
+use rand::Rng;
+use rand::seq::SliceRandom;
+use rand::thread_rng;
+use tempfile::TempDir;
+
 //#[test]
 //fn commit_persists_and_survives_reopen() {
 //    let dir = TempDir::new().unwrap();
@@ -489,42 +489,44 @@
 //    );
 //    Ok(())
 //}
-//
-//#[test]
-//fn insert_duplicate_keys_should_overwrite_value() -> Result<()> {
-//    let dir = TempDir::new().unwrap();
-//    let file_path = dir.path().join("tree.data");
-//
-//    let order = 4; // B+ tree order
-//    let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-//    let tree = SharedBPlusTree::new(BPlusTree::<String, String, Utf8, Utf8, FileStore<PageStore>>::new(
-//        store, order,
-//    )?);
-//    let mut root_id = tree.get_root_id();
-//
-//    for i in 0..order {
-//        let key = format!("key_{}", i);
-//        let value = format!("value_{}", i);
-//        let value_updated = format!("value_upd_{}", i);
-//        let res = tree.insert_with_root(key.clone(), value.clone(), root_id)?;
-//        root_id = res.new_root_id; // Update root_id after each insert
-//        assert_eq!(
-//            tree.search_with_root(&key, root_id)?,
-//            Some(value.clone()),
-//            "Value should be inserted successfully"
-//        );
-//        let res = tree.insert_with_root(key.clone(), value_updated.clone(), root_id);
-//        assert!(res.is_ok(), "Node should be inserted successfully");
-//        root_id = res.unwrap().new_root_id; // Update root_id after each insert
-//        assert_eq!(
-//            tree.search_with_root(&key, root_id)?,
-//            Some(value_updated),
-//            "Value should be updated for duplicate key"
-//        );
-//    }
-//    Ok(())
-//}
-//
+
+#[test]
+fn insert_duplicate_keys_should_overwrite_value() -> Result<()> {
+    let dir = TempDir::new().unwrap();
+    let file_path = dir.path().join("tree.data");
+
+    let order = 4; // B+ tree order
+    let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
+    let tree = SharedBPlusTree::new(BPlusTree::<String, String, Utf8, Utf8, FileStore<PageStore>>::new(
+        store, order,
+    )?);
+    let mut root_id = tree.get_root_id();
+
+    for i in 0..order {
+        let key = format!("key_{}", i);
+        let value = format!("value_{}", i);
+        let value_updated = format!("value_upd_{}", i);
+        println!("Inserting key: {}, value: {}", key, value);
+        let res = tree.insert_with_root(key.clone(), value.clone(), root_id)?;
+        root_id = res.new_root_id; // Update root_id after each insert
+        assert_eq!(
+            tree.search_with_root(&key, root_id)?,
+            Some(value.clone()),
+            "Value should be inserted successfully"
+        );
+        println!("Inserting key: {}, updated value: {}", key, value_updated);
+        let res = tree.insert_with_root(key.clone(), value_updated.clone(), root_id);
+        assert!(res.is_ok(), "Updated value should be inserted successfully");
+        root_id = res.unwrap().new_root_id; // Update root_id after each insert
+        assert_eq!(
+            tree.search_with_root(&key, root_id)?,
+            Some(value_updated),
+            "Value should be updated for duplicate key"
+        );
+    }
+    Ok(())
+}
+
 //#[test]
 //fn range_search_test() -> Result<()> {
 //    let dir = TempDir::new().unwrap();
