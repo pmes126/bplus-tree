@@ -225,7 +225,6 @@ impl LeafPage {
     }
 
     pub fn overwrite_value_at(&mut self, idx: usize, val_bytes: &[u8]) -> Result<(), PageError> {
-        println!("overwrite_value_at idx={} val_bytes.len={}", idx, val_bytes.len());
         let (val_off, val_len) = self.alloc_value_tail(val_bytes)?; // respects slot region
         self.overwrite_slot_at(idx, val_off, val_len)
     }
@@ -448,7 +447,6 @@ impl LeafPage {
             let ks_r = right.keys_start();
             right.buf[ks_r .. ks_r + right_kb.len()].copy_from_slice(&right_kb);
             right.set_key_block_len(right_kb.len() as u16);
-            println!("right key_count in split_off_into = {}", (key_count - split_idx));
             right.set_key_count((key_count - split_idx) as u16);
         }
     
@@ -465,9 +463,6 @@ impl LeafPage {
         // 8) Separator = first key of right page (encoded key bytes)
         let mut scratch = Vec::new();
         let sep = self.fmt().decode_at(right.key_block(), 0, &mut scratch).to_vec();
-        let ii = self.fmt().seek(right.key_block(), &sep, &mut scratch)
-            .map_err(|_i| PageError::CorruptedData{ msg: "separator key not found in right page".to_string() })?;
-        println!("split_off_into sep={:?} found at idx {}", String::from_utf8(sep.clone()), ii);
     
         Ok(sep)
     }

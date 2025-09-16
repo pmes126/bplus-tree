@@ -48,6 +48,7 @@ impl KeyBlockFormat for RawFormat {
         }
         let len = u16::from_le_bytes([block[off], block[off+1]]) as usize;
         let start = off;
+        println!("entry_range idx={} start={} len={}", idx, start, len);
         let end = off + LEN_SIZE + len;
         start..end
     }
@@ -89,15 +90,6 @@ impl KeyBlockFormat for RawFormat {
         new_key: &[u8],
         _scratch: &mut Vec<u8>,
     ) -> (std::ops::Range<usize>, Vec<u8>) {
-        //let r = {
-        //    let n = self.count(block);
-        //    if idx < n { self.entry_range(block, idx) } else { block.len()..block.len() }
-        //};
-        //let mut bytes = Vec::with_capacity(LEN_SIZE + new_key.len());
-        //bytes.extend_from_slice(&(new_key.len() as u16).to_le_bytes());
-        //bytes.extend_from_slice(new_key);
-        //(r, bytes)
-
         // insert BETWEEN entries: zero-length replace range at the insertion point
         let n = Self.count(block);
         let start = Self::entry_start(block, idx.min(n)); // append if idx == n

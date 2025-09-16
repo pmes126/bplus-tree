@@ -178,9 +178,9 @@ impl InternalPage {
         // PLAN for key-block deletion
         let (range, repl) = self.fmt().delete_plan(self.key_block(), idx, &mut scratch); // same idea as insert_plan
         let delta_k = repl.len() as isize - (range.end - range.start) as isize;   // usually negative
-        //println!("DELETE key at idx {}: range {:?}, repl.len = {}, delta_k = {}", idx, range, repl.len(), delta_k);
+
+        println!("DELETE sep at idx {}: range {:?}, repl.len = {}, delta_k = {}", idx, range, repl.len(), delta_k);
         // capacity is fine when shrinking
-    
         // splice key block
         let ks = self.keys_start();
         let old_len = self.key_block_len() as usize;
@@ -290,7 +290,8 @@ impl InternalPage {
             self.buf.copy_within(base..end, base + dk);
         } else {
             let dk = (-delta_k) as usize;
-            self.buf.copy_within(base..end, base - dk);
+            let dst = base.saturating_sub(dk);
+            self.buf.copy_within(base..end, dst);
         }
         Ok(())
     }
@@ -368,6 +369,7 @@ impl<'a> PageKeyRun<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::seq::SliceRandom;
     #[test]
     fn test_internal_page() {
         let mut page = InternalPage::new(0);
@@ -388,27 +390,39 @@ mod tests {
     #[test]
     fn test_internal_page_multiples() {
         let mut page = InternalPage::new(0);
-        let keys = ["key1", "key2key2", "key3key3key3"];
-        let children = vec![1, 2, 3, 4];
+        let mut keys : Vec<String> = Vec::new();
+        let mut children : Vec<u64> = Vec::new();
+        let iterations = 10;
+        let scratch = &mut Vec::new();
 
-        page.write_leftmost_child(children[0]).unwrap(); // first child
-        assert_eq!(page.read_child_at(0).unwrap(), children[0]);
+        page.write_leftmost_child(0).unwrap(); // first child
 
-        for (i, (&key, &child)) in keys.iter().zip(&children).enumerate() {
-            assert!(page.insert_separator(i, key.as_bytes(), child).is_ok());
-        }
-        // Retrieve the entries
-        for (i, key) in keys.iter().enumerate() {
-            let scratch = &mut Vec::new();
+        for i in 0..iterations {
+            let mut key = format!("key{}", i);
+            for _j in 0..i {
+                key.push_str(&format!("key{}", i));
+            }
+            keys.push(key.clone());
+            children.push(i as u64 + 1);
+            assert!(page.insert_separator(i, key.as_bytes(), i as u64 + 1).is_ok());
             let retrieved_key = page.get_key_at(i, scratch).unwrap();
             assert_eq!(retrieved_key, key.as_bytes());
+            let retrieved_child = page.read_child_at(i + 1).unwrap();
+            assert_eq!(retrieved_child, i as u64 + 1);
+        }
+        // Retrieve the entries
+        for i in 0..iterations {
+            let scratch = &mut Vec::new();
+            let retrieved_key = page.get_key_at(i, scratch).unwrap();
+            assert_eq!(retrieved_key, keys[i].as_bytes());
         }
     }
 
     #[test]
-    fn test_internal_page_random_insterts() {
+    fn test_internal_page_random_inserts() {
         use rand::Rng;
         let mut rng = rand::thread_rng();
+        
         let mut page = InternalPage::new(0);
         let iterations = 10;
         let scratch = &mut Vec::new();
@@ -435,71 +449,98 @@ mod tests {
         assert_eq!(retrieved_key, key.as_bytes());
     }
 
-    //#[test]
-    //fn test_internal_page_removals() {
-    //    let mut page = InternalPage::new(0);
-    //    let keys = ["key1", "key2key2", "key3key3key3"];
-    //    let children = vec![1, 2, 3];
+    #[test]
+    fn test_internal_page_removals() {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
 
-    //    // Insert multiple entries
-    //    for (&key, &child) in keys.iter().zip(&children) {
-    //        assert!(page.insert_entry(key.as_bytes(), child).is_ok());
-    //    }
+        let mut page = InternalPage::new(0);
+        let scratch = &mut Vec::new();
+        let iterations = 10;
+        let mut keys : Vec<String> = Vec::new();
+        let mut children : Vec<u64> = Vec::new();
 
-    //    // Remove the second entry
-    //    assert!(page.remove_entry_at(1).is_ok());
+        page.write_leftmost_child(0).unwrap(); // first child
 
-    //    // Check remaining entries
-    //    let (retrieved_key, retrieved_child) = page.get_entry(0).unwrap();
-    //    assert_eq!(retrieved_key, keys[0].as_bytes());
-    //    assert_eq!(retrieved_child, children[0]);
+        for i in 0..iterations {
+            let mut key = format!("key{}", i);
+            for _j in 0..i {
+                key.push_str(&format!("key{}", i));
+            }
+            keys.push(key.clone());
+            children.push(i as u64 + 1);
+            assert!(page.insert_separator(i, key.as_bytes(), i as u64 + 1).is_ok());
+            let retrieved_key = page.get_key_at(i, scratch).unwrap();
+            assert_eq!(retrieved_key, key.as_bytes());
+            let retrieved_child = page.read_child_at(i + 1).unwrap();
+            assert_eq!(retrieved_child, i as u64 + 1);
+        }
 
-    //    let (retrieved_key, retrieved_child) = page.get_entry(1).unwrap();
-    //    assert_eq!(retrieved_key, keys[2].as_bytes());
-    //    assert_eq!(retrieved_child, children[2]);
+        while page.key_count() > 0 {
+            let bound = page.key_count() as usize - 1;
+            let mut idx = rng.gen_range(0..=bound) as usize;
+            println!("Removing idx {} of {}", idx, page.key_count());
+            assert!(page.delete_separator(idx).is_ok());
+            if page.key_count() <2 { break; }
+            idx = if idx >= page.key_count() as usize { page.key_count() as usize - 1 } else { idx };
+            println!("After removal, checking idx {} of {}", idx, page.key_count());
+            let retrieved_key = page.get_key_at(idx, scratch).unwrap();
+            println!("Not  paniced");
+            assert_ne!(retrieved_key, keys[idx].as_bytes());
+            //let retrieved_child = page.read_child_at(idx + 1).unwrap();
+            //assert_eq!(retrieved_child, children[idx]);
+        }
+    }
 
-    //    // Ensure entry count is updated
-    //    assert_eq!(page.header.entry_count, 2);
-    //}
+    #[test]
+    fn test_internal_page_split() {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
 
-    //#[test]
-    //fn test_internal_page_split() {
-    //    let scratch = &mut Vec::new();
-    //    let mut page = InternalPage::new(0);
-    //    let keys = ["key1", "key2key2", "key3key3key3", "key4key4key4key4", "key5key5key5key5key5"];
-    //    let children = vec![1, 2, 3, 4, 5, 6];
-    //    // Insert multiple entries
-    //    for key in &keys {
-    //        assert!(page.append_key(key.as_bytes()).is_ok());
-    //    }
-    //    for &child in &children {
-    //        assert!(page.append_child(child).is_ok());
-    //    }
-    //    // Split the page at index 2
-    //    // This should move "key3key3key3" and "key4key4key4key4" to
-    //    // the new page
-    //    let mut new_page = InternalPage::new(page.keyfmt_id());
-    //    page.split_off_into(2, &mut new_page).unwrap();
-    //    assert_eq!(page.kind(), INTERNAL_NODE_TAG);
-    //    // Check original page entries
-    //    assert_eq!(page.key_count(), 2);
-    //    let retrieved_key= page.get_key_at(0, scratch).unwrap();
-    //    let retrieved_child= page.get_child_at(0).unwrap();
-    //    assert_eq!(retrieved_key, keys[0].as_bytes());
-    //    assert_eq!(retrieved_child, children[0]);
+        let mut page = InternalPage::new(0);
+        let scratch = &mut Vec::new();
+        let iterations = 10;
+        let mut keys : Vec<String> = Vec::new();
+        let mut children : Vec<u64> = Vec::new();
 
-    //    //let (retrieved_key, retrieved_child) = page.get_entry(1).unwrap();
-    //    //assert_eq!(retrieved_key, keys[1].as_bytes());
-    //    //assert_eq!(retrieved_child, children[1]);
-    //    //// Check new page entries
-    //    //assert_eq!(new_page.header.entry_count, 3);
-    //    //let (retrieved_key, retrieved_child) = new_page.get_entry(0).unwrap();
-    //    //assert_eq!(retrieved_key, keys[2].as_bytes());
-    //    //assert_eq!(retrieved_child, children[2]);
-    //    //let (retrieved_key, retrieved_child) = new_page.get_entry(1).unwrap();
-    //    //assert_eq!(retrieved_key, keys[3].as_bytes());
-    //    //assert_eq!(retrieved_child, children[3]);
-    //    //// Check leftmost child of new page
-    //    //assert_eq!(new_page.header.leftmost_child, children[1]);
-    //}
+        page.write_leftmost_child(0).unwrap(); // first child
+
+        for i in 0..iterations {
+            let mut key = format!("key{}", i);
+            for _j in 0..i {
+                key.push_str(&format!("key{}", i));
+            }
+            keys.push(key.clone());
+            children.push(i as u64 + 1);
+            assert!(page.insert_separator(i, key.as_bytes(), i as u64 + 1).is_ok());
+            let retrieved_key = page.get_key_at(i, scratch).unwrap();
+            assert_eq!(retrieved_key, key.as_bytes());
+            let retrieved_child = page.read_child_at(i + 1).unwrap();
+            assert_eq!(retrieved_child, i as u64 + 1);
+        }
+
+        let mut right = InternalPage::new(0);
+        let split_idx = rng.gen_range(1..(page.key_count() as usize - 1));
+
+        let sep = page.split_off_into(split_idx, &mut right).unwrap();
+        let separator = right.get_key_at(0, scratch).unwrap();
+
+        let scratch = &mut Vec::new();
+        for i in 0..split_idx {
+            let retrieved_key = page.get_key_at(i, scratch).unwrap();
+            assert_eq!(retrieved_key, keys[i].as_bytes());
+            let retrieved_child = page.read_child_at(i + 1).unwrap();
+            assert_eq!(retrieved_child, children[i]);
+        }
+
+        let scratch = &mut Vec::new();
+        for i in 0..(right.key_count() as usize) {
+            let retrieved_key = right.get_key_at(i, scratch).unwrap();
+            assert_eq!(retrieved_key, keys[split_idx + i].as_bytes());
+            let retrieved_child = right.read_child_at(i + 1).unwrap();
+            assert_eq!(retrieved_child, children[split_idx + i]);
+        }
+
+        assert_eq!(sep, separator);
+    }
 }

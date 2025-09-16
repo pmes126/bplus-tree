@@ -2,7 +2,7 @@ use crate::bplustree::tree::StagedMetadata;
 use crate::bplustree::tree::{BPlusTree, BaseVersion, CommitError, SharedBPlusTree};
 use crate::storage::file_store::FileStore;
 use crate::storage::page_store::PageStore;
-use crate::codec::bincode::{BeU64, RawBuf, Utf8}; 
+use crate::codec::bincode::Utf8; 
 use crate::tests::common::{load_tree, make_tree, make_tree_generic};
 
 use anyhow::Result;

@@ -197,9 +197,6 @@ where
                         let (key_bytes, value_bytes) = page
                             .get_kv_at(i, scratch.as_mut())
                             .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;
-                        //let k = KC::decode_key(key_bytes);
-                        //let v = VC::decode_value(value_bytes);
-                        //println!("k: {:?} v:{:?}", key_bytes, value_bytes);
                         keys.push(KC::decode_key(key_bytes)?);
                         values.push(VC::decode_value(value_bytes)?);
                     }
@@ -224,7 +221,6 @@ where
                     for i in 0..page.key_count() as usize  + 1 {
                         let child_ptr = page.read_child_at(i)
                             .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;
-                        println!("child_ptr[{}]: {}", i, child_ptr);
                         children.push(child_ptr);
                     }
                 }

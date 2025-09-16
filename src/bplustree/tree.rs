@@ -509,7 +509,6 @@ where
     ) -> Result<(Vec<PathNode>, bool), TreeError> {
         let mut path = vec![];
         let mut current_id = root_id;
-        println!("Finding insertion path for key: {:?}", key);
 
         let mut encode_buf = vec![0u8; KC::encoded_len(key)];
         KC::encode_key(key, encode_buf.as_mut())
@@ -522,7 +521,6 @@ where
                         let mut found = false;
                         let i = match node.lower_bound(encode_buf.as_ref()) {
                             Ok(i) => {
-                                println!("Key found in leaf at index {}: {:?}", i, key);
                                 found = true;
                                 i
                             }
@@ -540,7 +538,6 @@ where
                         path.push((current_id, i)); // Record the current node and index
                         let child = node.child_ptr_at(i)?; // Move to the child node
                         if let Some(child_id) = child {
-                            println!("Traversing to child at index {}: {}", i, child_id);
                             current_id = child_id; // Continue iteration
                         } else {
                             TreeError::BackendAny(format!(
@@ -609,9 +606,7 @@ where
         };
 
         if found {
-            println!("Key {:?} already exists, replacing value, key count now {}", key, leaf_node.keys_len());
             leaf_node.replace_at(idx, &val_buf)?;
-            println!("key count after {}", leaf_node.keys_len());
         } else {
             leaf_node.insert_at(idx, &key_buf, &val_buf)?;
         }
@@ -622,10 +617,7 @@ where
         if leaf_node.keys_len() > self.max_keys {
             self.handle_leaf_split(path, leaf_node, track)
         } else {
-            //println!("Calling write and propagate view");
             self.write_and_propagate_view(path, &leaf_node, track)
-            //let leaf_node = Node::from_node_view::<KC, VC>(leaf_node)?;
-            //self.write_and_propagate(path, &leaf_node, track)
         }
     }
 
@@ -643,7 +635,6 @@ where
         } = self.split_leaf_node_view(leaf_node)?;
         let right_id = self.write_node_view(&right_node, track)?;
         let left_id = self.write_node_view(&left_node, track)?;
-        println!("Leaf node split: right_id {}, left_id {}, split_key {:?}", right_id, left_id, split_key);
 
         self.propagate_split(path, left_id, right_id, split_key, track)
     }
@@ -832,13 +823,11 @@ where
     ) -> Result<NodeId, TreeError> {
         while let Some((parent_id, insert_pos)) = path.pop() {
             let Some(mut node) = self.read_node(parent_id)? else {
-                println!("Node not found while inserting into parent");
                 return Err(TreeError::NodeNotFound(
                     "Node not found while inserting into parent".to_string(),
                 ));
             };
             let Node::Internal { keys, children } = &mut node else {
-                println!("WTF");
                 return Err(TreeError::BackendAny(
                     "Expected internal node in propagation path".to_string(),
                 ));
@@ -854,7 +843,6 @@ where
             if keys.len() <= self.max_keys {
                 return self.write_and_propagate(path, &node, track);
             }
-            println!("Splitting internal node during propagation");
             // Handle internal node split
             let SplitResult::SplitNodes {
                 left_node,
@@ -875,9 +863,6 @@ where
 
         let new_root_id = self.write_node(&new_root, track)?;
         track.record_staged_height(self.get_height() + 1); // Update staged height
-        println!("Created new root with ID {}", new_root_id);
-        let test_node = self.read_node(new_root_id)?; // Preload the new root node
-        println!("New root node: {:?}", test_node);
 
         Ok(new_root_id)
     }
@@ -890,7 +875,6 @@ where
 
     // Search for a key and return the value if exists by decoding the nodes.
     pub fn search_inner(&self, key: &K, root_id: NodeId) -> Result<Option<V>, TreeError> {
-        println!("Searching for key: {:?}", key);
         let _guard = self.epoch_mgr.pin();
         let mut current_id = root_id;
         loop {
@@ -904,7 +888,6 @@ where
                         Err(i) => i,    // Go to the child where it would be inserted
                     };
                     current_id = children[i];
-                    println!("Descending to child index {} with ID {}", i, current_id);
                 }
                 Some(Node::Leaf { keys, values, .. }) => {
                     match keys.binary_search(key) {
@@ -936,7 +919,6 @@ where
                     NodeView::Leaf { .. } => {
                         match node.lower_bound(encode_buf.as_ref()) {
                             Ok(i) => {
-                                println!("Found key at index {} in leaf node {}", i, current_id);
                                 let Some(vb) = node.value_bytes_at(i)? else {
                                     return Ok(None);
                                 };
@@ -956,7 +938,6 @@ where
                         };
                         let child = node.child_ptr_at(i)?; // Move to the child node
                         if let Some(child_id) = child {
-                            println!("Descending to child index {} with ID {}", i, child_id);
                             current_id = child_id; // Continue iteration
                         } else {
                             TreeError::BackendAny(format!(
