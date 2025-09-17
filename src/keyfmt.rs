@@ -59,7 +59,6 @@ pub trait KeyBlockFormat: Send + Sync + 'static {
         delta: isize,
         idx: usize,
     );
-
     /// Split the key block at logical entry `idx`, writing valid left/right blocks.
     /// Implementations must avoid full re-encode:
     /// - Raw: just slice at the entry boundary.

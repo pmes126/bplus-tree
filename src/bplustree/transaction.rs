@@ -15,7 +15,7 @@ pub enum TxnStatus {
 }
 
 pub const MAX_COMMIT_RETRIES: usize = 10;
-// Typed shim that doesn't store the tree or codecs.
+
 pub struct WriteTransaction<K, V>
 where
     K: Clone + Ord,
@@ -25,26 +25,8 @@ where
     tree_base_version: BaseVersion,        // Base version of the tree at transaction start
     changes: Vec<WriteOp<K, V>>,
     reclaimed_nodes: Vec<u64>, // Pages to be reclaimed
-    staged_nodes: Vec<u64>,    // Pages to be reclaimed
     initial_root_id: u64,      // Current root ID of the tree
 }
-
-//pub struct WriteTransaction<K, V, KC, VC, S>
-//where
-//    K: Clone + Ord,
-//    V: Clone,
-//    KC: KeyCodec<K>,
-//    VC: ValueCodec<V>,
-//    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
-//{
-//    tree: SharedBPlusTree<K, V, KC, VC, S>,
-//    staged_update: Option<StagedMetadata>, // Staged metadata root ID
-//    tree_base_version: BaseVersion,        // Base version of the tree at transaction start
-//    changes: Vec<WriteOp<K, V>>,
-//    reclaimed_nodes: Vec<u64>, // Pages to be reclaimed
-//    staged_nodes: Vec<u64>,    // Pages to be reclaimed
-//    initial_root_id: u64,      // Current root ID of the tree
-//}
 
 impl<K: Debug, V: Debug> WriteTransaction<K, V>
 where
@@ -67,7 +49,6 @@ where
                     size: res.size,
                 })
             },
-            staged_nodes: Vec::new(),
             tree_base_version: BaseVersion { committed_ptr: tree.get_metadata_ptr() },
             initial_root_id: tree.get_root_id(),
             changes: Vec::new(),
@@ -92,37 +73,6 @@ where
         self.changes.push(WriteOp::Delete(key.clone()));
         Ok(())
     }
-
-//    pub fn commit(&mut self) -> Result<TxnStatus> {
-//        for _ in 0..MAX_COMMIT_RETRIES {
-//            let staged_update = self
-//                .staged_update
-//                .take()
-//                .expect("Staged update should be set before commit");
-//            let res = self.tree.try_commit(&self.tree_base_version, staged_update);
-//            if res.is_ok() {
-//                self.changes.clear();
-//                // Add all staged nodes to the epoch manager for reclamation, we use epoch 0 as
-//                // there will no longer be any active readers for this transaction
-//                for node_id in self.reclaimed_nodes.drain(..) {
-//                    self.tree.get_epoch_mgr().add_reclaim_candidate(0, node_id);
-//                }
-//                return Ok(TxnStatus::Committed);
-//            } else {
-//                // Root changed — retry entire transaction
-//                self.initial_root_id = self.tree.get_root_id(); // Update initial root ID
-//                self.tree_base_version = BaseVersion {
-//                    committed_ptr: self.tree.get_metadata_ptr(),
-//                };
-//                self.reclaimed_nodes.clear(); // reset collected reclaim info
-//                for node_id in self.staged_nodes.drain(..) {
-//                    self.tree.get_epoch_mgr().add_reclaim_candidate(0, node_id);
-//                }
-//                self.rebase()?;
-//            }
-//        }
-//        Ok(TxnStatus::Aborted) // Too many retries, abort transaction
-//    }
 
     // Replay staged ops from base/root; tree handles encoding inside.
     pub fn commit<KC, VC, S>(&mut self, tree: &SharedBPlusTree<K, V, KC, VC, S>) -> Result<TxnStatus>

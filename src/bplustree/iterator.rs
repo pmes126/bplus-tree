@@ -26,7 +26,7 @@ where
     end: K,
     stack: Vec<TraversalFrame>,
     reader_guard: ReaderGuard,
-    _Phantom: std::marker::PhantomData<(KC, VC)>,
+    _phantom: std::marker::PhantomData<(KC, VC)>,
 }
 
 struct LeafCursor<'a, K, V> {
@@ -59,7 +59,7 @@ where
             end: end.clone(),
             index: 0,
             reader_guard: epoch_mgr.pin(),
-            _Phantom: std::marker::PhantomData,
+            _phantom: std::marker::PhantomData,
         };
         let _ = iter.descend_to_leaf(root_id, Some(start));
         iter

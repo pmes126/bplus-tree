@@ -83,7 +83,6 @@ impl InternalPage {
     #[inline] fn children_base(&self) -> usize { self.keys_end() }
     #[inline] fn children_len(&self) -> usize { (self.key_count() as usize + 1) * CHILD_ID_SIZE }
     #[inline] fn children_end(&self) -> usize { self.children_base() + self.children_len() }
-    #[inline] fn used_bytes(&self) -> usize { self.children_end() }
 
     // --- derived regions ---
 
@@ -363,7 +362,6 @@ impl<'a> PageKeyRun<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::seq::SliceRandom;
     #[test]
     fn test_internal_page() {
         let mut page = InternalPage::new(0);
@@ -472,17 +470,15 @@ mod tests {
 
         while page.key_count() > 0 {
             let bound = page.key_count() as usize - 1;
-            let mut idx = rng.gen_range(0..=bound) as usize;
+            let idx = rng.gen_range(0..=bound) as usize;
             assert!(page.delete_separator(idx).is_ok());
             if page.key_count() == 0 { break; }
             if idx >= page.key_count() as usize { 
-                   assert_eq!(page.get_key_at(idx, scratch).is_err(), true);
+                   assert!(page.get_key_at(idx, scratch).is_err());
                    continue;
             }
             let retrieved_key = page.get_key_at(idx, scratch).unwrap();
             assert_ne!(retrieved_key, keys[idx].as_bytes());
-            //let retrieved_child = page.read_child_at(idx + 1).unwrap();
-            //assert_eq!(retrieved_child, children[idx]);
         }
     }
 

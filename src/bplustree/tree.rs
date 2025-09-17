@@ -274,8 +274,7 @@ where
     }
 
     pub fn search_with_root(&self, key: &K, root_id: NodeId) -> Result<Option<V>, TreeError> {
-        self.inner.search_inner_undecoded(key, root_id)
-        //self.inner.search_inner(key, root_id)
+        self.inner.search_inner(key, root_id)
     }
 
     pub fn get_root_id(&self) -> NodeId {
@@ -745,8 +744,9 @@ where
         while let Some((parent_id, insert_pos)) = path.pop() {
             let mut parent_node = self
                 .read_node(parent_id)?
-                .ok_or_else(|| TreeError::NodeNotFound("Parent node not found".to_string()))?;
-
+                .ok_or_else(|| TreeError::NodeNotFound(format!(
+                    "Parent node {} not found", parent_id)
+                    .to_string()))?;
             let Node::Internal {
                 ref mut children, ..
             } = parent_node
@@ -781,7 +781,9 @@ where
             let mut parent_node = self
                 .storage
                 .read_node_view(parent_id)?
-                .ok_or_else(|| TreeError::NodeNotFound("Parent node not found".to_string()))?;
+                .ok_or_else(|| TreeError::NodeNotFound(format!(
+                    "Parent node {} not found", parent_id)
+                    .to_string()))?;
 
             let NodeView::Internal {
                 ..
@@ -823,9 +825,9 @@ where
     ) -> Result<NodeId, TreeError> {
         while let Some((parent_id, insert_pos)) = path.pop() {
             let Some(mut node) = self.read_node(parent_id)? else {
-                return Err(TreeError::NodeNotFound(
-                    "Node not found while inserting into parent".to_string(),
-                ));
+                return Err(TreeError::NodeNotFound(format!(
+                    "Parent node {} not found", parent_id)
+                    .to_string()));
             };
             let Node::Internal { keys, children } = &mut node else {
                 return Err(TreeError::BackendAny(
@@ -870,44 +872,16 @@ where
     // Search for a key in the B+ tree, acquiring an epoch guard to ensure consistency.
     pub fn search(&self, key: &K) -> Result<Option<V>, TreeError> {
         let root_id = self.get_root_id();
-        self.search_inner_undecoded(key, root_id)
-    }
-
-    // Search for a key and return the value if exists by decoding the nodes.
-    pub fn search_inner(&self, key: &K, root_id: NodeId) -> Result<Option<V>, TreeError> {
-        let _guard = self.epoch_mgr.pin();
-        let mut current_id = root_id;
-        loop {
-            match self.read_node(current_id)? {
-                Some(Node::Internal { keys, children }) => {
-                    // target >= keys[i] means we should go to the (i+1)-th child
-                    // target < keys[i]  (not found) means we should go to the i-th child - descent
-                    // where it would be inserted
-                    let i = match keys.binary_search(key) {
-                        Ok(i) => i + 1, // Go to the next child
-                        Err(i) => i,    // Go to the child where it would be inserted
-                    };
-                    current_id = children[i];
-                }
-                Some(Node::Leaf { keys, values, .. }) => {
-                    match keys.binary_search(key) {
-                        Ok(i) => return Ok(Some(values[i].clone())),
-                        Err(_i) => return Ok(None), // Key not found
-                    };
-                }
-                None => return Ok(None), // Node not found
-            }
-        }
+        self.search_inner(key, root_id)
     }
 
     // Search for a key and return the value if exists, without decoding the nodes for efficiency.
-    pub fn search_inner_undecoded(&self, key: &K, root_id: NodeId) -> Result<Option<V>, TreeError> {
+    pub fn search_inner(&self, key: &K, root_id: NodeId) -> Result<Option<V>, TreeError> {
         let _guard = self.epoch_mgr.pin();
         let mut current_id = root_id;
 
         let mut encode_buf = vec![0u8; KC::encoded_len(key)];
-        KC::encode_key(key, encode_buf.as_mut())
-            .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
+        KC::encode_key(key, encode_buf.as_mut())?;
         // Find insertion point
         loop {
             match self
@@ -1054,7 +1028,7 @@ where
     ) -> Result<NodeId, TreeError> {
         while let Some((parent_id, idx)) = path.pop() {
             let Some(mut parent_node) = self.read_node(parent_id)? else {
-                return Err(TreeError::NodeNotFound("Parent node not found".to_string()));
+                return Err(TreeError::NodeNotFound(format!("Parent node {} not found", parent_id).to_string()));
             };
             {
                 let Node::Internal {
@@ -1139,7 +1113,7 @@ where
         let left_sibling_id = children[left_child_idx];
         let Some(mut left_sibling) = self.read_node(left_sibling_id)? else {
             return Err(TreeError::NodeNotFound(
-                "Left sibling not found".to_string(),
+                format!("Left sibling id: {} not found", left_sibling_id).to_string(),
             ));
         };
         match (&mut left_sibling, &mut *node) {

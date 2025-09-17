@@ -100,7 +100,6 @@ impl LeafPage {
     #[inline] fn set_key_block_len(&mut self, n: u16) { self.header.key_block_len = n; }
 
     #[inline] fn values_hi_usize(&self) -> usize { self.header.values_hi as usize }
-    #[inline] fn values_hi(&self) -> u16 { self.header.values_hi as u16 }
     #[inline] fn set_values_hi(&mut self, off: u16) { self.header.values_hi = off }
     #[inline] fn keys_start(&self) -> usize { 0 } // <-- buf already excludes the header
     #[inline] fn keys_end(&self) -> usize { self.key_block_len() as usize }
@@ -141,7 +140,7 @@ impl LeafPage {
         let len = slot.val_len as usize;
         let lo = self.values_hi_usize();
         if off < lo  {
-            return Err(PageError::CorruptedData{ msg:"slot outside arena".to_string() });
+            return Err(PageError::CorruptedData{ msg: format!("slot offset {} outside bounds", off).to_string() });
         }
         Ok(&self.buf[off..off + len])
     }
@@ -332,11 +331,6 @@ impl LeafPage {
         let dst = (from as isize + delta_k) as usize;
         self.buf.copy_within(from..to, dst);
         Ok(())
-    }
-
-    /// Decode i-th encoded key bytes into scratch and return a view.
-    fn decode_key_at<'s>(&'s self, i: usize, scratch: &'s mut Vec<u8>) -> &'s [u8] {
-        self.fmt().decode_at(self.key_block(), i, scratch)
     }
 
     // ---- slot dir ops ----
@@ -626,34 +620,33 @@ mod tests {
         assert_eq!(ke4, b"date");
         assert_eq!(ve4, b"brown");
     }
-}
 
-//    #[test]
-//    fn test_compact_values() {
-//        let mut page = make_page();
-//        let keys = vec![b"apple", b"banana", b"cherry"];
-//        let values = vec![b"red", b"yellow", b"dark red"];
-//
-//        for (k, v) in keys.iter().zip(values.iter()) {
-//            page.insert_encoded(k, v).unwrap();
-//        }
-//
-//        // Overwrite "banana" value to a shorter one
-//        let (off, len) = page.alloc_value_tail(b"blue").unwrap();
-//        page.overwrite_value_at(1, off, len).unwrap();
-//
-//        // Compact values
-//        page.compact_values();
-//
-//        let mut scratch = Vec::new();
-//        for (i, k) in keys.iter().enumerate() {
-//            let (ke, ve) = page.get_kv_at(i, &mut scratch).unwrap();
-//            assert_eq!(ke, *k);
-//            if i == 1 {
-//                assert_eq!(ve, b"blue");
-//            } else {
-//                assert_eq!(ve, values[i]);
-//            }
-//        }
-//    }
-//}
+    //#[test]
+    //fn test_compact_values() {
+    //    let mut page = make_page();
+    //    let keys = vec![b"apple", b"banana", b"cherry"];
+    //    let values = vec![b"red", b"yellow", b"dark red"];
+
+    //    for (k, v) in keys.iter().zip(values.iter()) {
+    //        page.insert_encoded(k, v).unwrap();
+    //    }
+
+    //    // Overwrite "banana" value to a shorter one
+    //    let (off, len) = page.alloc_value_tail(b"blue").unwrap();
+    //    page.overwrite_value_at(1, off, len).unwrap();
+
+    //    // Compact values
+    //    page.compact_values();
+
+    //    let mut scratch = Vec::new();
+    //    for (i, k) in keys.iter().enumerate() {
+    //        let (ke, ve) = page.get_kv_at(i, &mut scratch).unwrap();
+    //        assert_eq!(ke, *k);
+    //        if i == 1 {
+    //            assert_eq!(ve, b"blue");
+    //        } else {
+    //            assert_eq!(ve, values[i]);
+    //        }
+    //    }
+    //}
+}

@@ -4,8 +4,6 @@ use std::io::{self};
 
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-pub const METADATA_TAG: u8 = 0xFF; // Metadata page tag
-pub const ACTIVE_FLAG: u8 = 0x01; // Active flag for metadata page
 pub const METADATA_PAGE_1: u8 = 0x00; // First metadata page slot
 pub const METADATA_PAGE_2: u8 = 0x01; // Second metadata page slot
 pub const INITIAL_PAGE_ID: u8 = 0x02; // Second metadata page slot
@@ -26,9 +24,6 @@ pub struct Metadata {
 #[repr(C)]
 #[derive(AsBytes, FromBytes, FromZeroes, Debug, Clone, Copy)]
 pub struct MetadataPage {
-    //METADATA_TAG: u8, // Tag to identify this as a metadata page
-    //METADATA_ID: u8, // ID for the metadata page
-    //ACTIVE_FLAG: u8, // Flag to indicate if this metadata page is active
     pub data: Metadata,           // Metadata structure
     _padding: [u8; PADDING_SIZE], // Padding to fill the rest of the page
 }
