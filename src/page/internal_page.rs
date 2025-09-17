@@ -112,6 +112,8 @@ impl InternalPage {
 
     // -------- slot access --------
     // -------- insert (encoded key & child) --------
+    /// Insert a separator key at index `idx` (0..=key_count), shifting existing keys/children to
+    /// the right. The new child pointer is written at `idx+1`.
     pub fn insert_separator(&mut self, idx: usize, key: &[u8], right_child: u64) -> Result<(), PageError> {
         let mut scratch = Vec::new();
 
@@ -208,6 +210,7 @@ impl InternalPage {
         Ok(())
     }
 
+    /// Insert a new separator key (encoded bytes) and child pointer, finding the correct slot.
     pub fn insert_encoded(&mut self, key: &[u8], child: u64) -> Result<(), PageError> {
         let idx = match self.find_slot(key, &mut Vec::new()) {
             Ok(i) => i,    // key exists; insert after it
@@ -215,9 +218,11 @@ impl InternalPage {
         };
         self.insert_separator(idx, key, child)
     }
+
     // -------- child pointer array manipulation --------
 
     #[inline]
+    /// Read the child pointer at index `idx` (0..=key_count).
     pub fn read_child_at(&self, idx: usize) -> Result<u64, PageError> {
         let offset = self.children_base() + idx * CHILD_ID_SIZE;
         if offset + CHILD_ID_SIZE > PAGE_SIZE {
@@ -226,6 +231,7 @@ impl InternalPage {
         Ok(read_u64_le(&self.buf[offset .. offset + CHILD_ID_SIZE]))
     }
 
+    /// Write the child pointer at index `idx` (0..=key_count).
     #[inline]
     pub fn write_child_at(&mut self, idx: usize, child: u64) -> Result<(), PageError> { 
         let offset = self.children_base() + idx * CHILD_ID_SIZE;
@@ -236,9 +242,16 @@ impl InternalPage {
         Ok(())
     }
 
+    /// Write the leftmost child pointer (at index 0).
     #[inline]
     pub fn write_leftmost_child(&mut self, child: u64) -> Result<(), PageError> {
         self.write_child_at(0, child)
+    }
+
+    /// Replace the child pointer at idx with the provided child pointer
+    #[inline]
+    pub fn replace_child_at(&mut self, idx: usize, child: u64) -> Result<(), PageError> {
+        self.write_child_at(idx, child)
     }
 
     fn children_shift_right_from(&mut self, from: usize) {
@@ -249,6 +262,7 @@ impl InternalPage {
         let bytes= (len - from) * CHILD_ID_SIZE;
         self.buf.copy_within(src..src + bytes, dst);
     }
+
     fn children_shift_left_from(&mut self, from: usize) {
         let base = self.children_base();
         let len  = self.key_count() as usize + 1;
@@ -257,21 +271,6 @@ impl InternalPage {
         let bytes= (len - from - 1) * CHILD_ID_SIZE;
         self.buf.copy_within(src..src + bytes, dst);
     }
-
-    // Replace the child pointer at idx with the provided child pointer
-    pub fn replace_child_at(&mut self, idx: usize, child: u64) -> Result<(), PageError> {
-        self.write_child_at(idx, child)
-    }
-
-    // --------- key accessors ---------
-    /// Return the *encoded key bytes* at index `idx`.
-    #[inline]
-    pub fn get_key_at<'s>(&'s self, idx: usize, scratch: &'s mut Vec<u8>) -> Result<&'s [u8], PageError> {
-        if idx >= self.key_count() as usize { return Err(PageError::IndexOutOfBounds {}); }
-        Ok(self.fmt().decode_at(self.key_block(), idx, scratch))
-    }
-
-    // ====== internals ======
 
     // Move the child pointer array by delta bytes (positive = right, negative = left)
     fn move_child_dir(&mut self, delta_k: isize) -> Result<(), PageError> {
@@ -288,6 +287,14 @@ impl InternalPage {
             self.buf.copy_within(base..end, dst);
         }
         Ok(())
+    }
+
+    // --------- key accessors ---------
+    /// Return the *encoded key bytes* at index `idx`.
+    #[inline]
+    pub fn get_key_at<'s>(&'s self, idx: usize, scratch: &'s mut Vec<u8>) -> Result<&'s [u8], PageError> {
+        if idx >= self.key_count() as usize { return Err(PageError::IndexOutOfBounds {}); }
+        Ok(self.fmt().decode_at(self.key_block(), idx, scratch))
     }
 
     // ---- splitting ----

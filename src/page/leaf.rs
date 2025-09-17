@@ -134,6 +134,7 @@ impl LeafPage {
 
     // -------- value access --------
 
+    /// Reads a value at a specific index.
     pub fn read_value_at(&self, idx: usize) -> Result<&[u8], PageError> {
         let slot = self.read_slot(idx)?;
         let off = slot.val_off as usize;
@@ -152,7 +153,7 @@ impl LeafPage {
 
     // -------- slot access --------
     // -------- insert (encoded key & value) --------
-
+    /// insert encoded key bytes and value bytes at index `idx`
     pub fn insert_at(
         &mut self,
         idx: usize,
@@ -208,6 +209,7 @@ impl LeafPage {
         Ok(())
     }
 
+    /// insert or overwrite by encoded key bytes and  value bytes
     pub fn insert_encoded(&mut self, key_enc: &[u8], val_bytes: &[u8]) -> Result<(), PageError> {
         // 1) find position
         let mut scratch = Vec::new();
@@ -223,6 +225,7 @@ impl LeafPage {
         self.insert_at(idx, key_enc, val_bytes)
     }
 
+    /// overwrite value at index `idx` with new value bytes (doesn't move old bytes).
     pub fn overwrite_value_at(&mut self, idx: usize, val_bytes: &[u8]) -> Result<(), PageError> {
         let (val_off, val_len) = self.alloc_value_tail(val_bytes)?; // respects slot region
         self.overwrite_slot_at(idx, val_off, val_len)
@@ -252,6 +255,7 @@ impl LeafPage {
 
     // -------- delete (by index) --------
 
+    /// delete key and value by encoded key bytes
     pub fn delete(&mut self, key_enc: &[u8]) -> Result<(), PageError> {
         // 1) find position
         let mut scratch = Vec::new();
@@ -265,6 +269,7 @@ impl LeafPage {
         self.delete_at(idx)
     }
 
+    /// Delete key and value at index `idx`.
     pub fn delete_at(&mut self, idx: usize) -> Result<(), PageError> {
         if idx >= self.key_count() as usize { return Err(PageError::IndexOutOfBounds {} ); }
         let mut scratch = Vec::new();
@@ -322,8 +327,9 @@ impl LeafPage {
     }
 
     // ====== internals ======
+    // ---- slot dir ops ----
 
-    /// Move the entire slot directory by Δk bytes to keep it flush with the key block.
+    // Move the entire slot directory by Δk bytes to keep it flush with the key block.
     fn move_slot_dir(&mut self, delta_k: isize) -> Result<(), PageError> {
         if delta_k == 0 { return Ok(()); }
         let from = self.slots_base();
@@ -332,8 +338,6 @@ impl LeafPage {
         self.buf.copy_within(from..to, dst);
         Ok(())
     }
-
-    // ---- slot dir ops ----
 
     fn slot_off_for(&self, idx: usize) -> usize {
         self.slots_base() + idx * SLOT_SIZE
@@ -396,7 +400,7 @@ impl LeafPage {
 
     // ---- value arena ----
 
-    /// Allocate value at tail **below current slots** (uses header.values_hi and slot count).
+    // Allocate value at tail **below current slots** (uses header.values_hi and slot count).
     fn alloc_value_tail(&mut self, val: &[u8]) -> Result<(u16, u16), PageError> {
         let val_len = val.len();
         let new_hi = self.values_hi_usize().checked_sub(val_len).ok_or(PageError::PageFull {})?;
