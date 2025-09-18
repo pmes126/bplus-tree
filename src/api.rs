@@ -28,7 +28,7 @@ pub use crate::bplustree::tree::{CommitError, TreeError};
 #[non_exhaustive]
 pub enum ApiError {
     #[error(transparent)]
-    Tree(#[from] TreeError),
+    Internal(#[from] TreeError),
     #[error(transparent)]
     Commit(#[from] CommitError),
 }

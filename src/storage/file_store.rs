@@ -10,7 +10,6 @@ use crate::metadata::{
 };
 use crate::storage::{Metadata, MetadataStorage, NodeStorage, PageStorage, StorageError};
 
-use anyhow::Result;
 use std::path::Path;
 use zerocopy::AsBytes;
 

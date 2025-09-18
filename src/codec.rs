@@ -41,18 +41,6 @@ pub trait ValueCodecDefault<V> {
     type Codec: ValueCodec<V>;
 }
 
-/// Trait for encoding/decoding nodes to/from fixed-size pages
-//pub trait NodeCodec<K, V, KC, VC>: Send + Sync + 'static
-//where
-//    K:  ToOwned,
-//    V:  ToOwned,
-//    KC: KeyCodec<K>,
-//    VC: ValueCodec<V>,
-//{
-//    fn encode(node: &Node<K, V>) -> Result<[u8; PAGE_SIZE], CodecError>;
-//    fn decode(buf: &[u8; PAGE_SIZE]) -> Result<Node<K, V>, CodecError>;
-//}
-
 #[derive(Debug, Error)]
 pub enum CodecError {
     #[error("Error decoding value: {msg}")]

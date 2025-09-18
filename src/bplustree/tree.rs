@@ -65,7 +65,7 @@ pub enum TreeError {
     #[error(transparent)]
     Storage(#[from] StorageError),
     #[error(transparent)]
-    Codec(#[from] crate::codec::CodecError),
+    Codec(#[from] CodecError),
     #[error(transparent)]
     Any(#[from] anyhow::Error),
 }
