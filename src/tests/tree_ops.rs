@@ -1,6 +1,5 @@
 use crate::bplustree::tree::StagedMetadata;
 use crate::bplustree::tree::{BPlusTree, BaseVersion, CommitError, SharedBPlusTree};
-use crate::codec::bincode::Utf8;
 use crate::storage::file_store::FileStore;
 use crate::storage::page_store::PageStore;
 use crate::tests::common::{load_tree, make_tree, make_tree_generic};

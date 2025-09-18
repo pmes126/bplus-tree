@@ -13,7 +13,6 @@ use crate::metadata;
 use crate::metadata::{
     Metadata, {METADATA_PAGE_1, METADATA_PAGE_2},
 };
-use crate::storage::PageStorage;
 use crate::storage::{MetadataStorage, NodeStorage, StorageError};
 use std::result::Result;
 use thiserror::Error;

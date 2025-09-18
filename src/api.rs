@@ -12,7 +12,6 @@ use std::marker::PhantomData;
 
 use crate::bplustree::iterator::BPlusTreeIter;
 use crate::bplustree::tree::{BPlusTree, BaseVersion, SharedBPlusTree, StagedMetadata};
-use crate::codec::bincode::RawBuf;
 use crate::storage::{MetadataStorage, NodeStorage};
 
 pub use crate::bplustree::transaction::WriteTransaction as WriteTxn;

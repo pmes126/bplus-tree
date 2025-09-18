@@ -230,9 +230,6 @@ impl ValueCodecDefault<Vec<u8>> for () {
     type Codec = RawBuf;
 }
 
-type DefaultKC<K> = <() as KeyCodecDefault<K>>::Codec;
-type DefaultVC<V> = <() as ValueCodecDefault<V>>::Codec;
-
 //=======NodeCodec implementation using default codecs for K and V =======
 // This codec uses the default KeyCodec and ValueCodec for K and V respectively
 pub struct DefaultNodeCodec<KC, VC> {
