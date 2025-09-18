@@ -57,16 +57,6 @@ where
         KC: crate::codec::KeyCodec<K>,
         VC: crate::codec::ValueCodec<V>,
     {
-        println!(
-            "Node from Node_view types: K={}, V={}",
-            std::any::type_name::<K>(),
-            std::any::type_name::<V>()
-        );
-        println!(
-            "With codec types: KC={}, VC={}",
-            std::any::type_name::<KC>(),
-            std::any::type_name::<VC>()
-        );
         match node_view {
             NodeView::Internal { page } => {
                 let page_raw = page
