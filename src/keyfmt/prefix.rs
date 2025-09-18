@@ -2,9 +2,10 @@
 //! [ entries ... ][ restart_offsets (u32 LE) ... ][ u32 LE restart_count ]
 //entry = varint(shared) | varint(suffix_len) | suffix_bytes
 //At restart entries: shared=0, entire key is in suffix.
+
 //use super::{KeyBlockFormat, KeyFmtError};
 //use super::varint::{read_uvar, write_uvar};
-
+//
 //#[derive(Copy, Clone)]
 //pub struct PrefixFormat {
 //    pub restart_interval: u16,

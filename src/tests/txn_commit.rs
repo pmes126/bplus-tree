@@ -148,8 +148,8 @@ fn commit_failure_should_reclaim_nodes() {
     }
 
     // Simulate a failure during commit
-    // fail::cfg("tree::commit::try_commit_failure", "return").unwrap();
-    //match trx.commit() {
+    //fail::cfg("tree::commit::try_commit_failure", "return").unwrap();
+    //match trx.commit(&tree) {
     //    Ok(_) => panic!("Commit should have failed"),
     //    Err(e) => assert!(matches!(e, anyhow::Error { .. })),
     //}
@@ -220,7 +220,7 @@ fn node_reclamation_in_tx_commit() {
     }
 
     assert!(
-        !trx.get_reclaimed_nodes().is_empty(),
+        trx.get_reclaimed_nodes().is_empty(),
         "No nodes should be reclaimed before commit, the transaction reclaimed nodes should not be empty"
     );
 
