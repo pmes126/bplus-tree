@@ -20,7 +20,7 @@ async fn main() {
 
     let mut ticker = interval(Duration::from_secs(2));
     let url = "https://httpbin.org/get";
-    for i in 1..=10 {
+    for i in 1..=50 {
         ticker.tick().await;
 
         match fetch_url(url).await {

@@ -16,22 +16,16 @@ use thiserror::Error;
 pub enum StorageError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
-
     #[error(transparent)]
     Codec(#[from] CodecError),
-
     #[error("page corrupted: {msg}")]
     CodecError { msg: String },
-
     #[error("Storage error: {msg}")]
     StorageAny { msg: String },
-
     #[error("page {pid} not found")]
     NotFound { pid: NodeId },
-
     #[error("invariant: {0}")]
     Invariant(&'static str),
-
     #[error("backend error: {source}")]
     Other {
         #[source]

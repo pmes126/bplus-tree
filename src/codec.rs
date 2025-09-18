@@ -45,19 +45,15 @@ pub trait ValueCodecDefault<V> {
 pub enum CodecError {
     #[error("Error decoding value: {msg}")]
     DecodeFailure { msg: String },
-
     #[error("Error encoding value: {msg}")]
     EncodeFailure { msg: String },
-
     #[error("Error converting from byte slice: {source}")]
     FromSliceError {
         #[from]
         source: std::array::TryFromSliceError,
     },
-
     #[error("Truncated slice")]
     Truncated {},
-
     #[error("IO error: {source}")]
     Io {
         #[from]
