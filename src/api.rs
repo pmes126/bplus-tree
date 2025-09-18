@@ -128,6 +128,10 @@ where
     pub fn begin_write(&self) -> Result<WriteTxnBytes> {
         Ok(WriteTxnBytes::new(self.inner.clone()))
     }
+
+    pub fn get_inner(&self) -> &SharedBPlusTree<Vec<u8>, Vec<u8>, S> {
+        &self.inner
+    }
 }
 
 // Streaming iterator (bytes)
