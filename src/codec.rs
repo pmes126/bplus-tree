@@ -4,7 +4,7 @@ use crate::bplustree::node::Node;
 use crate::layout::PAGE_SIZE;
 use thiserror::Error;
 
-// Trait for node storage trasnformation
+// Trait for keys to binary storage transformation
 pub trait KeyCodec<K> {
     /// Append an order-preserving encoding of `key` to `out`.
     fn encode_key(key: &K, out: &mut [u8]) -> Result<usize, CodecError>;
@@ -18,6 +18,7 @@ pub trait KeyCodec<K> {
     fn encoded_len(key: &K) -> usize;
 }
 
+// Trait for values to binary storage transformation
 pub trait ValueCodec<V> {
     fn encode_value(value: &V, out: &mut [u8]) -> Result<usize, CodecError>;
     fn decode_value(bytes: &[u8]) -> Result<V, CodecError>;
@@ -27,12 +28,13 @@ pub trait ValueCodec<V> {
 pub type DefaultKC<K> = <() as KeyCodecDefault<K>>::Codec;
 pub type DefaultVC<V> = <() as ValueCodecDefault<V>>::Codec;
 
-// 2) Codec knows how to turn bytes <-> Node<K,V>
+// NodeCodec knows how to turn bytes <-> Node<K,V>
 pub trait NodeCodec<K, V> {
     fn decode(buf: &[u8; PAGE_SIZE]) -> Result<Node<K, V>, CodecError>;
     fn encode(node: &Node<K, V>) -> Result<[u8; PAGE_SIZE], CodecError>;
 }
 
+// Helper types to map a type K to a default codec implementation
 pub trait KeyCodecDefault<K> {
     type Codec: KeyCodec<K>;
 }
