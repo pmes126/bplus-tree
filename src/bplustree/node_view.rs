@@ -12,6 +12,20 @@ pub enum NodeView {
 
 impl NodeView {
     #[inline]
+    pub fn new_internal(format_id: u8) -> Self {
+        NodeView::Internal {
+            page: InternalPage::new(format_id),
+        }
+    }
+
+    #[inline]
+    pub fn new_leaf(format_id: u8) -> Self {
+        NodeView::Leaf {
+            page: LeafPage::new(format_id),
+        }
+    }
+
+    #[inline]
     pub fn is_internal(&self) -> bool {
         matches!(self, NodeView::Internal { .. })
     }
@@ -157,6 +171,7 @@ impl NodeView {
     }
 
     /// Insert a key-value pair into a leaf node for a given index
+    #[inline]
     pub fn insert_at(&mut self, idx: usize, key: &[u8], value: &[u8]) -> Result<(), anyhow::Error> {
         match self {
             NodeView::Internal { .. } => Err(anyhow::anyhow!(
@@ -164,6 +179,18 @@ impl NodeView {
             )),
             NodeView::Leaf { page } => page
                 .insert_at(idx, key, value)
+                .map_err(|e| anyhow::anyhow!(e)),
+        }
+    }
+
+    #[inline]
+    pub  fn insert_separator_at(&mut self, idx: usize, key: &[u8], child_ptr: u64) -> Result<(), anyhow::Error> {
+        match self {
+            NodeView::Leaf { .. } => Err(anyhow::anyhow!(
+                "Leaf nodes do not have children, cannot insert separator"
+            )),
+            NodeView::Internal { page } => page
+                .insert_separator(idx, key, child_ptr)
                 .map_err(|e| anyhow::anyhow!(e)),
         }
     }
@@ -206,8 +233,8 @@ impl NodeView {
         match self {
             NodeView::Internal { page } => {
                 //println!("Splitting internal node at index {} with format id {}", idx, page.fmt().format_id() );
-                let new_page = InternalPage::new(page.fmt().format_id());
-                //page.split_off_into(idx, &mut new_page).map_err(|e| anyhow::anyhow!(e))?;
+                let mut new_page = InternalPage::new(page.fmt().format_id());
+                page.split_off_into(idx, &mut new_page).map_err(|e| anyhow::anyhow!(e))?;
                 Ok(NodeView::Internal { page: new_page })
             }
             NodeView::Leaf { page } => {
@@ -229,6 +256,36 @@ impl NodeView {
             }
             NodeView::Leaf { .. } => Err(anyhow::anyhow!(
                 "Leaf nodes do not have children to replace"
+            )),
+        }
+    }
+
+    /// Pop the last key from an internal node. This is  used during splits.
+    pub fn pop_key(&mut self) -> Result<Option<Vec<u8>>, anyhow::Error> {
+        match self {
+            NodeView::Internal { page } => {
+                let mut scratch = Vec::new();
+                if page.key_count() == 0 {
+                    return Ok(None);
+                }
+                let key = page.pop_last_key(&mut scratch)?;
+                Ok(Some(key))
+            }
+            NodeView::Leaf { .. } => Err(anyhow::anyhow!(
+                "Leaf nodes do not have children to replace"
+            )),
+        }
+    }
+
+    /// Write the leftmost child pointer of an internal node
+    pub fn write_leftmost_child(&mut self, ptr: u64) -> Result<(), anyhow::Error> {
+        match self {
+            NodeView::Internal { page } => {
+                page.write_leftmost_child(ptr)
+                    .map_err(|e| anyhow::anyhow!(e))
+            }
+            NodeView::Leaf { .. } => Err(anyhow::anyhow!(
+                "Leaf nodes do not have children to write"
             )),
         }
     }

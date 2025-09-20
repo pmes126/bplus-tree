@@ -282,6 +282,37 @@ impl InternalPage {
         Ok(())
     }
 
+    /// Deletes the key at index `key_count() -1 `  without changing the child - used as a part of
+    /// a split to fix the left page invariants.
+    pub fn pop_last_key(&mut self, scratch: &mut Vec<u8>) -> Result<Vec<u8>, PageError> {
+        let idx = self.key_count() as usize - 1;
+        let key = self.fmt().decode_at(self.key_block(), idx, scratch).to_vec();
+
+        // PLAN for key-block deletion
+        let (range, repl) = self.fmt().delete_plan(self.key_block(), idx, scratch);
+        let delta_k = repl.len() as isize - (range.end - range.start) as isize; // usually negative
+
+        // capacity is fine when shrinking
+        // splice key block
+        let ks = self.keys_start();
+        let old_len = self.key_block_len() as usize;
+        let new_len = (old_len as isize + delta_k) as usize;
+
+        // write replacement (often empty)
+        //let hole_start = ks + range.start;
+        //self.buf[hole_start .. hole_start + repl.len()].copy_from_slice(&repl);
+
+        let tail_src_start = ks + range.end;
+        let tail_src_end = ks + old_len + self.children_len(); // include children to move them
+        // too
+        let tail_dst_start = (tail_src_start as isize + delta_k) as usize;
+        self.buf
+            .copy_within(tail_src_start..tail_src_end, tail_dst_start);
+        self.set_key_block_len(new_len as u16);
+        self.set_key_count(self.key_count() - 1);
+        Ok(key)
+    }
+
     /// Insert a new separator key (encoded bytes) and child pointer, finding the correct slot.
     pub fn insert_encoded(&mut self, key: &[u8], child: u64) -> Result<(), PageError> {
         let idx = match self.find_slot(key, &mut Vec::new()) {
@@ -389,7 +420,10 @@ impl InternalPage {
         right: &mut InternalPage,
     ) -> Result<Vec<u8>, PageError> {
         let key_count = self.key_count() as usize;
-        let kb = self.key_block(); // entries region only
+        if split_idx == 0 || split_idx >= key_count {
+            return Err(PageError::IndexOutOfBounds {});
+        }
+        let kb = self.key_block();
 
         // 1) ask the format to produce left/right key-block bytes
         let mut left_kb = Vec::new();

@@ -41,11 +41,11 @@ pub enum DeleteResult<N> {
     NotFound,
 }
 
-pub enum SplitResult<K, N> {
+pub enum SplitResult<N> {
     SplitNodes {
         left_node: N,  // Left half (including inserted key)
         right_node: N, // Right half
-        split_key: K,  // First key of right node, to push into parent
+        split_key: Vec<u8>,  // First key of right node, to push into parent
     },
 }
 
@@ -640,19 +640,18 @@ where
     fn split_leaf_node_view(
         &self,
         mut leaf_node: NodeView,
-    ) -> Result<SplitResult<K, NodeView>, TreeError> {
+    ) -> Result<SplitResult<NodeView>, TreeError> {
         // Equally split the keys and values between the two nodes.
         if let NodeView::Leaf { .. } = &mut leaf_node {
             let mid = leaf_node.keys_len() / 2;
             let split_idx = mid; // Index to split the keys and values
             let right_node = leaf_node.split_off(split_idx)?;
             let split_key = right_node.first_key()?;
-            let k = S::KC::decode_key(split_key.as_ref())?;
 
             Ok(SplitResult::SplitNodes {
                 left_node: leaf_node,
                 right_node,
-                split_key: k,
+                split_key,
             })
         } else {
             Err(TreeError::BackendAny(
@@ -661,36 +660,22 @@ where
         }
     }
 
-    // Splits an internal node into two nodes and returns the new right node, the left node, and
-    // the first key of the right node to be pushed up to the parent.
-    fn split_internal_node(
+    fn split_internal_node_view(
         &self,
-        mut internal_node: Node<K, V>,
-    ) -> Result<SplitResult<K, Node<K, V>>, TreeError> {
-        if let Node::Internal { keys, children } = &mut internal_node {
-            // Index to split the keys and values, right node will have
-            // values past mid + 1, split key will be at mid and removed and left node will have
-            // the remaining values
-            let mid = keys.len() / 2;
-            let split_idx = mid + 1;
-            let right_keys = keys.split_off(split_idx);
-            let right_children = children.split_off(split_idx);
-            let right_internal = Node::Internal {
-                keys: right_keys,
-                children: right_children,
-            };
-            // split key is the key at the split index, which will be  removed and pushed up to the parent
-            let split_key = keys.pop().ok_or_else(|| {
+        mut internal_node: NodeView,
+    ) -> Result<SplitResult<NodeView>, TreeError> {
+        if let NodeView::Internal { .. } = &mut internal_node {
+            let mid = internal_node.keys_len() / 2;
+            let split_idx = mid + 1; // Index to split the keys and values
+            let right_node = internal_node.split_off(split_idx)?;
+            let split_key = internal_node.pop_key()?.ok_or_else(|| {
                 TreeError::BackendAny("Internal node has no mid keys for split".to_string())
             })?;
-            let left_internal = Node::Internal {
-                keys: std::mem::take(keys),
-                children: std::mem::take(children),
-            };
+
             Ok(SplitResult::SplitNodes {
-                right_node: right_internal,
-                left_node: left_internal,
-                split_key: split_key.clone(),
+                left_node: internal_node,
+                right_node,
+                split_key,
             })
         } else {
             Err(TreeError::BackendAny(
@@ -809,55 +794,61 @@ where
         mut path: Vec<(NodeId, usize)>,
         mut left: NodeId,
         mut right: NodeId,
-        mut key: K,
+        //mut key: K,
+        mut key: Vec<u8>,
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
         while let Some((parent_id, insert_pos)) = path.pop() {
-            let Some(mut node) = self.read_node(parent_id)? else {
+            let Some(mut node) = self.storage.read_node_view(parent_id)? else {
                 return Err(TreeError::NodeNotFound(
                     format!("Parent node {} not found", parent_id).to_string(),
                 ));
             };
-            let Node::Internal { keys, children } = &mut node else {
+            let NodeView::Internal { .. } = &mut node else {
                 return Err(TreeError::BackendAny(
                     "Expected internal node in propagation path".to_string(),
                 ));
             };
-            // Insert the split key and adjust children
-            keys.insert(insert_pos, key);
-            // Reclaim the original child node
-            track.reclaim(children[insert_pos]);
-            children[insert_pos] = left;
-            // Replace and insert the new children
-            children.insert(insert_pos + 1, right);
+            // reclaim the  child at insert_pos
+            // insert encoded key + right child at insert_pos
+            // replace left child at insert_pos
+            let left_child_prev = node.child_ptr_at(insert_pos)?.ok_or_else(|| {
+                TreeError::BackendAny(format!(
+                    "Child pointer at index {} in node {} is None",
+                    insert_pos, parent_id
+                ))
+            })?;
+            //let mut encode_buf = vec![0u8; S::KC::encoded_len(&key)];
+            //S::KC::encode_key(&key, &mut encode_buf)?;
+            track.reclaim(left_child_prev);
+            node.insert_separator_at(insert_pos, &key, right)?;
+            node.replace_child_at(insert_pos, left)?;
+
             // if there is no further overflow we can just propagate the update and return
-            if keys.len() <= self.max_keys {
-                return self.write_and_propagate(path, &node, track);
+            if node.keys_len() <= self.max_keys {
+                return self.write_and_propagate_view(path, &node, track);
             }
             // Handle internal node split
             let SplitResult::SplitNodes {
                 left_node,
                 right_node,
                 split_key,
-            } = self.split_internal_node(node)?;
+            } = self.split_internal_node_view(node)?;
 
-            left = self.write_node(&left_node, track)?;
-            right = self.write_node(&right_node, track)?;
+            left = self.write_node_view(&left_node, track)?;
+            right = self.write_node_view(&right_node, track)?;
             key = split_key;
         }
 
-        // We reached the root: create a new root node
-        let new_root = Node::Internal {
-            keys: vec![key],
-            children: vec![left, right],
-        };
-
-        let new_root_id = self.write_node(&new_root, track)?;
+        let mut new_root = NodeView::new_internal(0u8);
+        new_root.write_leftmost_child(left)?;
+        new_root.insert_separator_at(0, &key, right)?;
+        
+        let new_root_id = self.write_node_view(&new_root, track)?;
         track.record_staged_height(self.get_height() + 1); // Update staged height
 
         Ok(new_root_id)
     }
-
     // Search for a key in the B+ tree, acquiring an epoch guard to ensure consistency.
     pub fn search(&self, key: &K) -> Result<Option<V>, TreeError> {
         let root_id = self.get_root_id();
