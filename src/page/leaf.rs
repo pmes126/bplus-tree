@@ -226,6 +226,9 @@ impl LeafPage {
         key_enc: &[u8],
         val_bytes: &[u8],
     ) -> Result<(), PageError> {
+        if idx > self.key_count() as usize {
+            return Err(PageError::IndexOutOfBounds {});
+        }
         let mut scratch = Vec::new();
 
         // scratch
@@ -298,10 +301,195 @@ impl LeafPage {
         self.insert_at(idx, key_enc, val_bytes)
     }
 
+    /// overwrite key at index `idx` with new key bytes
+    pub fn replace_key_at(&mut self, idx: usize, key_bytes: &[u8]) -> Result<(), PageError> {
+        if idx >= self.key_count() as usize {
+            return Err(PageError::IndexOutOfBounds {});
+        }
+        let mut scratch = Vec::new();
+
+        // Plan and get delta_k
+        let kb = self.key_block(); // &[u8]
+        let (range, repl) = self.fmt().replace_plan(kb, idx, key_bytes, &mut scratch); // same idea as insert_plan
+        let delta_k = repl.len() as isize - (range.end - range.start) as isize; // usually negative
+
+        // CAPACITY
+        let keys_end_old = self.keys_end();
+        let keys_end_new = (keys_end_old as isize + delta_k) as usize;
+        let slots_end_new = keys_end_new + self.key_count() as usize * SLOT_SIZE;
+        let values_hi_new = self
+            .values_hi_usize()
+            .checked_sub(0) // no value change
+            .ok_or(PageError::PageFull {})?;
+        if slots_end_new > values_hi_new {
+            return Err(PageError::PageFull {});
+        }
+
+        // Move slot dir by Δk to stay flush
+        self.move_slot_dir(delta_k)?;
+
+        // SPLICE inside the key-block region (one copy_within + one write)
+        //
+        // key block before: |<-- range --><-- rest -->|
+        // key block after:  |<-- insert_bytes --><--range--><-- rest -->|
+        let ks = self.keys_start();
+        let old_len = self.key_block_len() as usize;
+        let new_len = (old_len as isize + delta_k) as usize;
+        self.set_key_block_len(new_len as u16);
+
+        // shift tail
+        let tail_src_start = ks + range.end;
+        let tail_src_end = ks + old_len;
+        let tail_dst_start = (tail_src_start as isize + delta_k) as usize;
+        self.buf
+            .copy_within(tail_src_start..tail_src_end, tail_dst_start);
+
+        // write replacement bytes
+        let hole_start = ks + range.start;
+
+        self.buf[hole_start..hole_start + repl.len()].copy_from_slice(&repl);
+
+        // adjust format metadata (restart offsets etc.)
+        //let kb_final = &mut self.buf[ks..ks + new_len];
+        //self.fmt().adjust_after_splice
+        Ok(())
+    }
+
+    pub fn insert_key_at(
+        &mut self,
+        idx: usize,
+        key_enc: &[u8],
+    ) -> Result<(), PageError> {
+        if idx > self.key_count() as usize {
+            return Err(PageError::IndexOutOfBounds {});
+        }
+        let mut scratch = Vec::new();
+
+        // scratch
+        // Plan and get delta_k
+        let kb = self.key_block(); // &[u8]
+        let (range, insert_bytes) = self.fmt().insert_plan(kb, idx, key_enc, &mut scratch);
+        let delta_k = insert_bytes.len() as isize;
+
+        // CAPACITY
+        let keys_end_old = self.keys_end();
+        let keys_end_new = (keys_end_old as isize + delta_k) as usize;
+        let slots_end_new = keys_end_new + (self.key_count() as usize + 1) * SLOT_SIZE;
+        if slots_end_new > self.values_hi_usize() {
+            return Err(PageError::PageFull {});
+        }
+
+        // Move slot dir by Δk to stay flush
+        self.move_slot_dir(delta_k)?;
+
+        // SPLICE inside the key-block region (one copy_within + one write)
+        //
+        // key block before: |<-- range --><-- rest -->|
+        // key block after:  |<-- insert_bytes --><--range--><-- rest -->|
+        let ks = self.keys_start();
+        let old_len = self.key_block_len() as usize;
+        let new_len = (old_len as isize + delta_k) as usize;
+        self.set_key_block_len(new_len as u16);
+
+        // shift tail
+        let tail_src_start = ks + range.start;
+        let tail_src_end = ks + old_len;
+        let tail_dst_start = (tail_src_start as isize + delta_k) as usize;
+        self.buf
+            .copy_within(tail_src_start..tail_src_end, tail_dst_start);
+
+        // write replacement bytes
+        let hole_start = ks + range.start;
+
+        self.buf[hole_start..hole_start + insert_bytes.len()].copy_from_slice(&insert_bytes);
+
+        // adjust format metadata (restart offsets etc.)
+        //let kb_final = &mut self.buf[ks..ks + new_len];
+        //self.fmt().adjust_after_splice(kb_final, range.start, delta_k, idx);
+
+        self.set_key_count(self.key_count() + 1);
+        Ok(())
+    }
+
+    /// delete key and return its encoded bytes at index `idx`
+    pub fn delete_key_at(&mut self, idx: usize, scratch: &mut Vec<u8>) -> Result<Vec<u8>, PageError> {
+        if idx >= self.key_count() as usize {
+            return Err(PageError::IndexOutOfBounds {});
+        }
+        let mut scratch = Vec::new();
+        let key = self.fmt().decode_at(self.key_block(), idx, &mut scratch).to_vec();
+
+        // Plan and get delta_k
+        let kb = self.key_block(); // &[u8]
+        let (range, repl) = self.fmt().delete_plan(kb, idx, &mut scratch); // same idea as insert_plan
+        let delta_k = repl.len() as isize - (range.end - range.start) as isize; // usually negative
+
+        // SPLICE inside the key-block region (one copy_within + one write)
+        //
+        // key block before: |<-- range --><-- rest -->|
+        // key block after:  |<-- insert_bytes --><--range--><-- rest -->|
+        let ks = self.keys_start();
+        let new_len: u16 = (self.key_block_len() as isize + delta_k)
+            .try_into()
+            .map_err(|_e| PageError::CorruptedData {
+                msg: "block length out of range".to_string(),
+            })?;
+
+        // remove value slot
+        self.slot_dir_remove(idx)?;
+        // Shift tail part
+        let tail_src_start = ks + range.end;
+        //let tail_src_end   = self.keys_end();
+        let tail_src_end = self.slots_end(); // shift everthing in the key block + slot dir
+        let tail_dst = ks + range.start;
+        self.buf.copy_within(tail_src_start..tail_src_end, tail_dst);
+
+        // adjust format metadata (restart offsets etc.)
+        //let kb_final = &mut self.buf[ks..ks + new_len];
+        //self.fmt().adjust_after_splice(kb_final, range.start, delta_k, idx);
+
+        // Adjust key block length
+        self.set_key_count(self.key_count().saturating_sub(1));
+        self.set_key_block_len(new_len);
+        Ok(key)
+    }
+
     /// overwrite value at index `idx` with new value bytes (doesn't move old bytes).
     pub fn overwrite_value_at(&mut self, idx: usize, val_bytes: &[u8]) -> Result<(), PageError> {
         let (val_off, val_len) = self.alloc_value_tail(val_bytes)?; // respects slot region
         self.overwrite_slot_at(idx, val_off, val_len)
+    }
+
+    /// Append a key, value  pair, can be used during bulk loading.
+    pub fn append(&mut self, key_enc: &[u8], val: &[u8]) -> Result<(), PageError> {
+        // plan as an append
+        let kb = self.key_block();
+        let (range, repl) = self.fmt().insert_plan(kb, self.key_count() as usize, key_enc, &mut Vec::new());
+        debug_assert_eq!(range.start, kb.len());
+        debug_assert_eq!(range.end,   kb.len());
+        let delta_k = repl.len() as isize;
+    
+        // capacity check: keys grow by delta_k; slots grow by 1; values by val.len()
+        let keys_end_new  = (self.keys_end() as isize + delta_k) as usize;
+        let slots_end_new = keys_end_new + (self.key_count() as usize + 1) * SLOT_SIZE;
+        let values_hi_new = self.values_hi_usize().checked_sub(val.len()).ok_or(PageError::PageFull {})?;
+        if slots_end_new > values_hi_new { return Err(PageError::PageFull {}); }
+    
+        // move slot dir by delta_k (kept flush)
+        self.move_slot_dir(delta_k)?;
+    
+        // append key bytes (no tail shift)
+        let ks = self.keys_start();
+        let old_len = self.key_block_len() as usize;
+        let new_len = old_len + repl.len();
+        self.buf[ks + old_len .. ks + new_len].copy_from_slice(&repl);
+        self.set_key_block_len(new_len as u16);
+    
+        // append value + write slot at the end
+        let (off, len) = self.alloc_value_tail(val)?;
+        self.write_slot(self.key_count() as usize, LeafSlot { val_off: off, val_len: len })?;
+        self.set_key_count(self.key_count() + 1);
+        Ok(())
     }
 
     /// Return the *encoded key bytes* at index `idx`.

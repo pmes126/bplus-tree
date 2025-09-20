@@ -184,7 +184,7 @@ impl NodeView {
     }
 
     #[inline]
-    pub  fn insert_separator_at(&mut self, idx: usize, key: &[u8], child_ptr: u64) -> Result<(), anyhow::Error> {
+    pub fn insert_separator_at(&mut self, idx: usize, key: &[u8], child_ptr: u64) -> Result<(), anyhow::Error> {
         match self {
             NodeView::Leaf { .. } => Err(anyhow::anyhow!(
                 "Leaf nodes do not have children, cannot insert separator"
@@ -212,9 +212,7 @@ impl NodeView {
     #[inline]
     pub fn delete_at(&mut self, idx: usize) -> Result<(), anyhow::Error> {
         match self {
-            NodeView::Internal { .. } => Err(anyhow::anyhow!(
-                "Internal nodes do not store values, cannot replace"
-            )),
+            NodeView::Internal { page } => page.delete_separator(idx).map_err(|e| anyhow::anyhow!(e)),
             NodeView::Leaf { page } => page.delete_at(idx).map_err(|e| anyhow::anyhow!(e)),
         }
     }
@@ -277,6 +275,18 @@ impl NodeView {
         }
     }
 
+    /// Replace the key at a given index in the node
+    pub fn replace_key_at(&mut self, idx: usize, new_key: &[u8]) -> Result<(), anyhow::Error> {
+        match self {
+            NodeView::Internal { page } => page
+                .replace_key_at(idx, new_key)
+                .map_err(|e| anyhow::anyhow!(e)),
+            NodeView::Leaf { page } => page
+                .replace_key_at(idx, new_key)
+                .map_err(|e| anyhow::anyhow!(e)),
+        }
+    }
+
     /// Write the leftmost child pointer of an internal node
     pub fn write_leftmost_child(&mut self, ptr: u64) -> Result<(), anyhow::Error> {
         match self {
@@ -287,6 +297,90 @@ impl NodeView {
             NodeView::Leaf { .. } => Err(anyhow::anyhow!(
                 "Leaf nodes do not have children to write"
             )),
+        }
+    }
+
+    /// Get the length of the children pointers array (only for internal nodes)
+    pub fn children_len(&self) -> Result<usize, anyhow::Error> {
+        match self {
+            NodeView::Internal { page } => Ok(page.key_count() as usize + 1), // Number of children
+            NodeView::Leaf { .. } => Err(anyhow::anyhow!(
+                "Leaf nodes do not have children, cannot get length"
+            )),
+        }
+    }
+
+    /// Push front  a  key and child pointer into an internal node
+    pub fn push_front(&mut self, key: &[u8], child_ptr: u64) -> Result<(), anyhow::Error> {
+        match self {
+            NodeView::Internal { page } => page
+                .push_front(key, child_ptr)
+                .map_err(|e| anyhow::anyhow!(e)),
+            NodeView::Leaf { .. } => Err(anyhow::anyhow!(
+                "Leaf nodes do not have children, cannot push front"
+            )),
+        }
+    }
+
+    /// Deletes a key at a given index in the node
+    pub fn delete_key_at(&mut self, idx: usize) -> Result<Vec<u8>, anyhow::Error> {
+            let mut scratch = Vec::new();
+        match self {
+            NodeView::Internal { page } => page
+                .delete_key_at(idx, &mut scratch)
+                .map_err(|e| anyhow::anyhow!(e)),
+            NodeView::Leaf { page } => page
+                .delete_key_at(idx, &mut scratch)
+                .map_err(|e| anyhow::anyhow!(e)),
+        }
+    }
+
+    pub fn insert_key_at(&mut self, idx: usize, key: &[u8]) -> Result<(), anyhow::Error> {
+        match self {
+            NodeView::Internal { page } => page
+                .insert_key_at(idx, key)
+                .map_err(|e| anyhow::anyhow!(e)),
+            NodeView::Leaf { page } => page
+                .insert_key_at(idx, key)
+                .map_err(|e| anyhow::anyhow!(e)),
+        }
+    }
+
+    /// Delete child pointer at a given index in an internal node
+    pub fn delete_child_at(&mut self, idx: usize) -> Result<(), anyhow::Error> {
+        match self {
+            NodeView::Internal { page } => page
+                .delete_child_at(idx)
+                .map_err(|e| anyhow::anyhow!(e)),
+            NodeView::Leaf { .. } => Err(anyhow::anyhow!(
+                "Leaf nodes do not have children, cannot delete"
+            )),
+        }
+    }
+
+    ///  Merge another node into this one. The other node is consumed.
+    pub fn merge_into(&mut self, other: &mut NodeView) -> Result<(), anyhow::Error> {
+        match (self, other) {
+            (NodeView::Internal { page: self_page }, NodeView::Internal { page: other_page }) => {
+                let other_key_count = other_page.key_count();
+                let mut scratch = Vec::new();
+                for i in 0..other_key_count {
+                    let key = other_page.get_key_at(i as usize, &mut scratch)?;
+                    let child_ptr = other_page.read_child_at(i as usize + 1)?;
+                    self_page.append(key, child_ptr)?
+                }
+                Ok(())
+            }
+            (NodeView::Leaf { page: self_page }, NodeView::Leaf { page: other_page }) => {
+                let other_key_count = other_page.key_count();
+                let mut scratch = Vec::new();
+                for i in 0..other_key_count {
+                    let (k, v) = other_page.get_kv_at(i as usize, &mut scratch)?;
+                    self_page.append(k, v)?;
+                }
+                Ok(())
+            }
+            _ => Err(anyhow::anyhow!("Cannot merge nodes of different types")),
         }
     }
 }

@@ -237,6 +237,73 @@ impl InternalPage {
         Ok(())
     }
 
+    /// Append a separator key and its right child at the far right.
+    /// `sep_key_enc` is the encoded key bytes (already order-preserving).
+    pub fn append(&mut self, sep_key_enc: &[u8], right_child: u64) -> Result<(), PageError> {
+        let idx = self.key_count() as usize; // append at end
+        self.insert_separator(idx, sep_key_enc, right_child)?;
+        Ok(())
+    }
+
+    /// Insert a new key at index `idx` (0..=key_count), shifting existing keys to the right.
+    pub fn insert_key_at(&mut self,
+        idx: usize, 
+        key: &[u8],
+    ) -> Result<(), PageError> {
+        if idx > self.key_count() as usize {
+            return Err(PageError::IndexOutOfBounds {});
+        }
+        let mut scratch = Vec::new();
+
+        // Plan splice in key block
+        let (range, repl) = self
+            .fmt()
+            .insert_plan(self.key_block(), idx, key, &mut scratch);
+        let delta_k = repl.len() as isize - (range.end - range.start) as isize;
+
+        // Capacity checks
+        let keys_end_old = self.keys_end();
+        let keys_end_new = (keys_end_old as isize + delta_k) as usize;
+        let children_end_new = keys_end_new + (self.key_count() as usize) * CHILD_ID_SIZE;
+        if children_end_new > PAGE_SIZE {
+            return Err(PageError::PageFull {});
+        }
+
+        let new_keys_end = (self.keys_end() as isize + delta_k) as usize;
+        let new_children_len = (self.key_count() as usize) * CHILD_ID_SIZE;
+        let new_used = new_keys_end + new_children_len;
+        if new_used > PAGE_SIZE {
+            return Err(PageError::PageFull {});
+        }
+
+        // 3) move children array by Δk to keep it flush after key block
+        self.move_child_dir(delta_k)?;
+
+        // 4) splice key block in-place (one copy_within + one copy)
+        let ks = self.keys_start();
+        let old_len = self.key_block_len() as usize;
+        let new_len = (old_len as isize + delta_k) as usize;
+        self.set_key_block_len(new_len as u16);
+
+        let tail_src_start = ks + range.end;
+        let tail_src_end = ks + old_len;
+        let tail_dst = (tail_src_start as isize + delta_k) as usize;
+
+        self.buf.copy_within(tail_src_start..tail_src_end, tail_dst);
+
+        let hole_start = ks + range.start;
+        self.buf[hole_start..hole_start + repl.len()].copy_from_slice(&repl);
+
+        // 5) bump key_count
+        self.set_key_count(self.key_count() + 1);
+
+        // 6) let format adjust metadata (restart offsets etc.)
+        //let kb_final = &mut self.buf[ks..ks + new_len];
+        //self.fmt().adjust_after_splice(kb_final, range.start, delta_k, idx);
+
+        Ok(())
+    }
+
     /// Delete the separator at index `idx` (and child at `idx+1`)
     pub fn delete_separator(&mut self, idx: usize) -> Result<(), PageError> {
         if idx >= self.key_count() as usize {
@@ -282,10 +349,126 @@ impl InternalPage {
         Ok(())
     }
 
-    /// Deletes the key at index `key_count() -1 `  without changing the child - used as a part of
-    /// a split to fix the left page invariants.
-    pub fn pop_last_key(&mut self, scratch: &mut Vec<u8>) -> Result<Vec<u8>, PageError> {
-        let idx = self.key_count() as usize - 1;
+    /// Push front a new separator key (encoded bytes) and child pointer, shifting existing
+    /// keys/children to the right. Used by rebalancing operations.
+    pub fn push_front(
+        &mut self,
+        key: &[u8],
+        child: u64,
+    ) -> Result<(), PageError> {
+        let idx = 0;
+        let mut scratch = Vec::new();
+
+        // Plan splice in key block
+        let (range, repl) = self
+            .fmt()
+            .insert_plan(self.key_block(), idx, key, &mut scratch);
+        let delta_k = repl.len() as isize - (range.end - range.start) as isize;
+
+        // Capacity checks
+        let keys_end_old = self.keys_end();
+        let keys_end_new = (keys_end_old as isize + delta_k) as usize;
+        let children_end_new = keys_end_new + (self.key_count() as usize) * CHILD_ID_SIZE;
+        if children_end_new > PAGE_SIZE {
+            return Err(PageError::PageFull {});
+        }
+
+        let new_keys_end = (self.keys_end() as isize + delta_k) as usize;
+        let new_children_len = (self.key_count() as usize) * CHILD_ID_SIZE;
+        let new_used = new_keys_end + new_children_len;
+        if new_used > PAGE_SIZE {
+            return Err(PageError::PageFull {});
+        }
+
+        // 3) move children array by Δk to keep it flush after key block
+        self.move_child_dir(delta_k)?;
+
+        // 4) splice key block in-place (one copy_within + one copy)
+        let ks = self.keys_start();
+        let old_len = self.key_block_len() as usize;
+        let new_len = (old_len as isize + delta_k) as usize;
+        self.set_key_block_len(new_len as u16);
+
+        let tail_src_start = ks + range.end;
+        let tail_src_end = ks + old_len;
+        let tail_dst = (tail_src_start as isize + delta_k) as usize;
+
+        self.buf.copy_within(tail_src_start..tail_src_end, tail_dst);
+
+        let hole_start = ks + range.start;
+        self.buf[hole_start..hole_start + repl.len()].copy_from_slice(&repl);
+
+        // 5) insert child pointer at idx (shift right by one)
+        self.children_shift_right_from(idx);
+        self.write_child_at(idx, child)?;
+
+        // 6) bump key_count
+        self.set_key_count(self.key_count() + 1);
+
+        // 7) let format adjust metadata (restart offsets etc.)
+        //let kb_final = &mut self.buf[ks..ks + new_len];
+        //self.fmt().adjust_after_splice(kb_final, range.start, delta_k, idx);
+
+        Ok(())
+    }
+
+    /// overwrite key at index `idx` with new key bytes
+    pub fn replace_key_at(&mut self, idx: usize, key_bytes: &[u8]) -> Result<(), PageError> {
+        if idx >= self.key_count() as usize {
+            return Err(PageError::IndexOutOfBounds {});
+        }
+        let mut scratch = Vec::new();
+
+        // Plan and get delta_k
+        let kb = self.key_block(); // &[u8]
+        let (range, repl) = self.fmt().replace_plan(kb, idx, key_bytes, &mut scratch); // same idea as insert_plan
+        let delta_k = repl.len() as isize - (range.end - range.start) as isize; // usually negative
+
+        // CAPACITY
+        let keys_end_new = (self.keys_end() as isize + delta_k) as usize;
+        let children_end_new = keys_end_new + (self.key_count() as usize) * CHILD_ID_SIZE;
+        if children_end_new > PAGE_SIZE {
+            return Err(PageError::PageFull {});
+        }
+
+        let new_keys_end = (self.keys_end() as isize + delta_k) as usize;
+        let new_children_len = (self.key_count() as usize) * CHILD_ID_SIZE;
+        let new_used = new_keys_end + new_children_len;
+        if new_used > PAGE_SIZE {
+            return Err(PageError::PageFull {});
+        }
+
+        // 3) move children array by Δk to keep it flush after key block
+        self.move_child_dir(delta_k)?;
+
+        // SPLICE inside the key-block region (one copy_within + one write)
+        //
+        // key block before: |<-- range --><-- rest -->|
+        // key block after:  |<-- insert_bytes --><--range--><-- rest -->|
+        let ks = self.keys_start();
+        let old_len = self.key_block_len() as usize;
+        let new_len = (old_len as isize + delta_k) as usize;
+        self.set_key_block_len(new_len as u16);
+
+        // shift tail
+        let tail_src_start = ks + range.end;
+        let tail_src_end = ks + old_len;
+        let tail_dst_start = (tail_src_start as isize + delta_k) as usize;
+        self.buf
+            .copy_within(tail_src_start..tail_src_end, tail_dst_start);
+
+        // write replacement bytes
+        let hole_start = ks + range.start;
+
+        self.buf[hole_start..hole_start + repl.len()].copy_from_slice(&repl);
+
+        // adjust format metadata (restart offsets etc.)
+        //let kb_final = &mut self.buf[ks..ks + new_len];
+        //self.fmt().adjust_after_splice
+        Ok(())
+    }
+
+    pub fn delete_key_at(&mut self, idx: usize, scratch: &mut Vec<u8>) -> Result<Vec<u8>, PageError> {
         let key = self.fmt().decode_at(self.key_block(), idx, scratch).to_vec();
 
         // PLAN for key-block deletion
@@ -313,6 +496,13 @@ impl InternalPage {
         Ok(key)
     }
 
+    /// Deletes the key at index `key_count() -1 `  without changing the child - used as a part of
+    /// a split to fix the left page invariants.
+    pub fn pop_last_key(&mut self, scratch: &mut Vec<u8>) -> Result<Vec<u8>, PageError> {
+        let idx = self.key_count() as usize - 1;
+        self.delete_key_at(idx, scratch)
+    }
+
     /// Insert a new separator key (encoded bytes) and child pointer, finding the correct slot.
     pub fn insert_encoded(&mut self, key: &[u8], child: u64) -> Result<(), PageError> {
         let idx = match self.find_slot(key, &mut Vec::new()) {
@@ -321,6 +511,7 @@ impl InternalPage {
         };
         self.insert_separator(idx, key, child)
     }
+
 
     // -------- child pointer array manipulation --------
 
@@ -350,11 +541,27 @@ impl InternalPage {
     pub fn write_leftmost_child(&mut self, child: u64) -> Result<(), PageError> {
         self.write_child_at(0, child)
     }
+    
+    /// Read the leftmost child pointer (at index 0).
+    #[inline]
+    pub fn read_leftmost_child(&mut self) -> Result<u64, PageError> {
+        self.read_child_at(0)
+    }
 
     /// Replace the child pointer at idx with the provided child pointer
     #[inline]
     pub fn replace_child_at(&mut self, idx: usize, child: u64) -> Result<(), PageError> {
         self.write_child_at(idx, child)
+    }
+
+    /// Delete the child pointer at idx 
+    #[inline]
+    pub fn delete_child_at(&mut self, idx: usize) -> Result<(), PageError> {
+        if idx > self.key_count() as usize {
+            return Err(PageError::IndexOutOfBounds {});
+        }
+        self.children_shift_left_from(idx);
+        Ok(())
     }
 
     fn children_shift_right_from(&mut self, from: usize) {

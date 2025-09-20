@@ -144,6 +144,21 @@ impl KeyBlockFormat for RawFormat {
         (self.entry_range(block, idx), Vec::new())
     }
 
+    #[inline]
+    fn replace_plan(
+        &self,
+        block: &[u8],
+        idx: usize,
+        new_key: &[u8],
+        _scratch: &mut Vec<u8>,
+    ) -> (std::ops::Range<usize>, Vec<u8>) {
+        let r = self.entry_range(block, idx);
+        let mut bytes = Vec::with_capacity(2 + new_key.len());
+        bytes.extend_from_slice(&(new_key.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(new_key);
+        (r, bytes)
+    }
+
     fn adjust_after_splice(
         &self,
         _block_final: &mut [u8],

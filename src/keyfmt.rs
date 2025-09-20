@@ -64,6 +64,14 @@ pub trait KeyBlockFormat: Send + Sync + 'static {
         idx: usize,
         scratch: &mut Vec<u8>,
     ) -> (std::ops::Range<usize>, Vec<u8>);
+    /// PLAN: return the byte range in the `block` to replace, and the exact bytes to insert there.
+    fn  replace_plan(
+        &self,
+        block: &[u8],
+        idx: usize,
+        new_key: &[u8],
+        scratch: &mut Vec<u8>,
+    ) -> (std::ops::Range<usize>, Vec<u8>);
     /// After the splice was applied to the page buffer, adjust any **format metadata**
     /// inside the final key-block (e.g., restart offsets) affected by the splice.
     /// - `splice_at` is the start byte within the key-block where you inserted/replaced
