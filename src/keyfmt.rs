@@ -26,7 +26,8 @@ pub trait KeyBlockFormat: Send + Sync + 'static {
         cmp: fn(&[u8], &[u8]) -> core::cmp::Ordering,
     ) -> Result<usize, usize>;
     /// Decode the i-th *encoded key bytes* into `scratch` and return a view.
-    fn decode_at<'s>(&self, block: &'s [u8], i: usize, scratch: &'s mut Vec<u8>) -> &'s [u8];
+    //fn decode_at<'s>(&self, block: &'s [u8], i: usize, scratch: &mut Vec<u8>) -> &'s [u8];
+    fn decode_at(&self, block: &[u8], i: usize, scratch: &mut Vec<u8>) -> &[u8];
     /// Decodes the length of an entry and returns the Range of bytes for the entry.
     fn entry_range(&self, block: &[u8], idx: usize) -> std::ops::Range<usize>;
     /// Count the number of entries in the block.

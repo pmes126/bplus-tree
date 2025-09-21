@@ -170,7 +170,12 @@ impl KeyBlockFormat for RawFormat {
     }
 
     #[inline]
-    fn decode_at<'s>(&self, blk: &'s [u8], i: usize, _scratch: &'s mut Vec<u8>) -> &'s [u8] {
+    //fn decode_at<'s>(&self, blk: &'s [u8], i: usize, _scratch: &mut Vec<u8>) -> &'s [u8] {
+    //    let r = self.entry_range(blk, i);
+    //    // SAFETY: caller holds block; we return a subslice into it
+    //    unsafe { &*(&blk[r.start + LEN_SIZE..r.end] as *const [u8]) }
+    //}
+    fn decode_at(&self, blk: &[u8], i: usize, _scratch: &mut Vec<u8>) -> &[u8] {
         let r = self.entry_range(blk, i);
         // SAFETY: caller holds block; we return a subslice into it
         unsafe { &*(&blk[r.start + LEN_SIZE..r.end] as *const [u8]) }

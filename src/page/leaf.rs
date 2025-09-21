@@ -20,6 +20,10 @@ use crate::layout::PAGE_SIZE; // const PAGE_SIZE: usize
 use crate::page::LEAF_NODE_TAG;
 use crate::page::PageError;
 
+use std::fmt;
+use std::fmt::Debug;
+use std::convert::TryInto;
+
 #[inline]
 fn read_u16_le(buf: &[u8], off: usize) -> u16 {
     u16::from_le_bytes([buf[off], buf[off + 1]])
@@ -58,7 +62,7 @@ const BUFFER_SIZE: usize = PAGE_SIZE - HEADER_SIZE;
 
 // Borrowed/mutable view over a leaf page buffer.
 #[repr(C)]
-#[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
+#[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes)]
 pub struct LeafPage {
     header: Header,
     buf: [u8; BUFFER_SIZE],
@@ -152,7 +156,7 @@ impl LeafPage {
     }
 
     // Resolve runtime key format
-    pub fn fmt(&self) -> &dyn KeyBlockFormat {
+    pub fn key_fmt(&self) -> &dyn KeyBlockFormat {
         resolve_key_format(self.keyfmt_id())
             .expect("unknown key format id; register it in keyfmt::resolve_key_format")
     }
@@ -161,14 +165,14 @@ impl LeafPage {
     fn key_run<'s>(&'s self) -> PageKeyRun<'s> {
         PageKeyRun {
             body: self.key_block(),
-            fmt: self.fmt(),
+            fmt: self.key_fmt(),
         }
     }
 
     // ---- search ----
     /// Lower bound on encoded key bytes; returns insertion index.
     pub fn lower_bound(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
-        self.fmt().seek(self.key_block(), key_enc, scratch)
+        self.key_fmt().seek(self.key_block(), key_enc, scratch)
     }
 
     /// Lower bound on encoded key bytes; returns insertion index.
@@ -178,7 +182,7 @@ impl LeafPage {
         scratch: &mut Vec<u8>,
         cmp: fn(&[u8], &[u8]) -> core::cmp::Ordering,
     ) -> Result<usize, usize> {
-        self.fmt()
+        self.key_fmt()
             .seek_with_cmp(self.key_block(), key_enc, scratch, cmp)
     }
 
@@ -234,7 +238,7 @@ impl LeafPage {
         // scratch
         // Plan and get delta_k
         let kb = self.key_block(); // &[u8]
-        let (range, insert_bytes) = self.fmt().insert_plan(kb, idx, key_enc, &mut scratch);
+        let (range, insert_bytes) = self.key_fmt().insert_plan(kb, idx, key_enc, &mut scratch);
         let delta_k = insert_bytes.len() as isize;
 
         // CAPACITY
@@ -310,7 +314,7 @@ impl LeafPage {
 
         // Plan and get delta_k
         let kb = self.key_block(); // &[u8]
-        let (range, repl) = self.fmt().replace_plan(kb, idx, key_bytes, &mut scratch); // same idea as insert_plan
+        let (range, repl) = self.key_fmt().replace_plan(kb, idx, key_bytes, &mut scratch); // same idea as insert_plan
         let delta_k = repl.len() as isize - (range.end - range.start) as isize; // usually negative
 
         // CAPACITY
@@ -368,7 +372,7 @@ impl LeafPage {
         // scratch
         // Plan and get delta_k
         let kb = self.key_block(); // &[u8]
-        let (range, insert_bytes) = self.fmt().insert_plan(kb, idx, key_enc, &mut scratch);
+        let (range, insert_bytes) = self.key_fmt().insert_plan(kb, idx, key_enc, &mut scratch);
         let delta_k = insert_bytes.len() as isize;
 
         // CAPACITY
@@ -417,11 +421,11 @@ impl LeafPage {
             return Err(PageError::IndexOutOfBounds {});
         }
         let mut scratch = Vec::new();
-        let key = self.fmt().decode_at(self.key_block(), idx, &mut scratch).to_vec();
+        let key = self.key_fmt().decode_at(self.key_block(), idx, &mut scratch).to_vec();
 
         // Plan and get delta_k
         let kb = self.key_block(); // &[u8]
-        let (range, repl) = self.fmt().delete_plan(kb, idx, &mut scratch); // same idea as insert_plan
+        let (range, repl) = self.key_fmt().delete_plan(kb, idx, &mut scratch); // same idea as insert_plan
         let delta_k = repl.len() as isize - (range.end - range.start) as isize; // usually negative
 
         // SPLICE inside the key-block region (one copy_within + one write)
@@ -462,7 +466,7 @@ impl LeafPage {
     pub fn append(&mut self, key_enc: &[u8], val: &[u8]) -> Result<(), PageError> {
         // plan as an append
         let kb = self.key_block();
-        let (range, repl) = self.fmt().insert_plan(kb, self.key_count() as usize, key_enc, &mut Vec::new());
+        let (range, repl) = self.key_fmt().insert_plan(kb, self.key_count() as usize, key_enc, &mut Vec::new());
         debug_assert_eq!(range.start, kb.len());
         debug_assert_eq!(range.end,   kb.len());
         let delta_k = repl.len() as isize;
@@ -494,12 +498,12 @@ impl LeafPage {
     pub fn get_key_at<'s>(
         &'s self,
         idx: usize,
-        scratch: &'s mut Vec<u8>,
+        scratch: &mut Vec<u8>,
     ) -> Result<&'s [u8], PageError> {
         if idx >= self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
         }
-        Ok(self.fmt().decode_at(self.key_block(), idx, scratch))
+        Ok(self.key_fmt().decode_at(self.key_block(), idx, scratch))
     }
 
     /// Return (encoded_key, value_bytes) at index `idx`.
@@ -552,7 +556,7 @@ impl LeafPage {
 
         // Plan and get delta_k
         let kb = self.key_block(); // &[u8]
-        let (range, repl) = self.fmt().delete_plan(kb, idx, &mut scratch); // same idea as insert_plan
+        let (range, repl) = self.key_fmt().delete_plan(kb, idx, &mut scratch); // same idea as insert_plan
         let delta_k = repl.len() as isize - (range.end - range.start) as isize; // usually negative
 
         // SPLICE inside the key-block region (one copy_within + one write)
@@ -740,7 +744,7 @@ impl LeafPage {
         // 1) ask the format to produce left/right key-block bytes
         let mut left_kb = Vec::new();
         let mut right_kb = Vec::new();
-        self.fmt()
+        self.key_fmt()
             .split_into(kb, split_idx, &mut left_kb, &mut right_kb);
 
         // 2) BEFORE we change key_count, snapshot the slots for the right side
@@ -786,7 +790,7 @@ impl LeafPage {
         // 8) Separator = first key of right page (encoded key bytes)
         let mut scratch = Vec::new();
         let sep = self
-            .fmt()
+            .key_fmt()
             .decode_at(right.key_block(), 0, &mut scratch)
             .to_vec();
 
@@ -803,6 +807,53 @@ struct PageKeyRun<'a> {
 impl<'a> PageKeyRun<'a> {
     fn seek(&self, needle: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
         self.fmt.seek(self.body, needle, scratch)
+    }
+}
+
+impl fmt::Debug for LeafPage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let keys_end      = self.keys_end();
+        let slots_base    = self.slots_base();
+        let slots_end     = self.slots_end();
+        let values_hi     = self.values_hi_usize();
+        let key_count     = self.key_count() as usize;
+        let key_block_len = self.key_block_len() as usize;
+        let alternate = f.alternate();
+
+        let mut dbg = f.debug_struct("LeafPage");
+        dbg.field("fmt_id", &self.keyfmt_id())
+           .field("keys", &key_count)
+           .field("key_block_len", &key_block_len)
+           .field("keys_end", &keys_end)
+           .field("slots_base", &slots_base)
+           .field("slots_end", &slots_end)
+           .field("values_hi", &values_hi)
+           .field("free_bytes", &values_hi.saturating_sub(slots_end));
+
+        // Pretty mode: show a tiny preview
+        if alternate {
+            // first few keys (encoded previews)
+            let fmt_impl = self.key_fmt();
+            let mut scratch = Vec::new();
+            let mut previews: Vec<String> = Vec::new();
+            let sample = key_count.min(4);
+            for i in 0..sample {
+                let k = fmt_impl.decode_at(self.key_block(), i, &mut scratch);
+                previews.push(k.iter().map(|b| format!("{:02x}", b)).collect());
+            }
+            dbg.field("keys_preview(hex)", &previews);
+
+            // first few value lengths
+            let mut v_lens: Vec<usize> = Vec::new();
+            for i in 0..sample {
+                if let Ok(slot) = self.read_slot(i) {
+                    v_lens.push(slot.val_len as usize);
+                }
+            }
+            dbg.field("value_lens", &v_lens);
+        }
+
+        dbg.finish()
     }
 }
 

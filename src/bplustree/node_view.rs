@@ -1,17 +1,26 @@
 use crate::page::{InternalPage, LeafPage};
 use crate::codec::{KeyCodec, ValueCodec};
+
 use anyhow::Result;
+use thiserror::Error;
+use std::fmt;
 
 pub type NodeId = u64;
 
+#[derive(Error, Debug)]
+pub enum NodeViewError {
+    #[error("Wrong node kind for this operation")]
+    WrongKind,
+}
+
 /// A view of a B+ tree node stored in a page
-#[derive(Clone, Debug)]
 pub enum NodeView {
     Internal { page: InternalPage },
     Leaf { page: LeafPage },
 }
 
 impl NodeView {
+    // --- Initialization ---
     #[inline]
     pub fn new_internal(format_id: u8) -> Self {
         NodeView::Internal {
@@ -36,6 +45,37 @@ impl NodeView {
         matches!(self, NodeView::Leaf { .. })
     }
 
+    // --- Safe downcasting ---
+    pub fn as_leaf(&self) -> Option<&LeafPage> {
+        match self {
+            NodeView::Leaf { page } => Some(page),
+            _ => None,
+        }
+    }
+
+    pub fn as_leaf_mut(&mut self) -> Option<&mut LeafPage> {
+        match self {
+            NodeView::Leaf { page } => Some(page),
+            _ => None,
+        }
+    }
+    
+    pub fn as_internal(&self) -> Option<&InternalPage> {
+        match self {
+            NodeView::Internal { page } => Some(page),
+            _ => None,
+        }
+    }
+
+    pub fn as_internal_mut(&mut self) -> Option<&mut InternalPage> {
+        match self {
+            NodeView::Internal { page } => Some(page),
+            _ => None,
+        }
+    }
+
+    // --- Operations ---
+    // Get the number of keys in the node
     #[inline]
     pub fn keys_len(&self) -> usize {
         match self {
@@ -44,46 +84,36 @@ impl NodeView {
         }
     }
 
-    pub fn value_bytes_at(&self, i: usize) -> Result<Option<&[u8]>> {
+    // Get the value bytes at index i without copying
+    pub fn value_bytes_at(&self, i: usize) -> Result<&[u8]> {
         match self {
-            NodeView::Internal { .. } => Ok(None), // Internal nodes do not store values
+            NodeView::Internal { .. } => Err(anyhow::anyhow!(NodeViewError::WrongKind)), // Internal nodes do not store values
             NodeView::Leaf { page } => {
                 let value = page.read_value_at(i)?;
-                Ok(Some(value))
-            }
-        }
-    }
-
-    pub fn get_child_for_key(&self, _probe: &[u8]) -> Result<Option<(NodeId, usize)>> {
-        match self {
-            NodeView::Leaf { .. } => Ok(None), // Leaf nodes do not have children
-            // Internal nodes: find the child pointer for the given key
-            NodeView::Internal { .. } => {
-                Ok(None) // Placeholder: Implement child pointer search
+                Ok(value)
             }
         }
     }
 
     /// Get the child pointer at index i
     #[inline]
-    pub fn child_ptr_at(&self, idx: usize) -> Result<Option<u64>> {
+    pub fn child_ptr_at(&self, idx: usize) -> Result<u64> {
         match self {
             NodeView::Internal { page } => page
                 .read_child_at(idx)
-                .map(Some)
                 .map_err(|e| anyhow::anyhow!(e)),
-            NodeView::Leaf { .. } => Ok(None), // Leaf pages don't have children, but we return 0
+            NodeView::Leaf { .. } => Err(anyhow::anyhow!(NodeViewError::WrongKind)), // Leaf pages don't have children, but we return 0
         }
     }
 
     /// Get the value at index i
     #[inline]
-    pub fn value_at(&self, i: usize) -> Result<Option<Vec<u8>>> {
+    pub fn value_at(&self, i: usize) -> Result<Vec<u8>> {
         match self {
-            NodeView::Internal { .. } => Ok(None), // Internal nodes do not store values
+            NodeView::Internal { .. } => Err(anyhow::anyhow!(NodeViewError::WrongKind)), // Internal nodes do not store values
             NodeView::Leaf { page } => {
                 let value = page.read_value_at(i)?;
-                Ok(Some(value.to_vec()))
+                Ok(value.to_vec())
             }
         }
     }
@@ -100,6 +130,20 @@ impl NodeView {
             NodeView::Leaf { page } => {
                 let key = page.get_key_at(i, &mut scratch)?;
                 Ok(key.to_vec())
+            }
+        }
+    }
+
+    /// Get the key bytes at index i without copying  
+    #[inline]
+    pub fn key_bytes_at(&self, i: usize) -> Result<&[u8]> {
+        let mut scratch = Vec::new();
+        match self {
+            NodeView::Internal { page } => {
+                Ok(page.get_key_at(i, &mut scratch)?)
+            }
+            NodeView::Leaf { page } => {
+                Ok(page.get_key_at(i, &mut scratch)?)
             }
         }
     }
@@ -232,12 +276,12 @@ impl NodeView {
         match self {
             NodeView::Internal { page } => {
                 //println!("Splitting internal node at index {} with format id {}", idx, page.fmt().format_id() );
-                let mut new_page = InternalPage::new(page.fmt().format_id());
+                let mut new_page = InternalPage::new(page.key_fmt().format_id());
                 page.split_off_into(idx, &mut new_page).map_err(|e| anyhow::anyhow!(e))?;
                 Ok(NodeView::Internal { page: new_page })
             }
             NodeView::Leaf { page } => {
-                let mut new_page = LeafPage::new(page.fmt().format_id());
+                let mut new_page = LeafPage::new(page.key_fmt().format_id());
                 page.split_off_into(idx, &mut new_page)
                     .map_err(|e| anyhow::anyhow!(e))?;
                 Ok(NodeView::Leaf { page: new_page })
@@ -336,6 +380,7 @@ impl NodeView {
         }
     }
 
+    /// Inserts a key at a given index in the node
     pub fn insert_key_at(&mut self, idx: usize, key: &[u8]) -> Result<(), anyhow::Error> {
         match self {
             NodeView::Internal { page } => page
@@ -418,6 +463,15 @@ impl NodeView {
     }
 }
 
+impl fmt::Debug for NodeView {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            NodeView::Leaf { page }     => page.fmt(f),
+            NodeView::Internal { page } => page.fmt(f),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,13 +494,13 @@ mod tests {
         // Verify that leaf1 now contains all key-value pairs
         assert_eq!(leaf1.entry_count(), 4);
         assert_eq!(leaf1.key_at(0)?, b"key1");
-        assert_eq!(leaf1.value_at(0)?, Some(b"value1".to_vec()));
+        assert_eq!(leaf1.value_at(0)?, b"value1".to_vec());
         assert_eq!(leaf1.key_at(1)?, b"key2");
-        assert_eq!(leaf1.value_at(1)?, Some(b"value2".to_vec()));
+        assert_eq!(leaf1.value_at(1)?, b"value2".to_vec());
         assert_eq!(leaf1.key_at(2)?, b"key3");
-        assert_eq!(leaf1.value_at(2)?, Some(b"value3".to_vec()));
+        assert_eq!(leaf1.value_at(2)?, b"value3".to_vec());
         assert_eq!(leaf1.key_at(3)?, b"key4");
-        assert_eq!(leaf1.value_at(3)?, Some(b"value4".to_vec()));
+        assert_eq!(leaf1.value_at(3)?, b"value4".to_vec());
 
         let mut internal1 = NodeView::new_internal(0u8);
         internal1.write_leftmost_child(0)?; // Leftmost child
@@ -459,19 +513,14 @@ mod tests {
         internal1.merge_into(&mut internal2)?;
         assert_eq!(internal1.entry_count(), 4);
         assert_eq!(internal1.key_at(0)?, b"key2");
-        assert_eq!(internal1.child_ptr_at(0)?, Some(0)); // Leftmost child
+        assert_eq!(internal1.child_ptr_at(0)?, 0); // Leftmost child
         assert_eq!(internal1.key_at(1)?, b"key4");
-        assert_eq!(internal1.child_ptr_at(1)?, Some(1));
+        assert_eq!(internal1.child_ptr_at(1)?, 1);
         assert_eq!(internal1.key_at(2)?, b"key6");
-        assert_eq!(internal1.child_ptr_at(2)?, Some(2));
+        assert_eq!(internal1.child_ptr_at(2)?, 2);
         assert_eq!(internal1.key_at(3)?, b"key8");
-        assert_eq!(internal1.child_ptr_at(3)?, Some(3));
-        assert_eq!(internal1.child_ptr_at(4)?, Some(4)); // Rightmost child
-        // Child pointers are one more than keys
-        // So for key at index 0, child pointer is at index 0
-        //  For key at index 1, child pointer is at index 1 
-        //  For key at index 2, child pointer is at index 2
-        //  For key at index 3, child pointer is at index 3
+        assert_eq!(internal1.child_ptr_at(3)?, 3);
+        assert_eq!(internal1.child_ptr_at(4)?, 4); // Rightmost child
 
         Ok(())
     }
