@@ -380,6 +380,7 @@ impl NodeView {
         }
     }
 
+    /// Inserts a key at a given index in the node
     pub fn insert_key_at(&mut self, idx: usize, key: &[u8]) -> Result<(), anyhow::Error> {
         match self {
             NodeView::Internal { page } => page
@@ -520,11 +521,6 @@ mod tests {
         assert_eq!(internal1.key_at(3)?, b"key8");
         assert_eq!(internal1.child_ptr_at(3)?, 3);
         assert_eq!(internal1.child_ptr_at(4)?, 4); // Rightmost child
-        // Child pointers are one more than keys
-        // So for key at index 0, child pointer is at index 0
-        //  For key at index 1, child pointer is at index 1 
-        //  For key at index 2, child pointer is at index 2
-        //  For key at index 3, child pointer is at index 3
 
         Ok(())
     }

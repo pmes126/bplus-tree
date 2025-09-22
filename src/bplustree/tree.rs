@@ -1068,7 +1068,7 @@ where
                 },
             ) => {
                 if left_sibling.keys_len() > self.min_leaf_keys {
-                    let borrowed_key = left_sibling.key_at(left_sibling.keys_len() - 1)?.to_vec();
+                    let borrowed_key = left_sibling.key_at(left_sibling.keys_len() - 1)?;
                     let borrowed_value = left_sibling.value_bytes_at(left_sibling.keys_len() - 1)?;
                     node.insert_at(0, &borrowed_key, borrowed_value)?;
                     left_sibling.delete_at(left_sibling.keys_len() - 1)?;
@@ -1088,10 +1088,10 @@ where
                 },
             ) => {
                 if left_sibling.keys_len() > self.min_internal_keys {
-                    let borrowed_key = left_sibling.key_at(left_sibling.keys_len() - 1)?.to_vec();
+                    let borrowed_key = left_sibling.key_at(left_sibling.keys_len() - 1)?;
                     let borrowed_child = left_sibling.child_ptr_at(left_sibling.children_len()? - 1)?;
-                    let separator_key = parent_node.key_at(parent_key_idx)?;
-                    node.push_front(separator_key.as_bytes(), borrowed_child)?;
+                    let separator_key = parent_node.key_bytes_at(parent_key_idx)?;
+                    node.push_front(separator_key, borrowed_child)?;
                     
                     left_sibling.delete_at(left_sibling.keys_len() - 1)?;
                     // Update the parent key with the borrowed key
@@ -1146,12 +1146,12 @@ where
             ) => {
                 if right_sibling.keys_len() > self.min_leaf_keys {
                     // Borrow from the right sibling
-                    let borrowed_key = right_sibling.key_at(0)?;
+                    let borrowed_key = right_sibling.key_bytes_at(0)?;
                     let borrowed_value = right_sibling.value_bytes_at(0)?;
                     node.insert_at(node.keys_len(), borrowed_key.as_bytes(), borrowed_value.as_bytes())?;
                     right_sibling.delete_at(0)?;
                     
-                    let separator_key = right_sibling.key_at(0)?;
+                    let separator_key = right_sibling.key_bytes_at(0)?;
 
                     // Update the separator key with the first key  of the right sibling
                     parent_node.replace_key_at(parent_key_idx, separator_key.as_bytes())?;
@@ -1171,7 +1171,7 @@ where
                     // Steps for Internal node are diffent we need to swap the first key of the
                     // right sibling with the separator from parent
                     // 1. Get the first key of the right sibling and the separator key from parent
-                    let separator_key = parent_node.key_at(parent_key_idx)?.to_vec();
+                    let separator_key = parent_node.key_at(parent_key_idx)?;
                     let right_first_key = right_sibling.delete_key_at(0)?;
                     // 2. Update the parent key with the first key of the right sibling
                     parent_node.replace_key_at(parent_key_idx, right_first_key.as_bytes())?;
