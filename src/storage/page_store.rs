@@ -54,6 +54,7 @@ impl PageStorage for PageStore {
     }
 
     fn read_page(&self, page_id: u64, target: &mut [u8; PAGE_SIZE]) -> Result<(), std::io::Error> {
+        println!("Reading page_id: {}", page_id);
         let offset = page_id * PAGE_SIZE as u64;
         self.file.read_exact_at(target, offset)?;
         Ok(())

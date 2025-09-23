@@ -310,9 +310,9 @@ impl InternalPage {
 
     /// Push front a separator key and it's *left* child at idx 0. Used by borrowing ops.
     pub fn push_front(&mut self, sep_key_enc: &[u8], left_child: u64) -> Result<(), PageError> {
-        self.insert_key_at(0, sep_key_enc)?;
         self.children_shift_right_from(0);
         self.write_child_at(0, left_child)?;
+        self.insert_key_at(0, sep_key_enc)?;
         Ok(())
     }
 
@@ -336,6 +336,9 @@ impl InternalPage {
         // write replacement (often empty)
         //let hole_start = ks + range.start;
         //self.buf[hole_start .. hole_start + repl.len()].copy_from_slice(&repl);
+        
+        // remove child at idx+1
+        self.children_shift_left_from(idx + 1);
 
         let tail_src_start = ks + range.end;
         let tail_src_end = ks + old_len + self.children_len(); // include children to move them
@@ -344,12 +347,6 @@ impl InternalPage {
         self.buf
             .copy_within(tail_src_start..tail_src_end, tail_dst_start);
         self.set_key_block_len(new_len as u16);
-
-        // remove child at idx+1
-        self.children_shift_left_from(idx + 1);
-
-        // move children by Δk
-        self.move_child_dir(delta_k)?;
 
         // dec key_count
         self.set_key_count(self.key_count() - 1);
@@ -650,7 +647,6 @@ impl fmt::Debug for InternalPage {
         let keys_end      = self.keys_end();
         let children_base = self.children_base();
         let children_end  = self.children_end();
-        let alternate = f.alternate();
 
         let mut dbg = f.debug_struct("InternalPage");
         dbg.field("fmt_id", &self.keyfmt_id())
@@ -662,7 +658,6 @@ impl fmt::Debug for InternalPage {
            .field("children_end", &children_end)
            .field("used_bytes", &children_end);
 
-        if alternate {
             let fmt_impl = self.key_fmt();
             let mut scratch = Vec::new();
 
@@ -674,7 +669,14 @@ impl fmt::Debug for InternalPage {
                 previews.push(k.iter().map(|b| format!("{:02x}", b)).collect());
             }
             dbg.field("keys_preview(hex)", &previews);
-        }
+            // children previews
+            let mut previews: Vec<String> = Vec::new();
+            let sample = key_count.min(10);
+            for i in 0..sample {
+                let k = self.read_child_at(i);
+                previews.push(k.iter().map(|b| format!("{}", b)).collect());
+            }
+            dbg.field("children_preview", &previews);
 
         dbg.finish()
     }

@@ -269,6 +269,7 @@ impl LeafPage {
         let tail_src_start = ks + range.start;
         let tail_src_end = ks + old_len;
         let tail_dst_start = (tail_src_start as isize + delta_k) as usize;
+        println!("tail_src_start={} tail_src_end={} tail_dst_start={}", tail_src_start, tail_src_end, tail_dst_start);
         self.buf
             .copy_within(tail_src_start..tail_src_end, tail_dst_start);
 
