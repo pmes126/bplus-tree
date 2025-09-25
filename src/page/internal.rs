@@ -310,9 +310,9 @@ impl InternalPage {
 
     /// Push front a separator key and it's *left* child at idx 0. Used by borrowing ops.
     pub fn push_front(&mut self, sep_key_enc: &[u8], left_child: u64) -> Result<(), PageError> {
+        self.insert_key_at(0, sep_key_enc)?;
         self.children_shift_right_from(0);
         self.write_child_at(0, left_child)?;
-        self.insert_key_at(0, sep_key_enc)?;
         Ok(())
     }
 
@@ -663,7 +663,7 @@ impl fmt::Debug for InternalPage {
 
             // key previews
             let mut previews: Vec<String> = Vec::new();
-            let sample = key_count.min(4);
+            let sample = key_count;
             for i in 0..sample {
                 let k = fmt_impl.decode_at(self.key_block(), i, &mut scratch);
                 previews.push(k.iter().map(|b| format!("{:02x}", b)).collect());
@@ -671,7 +671,7 @@ impl fmt::Debug for InternalPage {
             dbg.field("keys_preview(hex)", &previews);
             // children previews
             let mut previews: Vec<String> = Vec::new();
-            let sample = key_count.min(10);
+            let sample = (key_count+1).min(10);
             for i in 0..sample {
                 let k = self.read_child_at(i);
                 previews.push(k.iter().map(|b| format!("{}", b)).collect());

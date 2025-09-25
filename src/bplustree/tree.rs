@@ -1007,7 +1007,6 @@ where
                 if idx > 0
                     && self.try_borrow_from_left(&mut node, &mut parent_node, idx, track)?
                 {
-                    println!("Borrowed from left sibling");
                     return self.write_and_propagate_view(path, &parent_node, track);
                 }
                 if (idx < parent_node.keys_len())
@@ -1020,7 +1019,6 @@ where
                 if let Some(id) =
                     self.try_merge_with_left(&mut node, &mut parent_node, idx, track)?
                 {
-                    println!("Merged with left sibling");
                     merged = Some(id);
                 } else if let Some(id) =
                     self.try_merge_with_right(&mut node, &mut parent_node, idx, track)?
@@ -1067,9 +1065,6 @@ where
         if idx == 0 {
             return Ok(false);
         }
-        println!("Trying to borrow from left sibling");
-        println!("Node before borrowing from left: {:?}", node);
-
         let parent_key_idx = idx - 1; // The key in the parent node that separates the two children
         let left_child_idx = idx - 1; // The index of the left sibling in the children array
         let left_sibling_id = parent_node.child_ptr_at(left_child_idx)?;
@@ -1078,7 +1073,6 @@ where
                 format!("Left sibling id: {} not found", left_sibling_id).to_string(),
             ));
         };
-        println!("Left node before  lending: {:?}", left_sibling);
         match (&mut left_sibling, &mut *node) {
             (
                 NodeView::Leaf {
@@ -1112,17 +1106,11 @@ where
                     let borrowed_key = left_sibling.key_bytes_at(left_sibling.keys_len() - 1)?;
                     let borrowed_child = left_sibling.child_ptr_at(left_sibling.children_len()? - 1)?;
                     let separator_key = parent_node.key_bytes_at(parent_key_idx)?;
-                    println!("Borrowed key from left: {:?}", borrowed_key);
-                    println!("Borrowed child from left: {:?}", borrowed_child);
-                    println!("node before pushfront: {:?}", node);
                     node.push_front(separator_key, borrowed_child)?;
-                    println!("node after pushfront: {:?}", node);
 
                     // Update the parent key with the borrowed key
                     parent_node.replace_key_at(parent_key_idx, borrowed_key)?;
-                    println!("left sibling beefore  delete_at: {:?}", left_sibling);
                     left_sibling.delete_at(left_sibling.keys_len() - 1)?;
-                    println!("left sibling after  delete_at: {:?}", left_sibling);
                 } else {
                     return Ok(false);
                 }
@@ -1138,15 +1126,11 @@ where
 
         track.reclaim(left_sibling_id);
         parent_node.replace_child_at(left_child_idx, new_left_node_id)?;
+        
         let current_child_id = parent_node.child_ptr_at(idx)?;
         track.reclaim(current_child_id);
 
-        println!("Replaced child at idx {} with {}", idx, new_node_id);
         parent_node.replace_child_at(idx, new_node_id)?;
-        println!("Internal parent node after replacing child: {:?}", parent_node);
-
-        println!("Left node after  lending: {:?}", left_sibling);
-        println!("Node after borrowing from left: {:?}", node);
 
         Ok(true)
     }
@@ -1268,14 +1252,10 @@ where
                     return Ok(None); // Cannot merge, total keys exceed max keys
                 }
                 // Merge the current node with the left sibling
-                println!("Merging with left sibling");
-                println!("left Node berfore merging: {:?}", left_sibling);
-                println!("right Node berfore merging: {:?}", node);
                 let merged_node = self.merge_nodes_view(&mut left_sibling, node)?;
                 let merged_node_id = self.write_node_view(merged_node, track)?;
-                println!("Result after merging: {:?}", merged_node);
-                
-                track.reclaim(parent_node.child_ptr_at(idx)?); // Reclaim the left sibling node
+
+                track.reclaim(parent_node.child_ptr_at(idx)?); // Reclaim the right sibling node
                 parent_node.delete_child_at(idx)?;
                 track.reclaim(left_sibling_id); // Reclaim the left sibling node
                 parent_node.replace_child_at(left_child_idx, merged_node_id)?; // Update the left sibling with the merged node ID
@@ -1298,17 +1278,11 @@ where
                     return Ok(None); // Cannot merge, total keys exceed max keys
                 }
                 // The key that separates
-                // The two children has to be removed and added to the left sibling
+                // The two children has to be removed and appended to the left sibling
                 let seperator_key = parent_node.delete_key_at(parent_key_idx)?;
-                left_sibling.insert_separator_at(node.keys_len(), seperator_key.as_bytes(), node.child_ptr_at(0)?)?;
-                
-                println!("Merging with left sibling");
-                println!("left Node berfore merging: {:?}", left_sibling);
-                println!("right Node berfore merging: {:?}", node);
+                left_sibling.insert_separator_at(node.keys_len() + 1, seperator_key.as_bytes(), node.child_ptr_at(0)?)?;
                 // Merge the left sibling with the current node
                 let merged_node = self.merge_nodes_view(&mut left_sibling, node)?;
-                println!("Result after merging: {:?}", merged_node);
-
                 let merged_node_id = self.write_node_view(merged_node, track)?;
                 // Update the parent node
                 track.reclaim(parent_node.child_ptr_at(idx)?); // Reclaim the left sibling node
