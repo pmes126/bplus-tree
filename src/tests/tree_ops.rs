@@ -499,8 +499,9 @@ fn insert_duplicate_keys_should_overwrite_value() -> Result<()> {
 
     let order = 4; // B+ tree order
     let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
+    let fmt = crate::keyfmt::KeyFormat::Raw(crate::keyfmt::raw::RawFormat);
     let tree = SharedBPlusTree::new(BPlusTree::<String, String, FileStore<PageStore>>::new(
-        store, order,
+        store, order, fmt,
     )?);
     let mut root_id = tree.get_root_id();
 

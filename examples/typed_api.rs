@@ -34,3 +34,32 @@ fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+//use crate::api::{
+//  encoding::{KeyEncodingId, KeyConstraints},
+//  typed::TypedClientGeneric as Client,
+//  inproc::{InprocRaw, BytesKv},
+//};
+//
+//// 1) Spin up your bytes B+-tree (engine) however you already do it
+//let engine = Arc::new(MyBytesTree::open("bplustree.db")?); // implement BytesKv for this type
+//
+//// 2) Register it in the in-proc transport with pinned encoding metadata
+//let raw = InprocRaw::new()
+//    .register(
+//        "users",
+//        KeyEncodingId::BeU64,
+//        KeyConstraints { fixed_key_len: true, key_len: 8, max_key_len: 8 },
+//        engine,
+//    );
+//
+//// 3) Build a typed client over the in-proc transport
+//let db = Client::with_raw(raw);
+//
+//// 4) Bind with types matching the tree’s encoding
+//let users = db.bind::<u64, String>("users").await?;
+//
+//// 5) Use it like normal
+//users.put(2u64, "SomeString".to_owned()).await?;
+//let v = users.get(2u64).await?;
+

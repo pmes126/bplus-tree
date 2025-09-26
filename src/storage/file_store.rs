@@ -108,32 +108,10 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
     }
 }
 
-impl<S: PageStorage, K: Debug, V: Debug> NodeStorage<K, V> for FileStore<S>
+impl<S: PageStorage> NodeStorage for FileStore<S>
 where
     S: Send + Sync + 'static,
-    K: Clone + Ord,
-    V: Clone,
-    (): KeyCodecDefault<K> + ValueCodecDefault<V>,
 {
-    type KC = DefaultKC<K>;
-    type VC = DefaultVC<V>;
-
-    fn read_node(&self, page_id: u64) -> Result<Option<Node<K, V>>, StorageError> {
-        let mut buf = [0u8; PAGE_SIZE];
-        self.store.read_page(page_id, &mut buf)?;
-
-        Ok(Some(<DefaultNodeCodec<Self::KC, Self::VC> as NodeCodec<
-            K,
-            V,
-        >>::decode(&buf)?))
-    }
-
-    fn write_node(&self, node: &Node<K, V>) -> Result<u64, StorageError> {
-        let buf = <DefaultNodeCodec<Self::KC, Self::VC> as NodeCodec<K, V>>::encode(node)?;
-        let res = self.store.write_page(&buf)?;
-        Ok(res)
-    }
-
     fn read_node_view(&self, page_id: u64) -> Result<Option<NodeView>, StorageError> {
         let mut buf = [0u8; PAGE_SIZE];
         self.store.read_page(page_id, &mut buf)?;

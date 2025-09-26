@@ -2,8 +2,6 @@ use crate::bplustree::tree::{BaseVersion, SharedBPlusTree, StagedMetadata};
 use crate::storage::{MetadataStorage, NodeStorage};
 use anyhow::Result;
 
-use std::fmt::Debug;
-
 enum WriteOp<K, V> {
     Insert(K, V),
     Delete(K),
@@ -16,26 +14,20 @@ pub enum TxnStatus {
 
 pub const MAX_COMMIT_RETRIES: usize = 10;
 
-pub struct WriteTransaction<K, V>
-where
-    K: Clone + Ord,
-    V: Clone,
+pub struct WriteTransaction
 {
     staged_update: Option<StagedMetadata>, // Staged metadata root ID
     tree_base_version: BaseVersion,        // Base version of the tree at transaction start
-    changes: Vec<WriteOp<K, V>>,
+    changes: Vec<WriteOp<Vec<u8>, Vec<u8>>>,
     reclaimed_nodes: Vec<u64>, // Pages to be reclaimed
     initial_root_id: u64,      // Current root ID of the tree
 }
 
-impl<K: Debug, V: Debug> WriteTransaction<K, V>
-where
-    K: Clone + Ord,
-    V: Clone,
+impl WriteTransaction
 {
-    pub fn new<S>(tree: SharedBPlusTree<K, V, S>) -> Self
+    pub fn new<S>(tree: SharedBPlusTree<S>) -> Self
     where
-        S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+        S: NodeStorage + MetadataStorage + Send + Sync + 'static,
     {
         Self {
             staged_update: {
@@ -63,21 +55,21 @@ where
             .map_or(self.initial_root_id, |res| res.root_id)
     }
 
-    pub fn insert(&mut self, key: K, value: V) -> Result<()> {
-        self.changes.push(WriteOp::Insert(key, value));
+    pub fn insert<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V) -> Result<()> {
+        self.changes.push(WriteOp::Insert(key.as_ref().to_vec(), value.as_ref().to_vec()));
         Ok(())
     }
 
     // Stage only.
-    pub fn delete(&mut self, key: &K) -> Result<()> {
-        self.changes.push(WriteOp::Delete(key.clone()));
+    pub fn delete<K: AsRef<[u8]>>(&mut self, key: K) -> Result<()> {
+        self.changes.push(WriteOp::Delete(key.as_ref().to_vec()));
         Ok(())
     }
 
     // Replay staged ops from base/root; tree handles encoding inside.
-    pub fn commit<S>(&mut self, tree: &SharedBPlusTree<K, V, S>) -> Result<TxnStatus>
+    pub fn commit<S>(&mut self, tree: &SharedBPlusTree<S>) -> Result<TxnStatus>
     where
-        S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+        S: NodeStorage + MetadataStorage + Send + Sync + 'static,
     {
         for _ in 0..MAX_COMMIT_RETRIES {
             // Rebuild speculative state by replaying changes from the saved base root.

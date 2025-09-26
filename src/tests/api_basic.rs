@@ -57,3 +57,18 @@ fn api_write_txn_batch_commit() {
     assert_eq!(db.get(b"k1").unwrap(), None);
     assert_eq!(db.get(b"k2").unwrap(), Some(b"v2".to_vec()));
 }
+
+use crate::api::{DbClient, encoding::{KeyEncodingId, KeyConstraints}};
+
+
+#[tokio::test]
+async fn smoke_put_get_u64_utf8() {
+let db = DbClient::connect("http://127.0.0.1:50051").await.unwrap();
+
+
+// Assuming tree already exists with key_encoding=be_u64
+let users = db.bind::<u64, String>("users").await.unwrap();
+users.put(42u64, "val".to_string()).await.unwrap();
+let got = users.get(42u64).await.unwrap();
+assert_eq!(got.as_deref(), Some("val"));
+}

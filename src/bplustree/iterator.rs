@@ -10,11 +10,9 @@ struct TraversalFrame {
     index: usize,
 }
 
-pub struct BPlusTreeIter<'a, K, V, S>
+pub struct BPlusTreeIter<'a, S>
 where
-    K: Clone + Ord,
-    V: Clone,
-    S: NodeStorage<K, V>,
+    S: NodeStorage,
 {
     storage: &'a S,
     current_leaf: Option<Node<K, V>>,
@@ -32,11 +30,9 @@ struct LeafCursor<'a, K, V> {
     pos: usize,
 }
 
-impl<'a, K, V, S> BPlusTreeIter<'a, K, V, S>
+impl<'a, S> BPlusTreeIter<'a, S>
 where
-    K: Clone + Ord,
-    V: Clone,
-    S: NodeStorage<K, V>,
+    S: NodeStorage,
 {
     pub fn new(
         storage: &'a S,

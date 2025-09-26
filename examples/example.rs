@@ -1,6 +1,7 @@
 use self::storage::file_store::FileStore;
-use crate::bplustree::{transaction, tree::BPlusTree, tree::SharedBPlusTree};
 use ::bplustree::*;
+use crate::api::DbBuilder;
+
 use reqwest::Error;
 use storage::page_store::PageStore;
 use tempfile::TempDir;
@@ -8,15 +9,16 @@ use tokio::time::{Duration, interval};
 
 #[tokio::main]
 async fn main() {
-    let order = 128;
     let dir = TempDir::new().unwrap();
 
     let file_path = dir.path().join("tree.data");
+    let store = FileStore::<PageStore>::new(&file_path).unwrap();
 
-    let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path).unwrap();
-    let tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order).unwrap();
-    let st = SharedBPlusTree::new(tree);
-    let mut tx = transaction::WriteTransaction::new(st.clone());
+    let db = DbBuilder::new(store)
+        .order(64)
+        .build_typed::<u64, String>().unwrap();
+    
+    let mut tx = db.begin_write().unwrap();
 
     let mut ticker = interval(Duration::from_secs(2));
     let url = "https://httpbin.org/get";
@@ -31,9 +33,9 @@ async fn main() {
             Err(err) => eprintln!("Error on request #{}: {}", i, err),
         }
     }
-    let _ = tx.commit(&st);
+    let _ = tx.commit(db.get_inner());
 
-    let res = st.traverse().unwrap();
+    let res = db.get_inner().traverse().unwrap();
     for (k, v) in &res {
         println!("key {:?}, value: {:?}", k, v)
     }
