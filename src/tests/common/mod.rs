@@ -33,8 +33,9 @@ where
     V: Clone + Debug,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + Clone + 'static,
 {
+    let fmt = crate::keyfmt::KeyFormat::Raw(crate::keyfmt::raw::RawFormat);
     let tree =
-        BPlusTree::<K, V, S>::new(storage.clone(), order).expect("Failed to create BPlusTree");
+        BPlusTree::<K, V, S>::new(storage.clone(), order, fmt).expect("Failed to create BPlusTree");
 
     TestHarness {
         tree: std::sync::Arc::new(tree),
@@ -69,8 +70,9 @@ pub fn make_tree(
 ) -> Result<SharedBPlusTree<u64, String, FileStore<PageStore>>, anyhow::Error> {
     let file_path = dir.path().join("tree.data");
 
+    let fmt = crate::keyfmt::KeyFormat::Raw(crate::keyfmt::raw::RawFormat);
     let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-    let tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
+    let tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order, fmt)?;
     Ok(SharedBPlusTree::new(tree))
 }
 
@@ -85,9 +87,10 @@ where
     (): KeyCodecDefault<K> + ValueCodecDefault<V>,
 {
     let file_path = dir.path().join("tree.data");
+    let fmt = crate::keyfmt::KeyFormat::Raw(crate::keyfmt::raw::RawFormat);
 
     let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-    let tree = BPlusTree::<K, V, FileStore<PageStore>>::new(store, order)?;
+    let tree = BPlusTree::<K, V, FileStore<PageStore>>::new(store, order, fmt)?;
     Ok(SharedBPlusTree::new(tree))
 }
 

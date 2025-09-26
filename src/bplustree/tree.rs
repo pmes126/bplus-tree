@@ -13,7 +13,10 @@ use crate::metadata;
 use crate::metadata::{
     Metadata, {METADATA_PAGE_1, METADATA_PAGE_2},
 };
+use crate::page::LeafPage;
 use crate::storage::{MetadataStorage, NodeStorage, StorageError};
+use crate::keyfmt::KeyFormat;
+
 use std::result::Result;
 use thiserror::Error;
 use zerocopy::AsBytes;
@@ -72,19 +75,14 @@ pub enum TreeError {
 pub enum CommitError {
     #[error("Commit failed after {0} retries")]
     MaxRetries(usize),
-
     #[error("Commit aborted due to node not found: {0}")]
     NodeNotFound(String),
-
     #[error("Commit aborted due to IO error: {0}")]
     Io(#[from] std::io::Error),
-
     #[error("Commit aborted due to codec error: {0}")]
     Codec(#[from] CodecError),
-
     #[error("Commit aborted due to root mismatch, try rebasing")]
     RebaseRequired,
-
     #[error("Test Commit error")]
     Injected,
 }
@@ -361,24 +359,21 @@ where
     }
 }
 
-// ------------------- BPlusTree implementation -----------------
+// -------------------------- BPlusTree implementation ----------------------------
 impl<K: Debug, V: Debug, S> BPlusTree<K, V, S>
 where
     K: Clone + Ord,
     V: Clone,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
-    pub fn new(storage: S, order: usize) -> Result<BPlusTree<K, V, S>, TreeError> {
-        let root_node = Node::Leaf {
-            keys: Vec::with_capacity(order),
-            values: Vec::with_capacity(order),
-        };
+    pub fn new(storage: S, order: usize, keyfmt_id: KeyFormat) -> Result<BPlusTree<K, V, S>, TreeError> {
+        let root_node = NodeView::Leaf { page: LeafPage::new(keyfmt_id.id()), };
         if order < 2 {
             return Err(TreeError::BadInput("Order must be at least 2".to_string()));
         }
         // Initialize the root node ID
         let init_id = storage
-            .write_node(&root_node)
+            .write_node_view(&root_node)
             .map_err(|e| TreeError::BackendAny(e.to_string()))?;
         let init_txn_id = 1; // Initial transaction ID
         let md1 = Metadata {
@@ -507,7 +502,7 @@ where
         Ok(new_id)
     }
 
-    // ------------- Path finding logic -------------
+    // ------------------------------ Path finding logic --------------------------------
     // Returns the path of where a key should be inserted, without decoding the nodes for
     // efficiency.
     pub fn get_insertion_path(
@@ -562,7 +557,7 @@ where
         }
     }
 
-    // ----------- Insertion logic and split handling -----------
+    // -------------------------- Insertion logic and split handling ----------------------------
     // Inserts a key-value pair into the B+ tree, acquiring an epoch guard to ensure consistency.
     pub fn insert(
         &self,
@@ -616,7 +611,7 @@ where
         if leaf_node.keys_len() > self.max_keys {
             self.handle_leaf_split(path, leaf_node, track)
         } else {
-            self.write_and_propagate_view(path, &leaf_node, track)
+            self.write_and_propagate(path, &leaf_node, track)
         }
     }
 
@@ -689,24 +684,8 @@ where
         }
     }
 
-    // Writes a node and propagates the update to the parent nodes.
-    fn write_and_propagate(
-        &self,
-        path: Vec<(u64, usize)>,
-        node: &Node<K, V>,
-        track: &mut impl TxnTracker,
-    ) -> Result<NodeId, TreeError> {
-        let new_node_id = self.write_node(node, track)?;
-        if path.is_empty() {
-            Ok(new_node_id)
-        } else {
-            let new_root = self.propagate_node_update(path, new_node_id, track)?;
-            Ok(new_root)
-        }
-    }
-
     // Writes a node view and propagates the update to the parent nodes.
-    fn write_and_propagate_view(
+    fn write_and_propagate(
         &self,
         path: Vec<(u64, usize)>,
         node: &NodeView,
@@ -716,47 +695,13 @@ where
         if path.is_empty() {
             Ok(new_node_id)
         } else {
-            let new_root = self.propagate_node_view_update(path, new_node_id, track)?;
+            let new_root = self.propagate_node_update(path, new_node_id, track)?;
             Ok(new_root)
         }
     }
 
-    // Propagates an update to the parent nodes after a node has been updated or split.
-    fn propagate_node_update(
-        &self,
-        mut path: Vec<(NodeId, usize)>,
-        mut updated_child_id: NodeId,
-        track: &mut impl TxnTracker,
-    ) -> Result<NodeId, TreeError> {
-        while let Some((parent_id, insert_pos)) = path.pop() {
-            let mut parent_node = self.read_node(parent_id)?.ok_or_else(|| {
-                TreeError::NodeNotFound(format!("Parent node {} not found", parent_id).to_string())
-            })?;
-            let Node::Internal {
-                ref mut children, ..
-            } = parent_node
-            else {
-                return Err(TreeError::BackendAny(
-                    "Expected internal node while updating parents".to_string(),
-                ));
-            };
-            if insert_pos >= children.len() {
-                return Err(TreeError::BackendAny(format!(
-                    "Insert position {} out of bounds for children in node {}",
-                    insert_pos, parent_id
-                )));
-            }
-            // Reclaim the original child node and update the child pointer
-            track.reclaim(children[insert_pos]);
-            children[insert_pos] = updated_child_id;
-            // Propagate up the path
-            updated_child_id = self.write_node(&parent_node, track)?;
-        }
-        Ok(updated_child_id) // Return the new root ID
-    }
-
     // Propagates an update to a node view
-    fn propagate_node_view_update(
+    fn propagate_node_update(
         &self,
         mut path: Vec<(NodeId, usize)>,
         mut updated_child_id: NodeId,
@@ -819,7 +764,7 @@ where
 
             // if there is no further overflow we can just propagate the update and return
             if node.keys_len() <= self.max_keys {
-                return self.write_and_propagate_view(path, &node, track);
+                return self.write_and_propagate(path, &node, track);
             }
             // Handle internal node split
             let SplitResult::SplitNodes {
@@ -971,7 +916,7 @@ where
 
         // no underflow if the node has enough keys or it is the root node
         if leaf_node.entry_count() >= self.min_leaf_keys || path.is_empty() {
-            let new_root_id = self.write_and_propagate_view(path, &leaf_node, track)?;
+            let new_root_id = self.write_and_propagate(path, &leaf_node, track)?;
             return Ok(DeleteResult::Deleted(new_root_id));
         }
 
@@ -1007,12 +952,12 @@ where
                 if idx > 0
                     && self.try_borrow_from_left(&mut node, &mut parent_node, idx, track)?
                 {
-                    return self.write_and_propagate_view(path, &parent_node, track);
+                    return self.write_and_propagate(path, &parent_node, track);
                 }
                 if (idx < parent_node.keys_len())
                     && self.try_borrow_from_right(&mut node, &mut parent_node, idx, track)?
                 {
-                    return self.write_and_propagate_view(path, &parent_node, track);
+                    return self.write_and_propagate(path, &parent_node, track);
                 }
                 // Try to merge with left or right sibling
                 let mut merged = None;
@@ -1036,7 +981,7 @@ where
                                 track.record_staged_height(self.get_height().saturating_sub(1));
                                 return Ok(parent_node.child_ptr_at(0)?);
                             } else {
-                                return self.write_and_propagate_view(path, &parent_node, track);
+                                return self.write_and_propagate(path, &parent_node, track);
                             }
                         }
                         // Continue handling underflow
@@ -1044,7 +989,7 @@ where
                         continue;
                     } else {
                         // Parent node didn't underflow, just write the updated parent node
-                        return self.write_and_propagate_view(path, &parent_node, track);
+                        return self.write_and_propagate(path, &parent_node, track);
                     }
                 }
             }

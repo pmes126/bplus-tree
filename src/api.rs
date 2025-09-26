@@ -13,6 +13,7 @@ use std::marker::PhantomData;
 use crate::bplustree::iterator::BPlusTreeIter;
 use crate::bplustree::tree::{BPlusTree, BaseVersion, SharedBPlusTree, StagedMetadata};
 use crate::storage::{MetadataStorage, NodeStorage};
+use crate::keyfmt::KeyFormat;
 
 pub use crate::bplustree::transaction::WriteTransaction as WriteTxn;
 
@@ -53,7 +54,8 @@ where
 {
     /// Build from a storage backend and a B+tree order.
     pub fn new(storage: S, order: usize) -> Result<Self> {
-        let tree = BPlusTree::<Vec<u8>, Vec<u8>, S>::new(storage, order)?;
+        let fmt = crate::keyfmt::KeyFormat::Raw(crate::keyfmt::raw::RawFormat);
+        let tree = BPlusTree::<Vec<u8>, Vec<u8>, S>::new(storage, order, fmt)?;
         Ok(Self {
             inner: SharedBPlusTree::new(tree),
         })
@@ -254,15 +256,18 @@ where
 // ============================================================
 
 /// Options for opening the embedded DB.
-#[derive(Clone, Debug)]
 pub struct DbOptions {
     /// B+-tree order / max fanout (children per internal node).
     pub order: usize,
+    pub key_fmt: KeyFormat,
     // room for more: page_size, fsync, cache_cap, prealloc, etc.
 }
 impl Default for DbOptions {
     fn default() -> Self {
-        Self { order: 64 }
+        Self { 
+            order: 64,
+            key_fmt: KeyFormat::Raw(crate::keyfmt::raw::RawFormat),
+        }
     }
 }
 
@@ -308,7 +313,8 @@ impl<S> DbBuilder<S> {
         V: Clone + Debug,
         S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
     {
-        let tree = BPlusTree::<K, V, S>::new(self.storage, self.opts.order)?;
+        let fmt = crate::keyfmt::KeyFormat::Raw(crate::keyfmt::raw::RawFormat);
+        let tree = BPlusTree::<K, V, S>::new(self.storage, self.opts.order, fmt)?;
         Ok(TypedDb::from_tree(tree))
     }
 }
