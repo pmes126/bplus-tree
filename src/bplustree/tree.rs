@@ -732,6 +732,43 @@ where
         Ok(updated_child_id) // Return the new root ID
     }
 
+    // Propagates an update to a node view
+    fn propagate_node_view_update(
+        &self,
+        mut path: Vec<(NodeId, usize)>,
+        mut updated_child_id: NodeId,
+        track: &mut impl TxnTracker,
+    ) -> Result<NodeId, TreeError> {
+        while let Some((parent_id, insert_pos)) = path.pop() {
+            let mut parent_node = self.storage.read_node_view(parent_id)?.ok_or_else(|| {
+                TreeError::NodeNotFound(format!("Parent node {} not found", parent_id).to_string())
+            })?;
+
+            let NodeView::Internal { .. } = parent_node else {
+                return Err(TreeError::BackendAny(
+                    "Expected internal node while updating parents".to_string(),
+                ));
+            };
+            if insert_pos > parent_node.keys_len() + 1 {
+                return Err(TreeError::BackendAny(format!(
+                    "Insert position {} out of bounds for children in node {}",
+                    insert_pos, parent_id
+                )));
+            }
+            // Reclaim the original child node and update the child pointer
+            track.reclaim(parent_node.child_ptr_at(insert_pos)?.ok_or_else(|| {
+                TreeError::BackendAny(format!(
+                    "Child pointer at index {} in node {} is None",
+                    insert_pos, parent_id
+                ))
+            })?);
+            parent_node.replace_child_at(insert_pos, updated_child_id)?;
+            // Propagate up the path
+            updated_child_id = self.write_node_view(&parent_node, track)?;
+        }
+        Ok(updated_child_id) // Return the new root ID
+    }
+
     // Insert into a parent node, the path is the collection of the nodes that are parent to the
     // leaf, try inserting in a lifo manner.
     fn propagate_split(
@@ -771,7 +808,7 @@ where
                 left_node,
                 right_node,
                 split_key,
-            } = self.split_internal_node(node)?;
+            } = self.split_internal_node_view(node)?;
 
             left = self.write_node_view(&left_node, track)?;
             right = self.write_node_view(&right_node, track)?;
