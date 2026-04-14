@@ -1,11 +1,11 @@
 #[derive(Clone)]
 pub struct EmbeddedService {
-    store: std::sync::Arc<Store>,
+    store: std::sync::Arc<Database>,
 }
 
 impl EmbeddedService {
     pub async fn open(path: &std::path::Path) -> Result<Self, ApiError> {
-        let store = Store::open(path).map_err(|e| ApiError::Internal(e.to_string()))?;
+        let store = crate::database::open(path).map_err(|e| ApiError::Internal(e.to_string()))?;
         Ok(Self { store: std::sync::Arc::new(store) })
     }
 }

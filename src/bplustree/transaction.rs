@@ -1,31 +1,42 @@
+//! Write transaction for the B+ tree with optimistic concurrency control.
+
 use crate::bplustree::tree::{BaseVersion, SharedBPlusTree, StagedMetadata};
-use crate::storage::{NodeStorage, HasEpoch, PageStorage};
+use crate::storage::{HasEpoch, NodeStorage, PageStorage};
 use anyhow::Result;
 
+/// A single buffered write operation.
 enum WriteOp<K, V> {
     Insert(K, V),
     Delete(K),
 }
 
+/// Indicates whether a transaction committed successfully or was aborted.
 pub enum TxnStatus {
+    /// Transaction was committed.
     Committed,
+    /// Transaction was aborted after exceeding the maximum retry count.
     Aborted,
 }
 
+/// Maximum number of CAS retries before aborting a transaction.
 pub const MAX_COMMIT_RETRIES: usize = 10;
 
-pub struct WriteTransaction
-{
-    staged_update: Option<StagedMetadata>, // Staged metadata root ID
-    tree_base_version: BaseVersion,        // Base version of the tree at transaction start
+/// Buffers a set of writes and commits them atomically via optimistic CAS.
+pub struct WriteTransaction {
+    /// Speculative metadata staged during this transaction.
+    staged_update: Option<StagedMetadata>,
+    /// Committed metadata pointer captured at transaction start.
+    tree_base_version: BaseVersion,
     changes: Vec<WriteOp<Vec<u8>, Vec<u8>>>,
-    reclaimed_nodes: Vec<u64>, // Pages to be reclaimed
-    initial_root_id: u64,      // Current root ID of the tree
+    /// Node IDs pending reclamation after a successful commit.
+    reclaimed_nodes: Vec<u64>,
+    /// Root node ID captured at transaction start.
+    initial_root_id: u64,
 }
 
-impl WriteTransaction
-{
-    pub fn new<S,P>(tree: SharedBPlusTree<S, P>) -> Self
+impl WriteTransaction {
+    /// Creates a new transaction rooted at the tree's current committed state.
+    pub fn new<S, P>(tree: SharedBPlusTree<S, P>) -> Self
     where
         S: NodeStorage + HasEpoch + Send + Sync + 'static,
         P: PageStorage + Send + Sync + 'static,
@@ -48,26 +59,29 @@ impl WriteTransaction
             reclaimed_nodes: Vec::new(),
         }
     }
-    // Get the root ID of the intermediate staged tree, if there is one, otherwise return the
-    // current root ID
+    /// Returns the root ID of the staged tree, or the initial root if no writes have been staged.
     pub fn get_root_id(&self) -> u64 {
         self.staged_update
             .as_ref()
             .map_or(self.initial_root_id, |res| res.root_id)
     }
 
+    /// Buffers an insert of the given key-value pair.
     pub fn insert<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V) -> Result<()> {
-        self.changes.push(WriteOp::Insert(key.as_ref().to_vec(), value.as_ref().to_vec()));
+        self.changes.push(WriteOp::Insert(
+            key.as_ref().to_vec(),
+            value.as_ref().to_vec(),
+        ));
         Ok(())
     }
 
-    // Stage only.
+    /// Buffers a delete of the given key.
     pub fn delete<K: AsRef<[u8]>>(&mut self, key: K) -> Result<()> {
         self.changes.push(WriteOp::Delete(key.as_ref().to_vec()));
         Ok(())
     }
 
-    // Replay staged ops from base/root; tree handles encoding inside.
+    /// Replays buffered operations and attempts to commit via CAS, retrying on conflicts.
     pub fn commit<S, P>(&mut self, tree: &SharedBPlusTree<S, P>) -> Result<TxnStatus>
     where
         S: NodeStorage + HasEpoch + Send + Sync + 'static,
@@ -110,8 +124,7 @@ impl WriteTransaction
             let staged_update = match staged_update {
                 Some(su) => su,
                 None => {
-                    // No ops: try to publish a no-op metadata (same root) if your API requires it,
-                    // or just return early. Here we no-op-commit to keep the flow consistent.
+                    // No ops were applied; commit a no-op to keep the flow consistent.
                     StagedMetadata {
                         root_id: current_root,
                         height: tree.get_height(),
@@ -122,7 +135,7 @@ impl WriteTransaction
 
             let res = tree.try_commit(&self.tree_base_version, staged_update);
             if res.is_ok() {
-                // Publish all reclaimed pages after success.
+                // Register reclaimed pages for deferred freeing.
                 for id in reclaimed_nodes_local.drain(..) {
                     tree.epoch_mgr().add_reclaim_candidate(0, id);
                 }
@@ -130,7 +143,7 @@ impl WriteTransaction
                 self.changes.clear();
                 return Ok(TxnStatus::Committed);
             } else {
-                // Conflict: clean up speculative nodes, refresh base+root, and retry.
+                // CAS conflict: discard speculative nodes, refresh base and root, then retry.
                 for id in staged_nodes.drain(..) {
                     tree.epoch_mgr().add_reclaim_candidate(0, id);
                 }
@@ -141,10 +154,11 @@ impl WriteTransaction
                 self.initial_root_id = tree.get_root_id();
             }
         }
-        Ok(TxnStatus::Aborted) // Too many retries, abort transaction
+        Ok(TxnStatus::Aborted)
     }
 
     #[cfg(test)]
+    /// Returns the list of reclaimed node IDs; for testing only.
     pub fn get_reclaimed_nodes(&self) -> Vec<u64> {
         self.reclaimed_nodes.clone()
     }
@@ -154,13 +168,13 @@ impl WriteTransaction
 mod tests {
     use super::*;
     use crate::bplustree::tree::CommitError;
-    use crate::metadata::Metadata;
+    use crate::database::metadata::Metadata;
     use crate::tests::common::{test_storage::TestStorage, test_tree};
 
     #[test]
     fn cas_mismatch_returns_rebase_required_with_no_side_effects() {
-        let storage = TestStorage::new(); // Reset the test storage state
-        let h = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let storage = TestStorage::new();
+        let h = test_tree::<TestStorage>(storage, 128);
         let base = BaseVersion {
             committed_ptr: h.tree.metadata_ptr(),
         };
@@ -195,8 +209,8 @@ mod tests {
 
     #[test]
     fn metadata_write_failure_aborts_before_publish() {
-        let storage = TestStorage::new(); // Reset the test storage state
-        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
+        let storage = TestStorage::new();
+        let h = test_tree::<TestStorage>(storage, 128);
         h.storage.inject_commit_failure(true);
 
         let base = BaseVersion {
@@ -223,8 +237,8 @@ mod tests {
 
     #[test]
     fn flush_failure_after_publish_keeps_state() {
-        let storage = TestStorage::new(); // Reset the test storage state
-        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
+        let storage = TestStorage::new();
+        let h = test_tree::<TestStorage>(storage, 128);
         h.storage.inject_flush_failure(true);
 
         let base = BaseVersion {
@@ -252,7 +266,7 @@ mod tests {
     #[test]
     fn gc_runs_after_success() {
         let storage = TestStorage::new();
-        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
+        let h = test_tree::<TestStorage>(storage, 128);
         // Epoch will be advance after commit
         h.tree.get_epoch_mgr().set_oldest_active(1);
         h.tree.get_epoch_mgr().set_reclaim_list(1, vec![10, 11, 12]);
@@ -276,8 +290,8 @@ mod tests {
 
     #[test]
     fn published_metadata_is_visible_immediately() {
-        let storage = TestStorage::new(); // Reset the test storage state
-        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
+        let storage = TestStorage::new();
+        let h = test_tree::<TestStorage>(storage, 128);
         let base = BaseVersion {
             committed_ptr: h.tree.metadata_ptr(),
         };

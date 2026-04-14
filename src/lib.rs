@@ -3,8 +3,8 @@
 pub mod api;
 pub mod bplustree;
 pub mod codec;
+pub mod database;
 pub mod storage;
-pub mod store;
 
 pub(crate) mod keyfmt;
 pub(crate) mod layout;

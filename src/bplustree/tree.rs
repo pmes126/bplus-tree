@@ -4,34 +4,36 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
-use crate::storage::epoch::EpochManager;
-use crate::storage::epoch::COMMIT_COUNT;
+use crate::api::{KeyEncodingId, TreeId};
 use crate::bplustree::NodeView;
 use crate::codec::CodecError;
-use crate::store::metadata::Metadata;
-use crate::storage::metadata_manager::MetadataManager;
-use crate::page::LeafPage;
-use crate::storage::{NodeStorage, PageStorage, HasEpoch, StorageError};
-use crate::store::catalog::TreeMeta;
+use crate::database::catalog::TreeMeta;
+use crate::database::metadata::Metadata;
 use crate::keyfmt::KeyFormat;
-use crate::api::{KeyEncodingId, TreeId};
+use crate::page::LeafPage;
+use crate::storage::epoch::COMMIT_COUNT;
+use crate::storage::epoch::EpochManager;
+use crate::storage::metadata_manager::MetadataManager;
+use crate::storage::{HasEpoch, NodeStorage, PageStorage, StorageError};
 
 use std::result::Result;
 use thiserror::Error;
 use zerocopy::AsBytes;
 
-pub type NodeId = u64; // Type for node IDs
-pub type PathNode = (NodeId, usize); // Type for path nodes (node ID and index in parent)
+/// Numeric identifier for a B+ tree node (page ID).
+pub type NodeId = u64;
+/// A node on the traversal path, represented as (node ID, index in parent).
+pub type PathNode = (NodeId, usize);
 
 fn print_vec<T: std::fmt::Debug>(vec: &Vec<T>, msg: &str) {
     println!("{}: {:?}", msg, vec);
 }
 
-/// Result of inserting into a B+ tree node
+/// Result of inserting into a B+ tree node.
 pub enum InsertResult<N> {
-    /// Node was updated in-place
+    /// Node was updated in-place.
     Updated(N),
-    // Node was inserted
+    /// Node was inserted.
     Inserted(N),
 }
 
@@ -44,14 +46,20 @@ pub enum DeleteResult<N> {
     NotFound,
 }
 
+/// Result of splitting a B+ tree node.
 pub enum SplitResult<N> {
+    /// The two halves and the key to push up into the parent.
     SplitNodes {
-        left_node: N,  // Left half (including inserted key)
-        right_node: N, // Right half
-        split_key: Vec<u8>,  // First key of right node, to push into parent
+        /// Left half, including the newly inserted key.
+        left_node: N,
+        /// Right half.
+        right_node: N,
+        /// First key of the right node, to be pushed into the parent.
+        split_key: Vec<u8>,
     },
 }
 
+/// Errors that can occur during B+ tree operations.
 #[derive(Debug, Error)]
 pub enum TreeError {
     #[error("Bad input: {0}")]
@@ -70,6 +78,7 @@ pub enum TreeError {
     Any(#[from] anyhow::Error),
 }
 
+/// Errors that can occur when committing a transaction.
 #[derive(Debug, Error)]
 pub enum CommitError {
     #[error("Commit failed after {0} retries")]
@@ -86,83 +95,100 @@ pub enum CommitError {
     Injected,
 }
 
+/// Collects per-transaction accounting: nodes added, reclaimed, and staged tree shape.
 pub trait TxnTracker {
+    /// Records a node ID to be reclaimed after the transaction commits.
     fn reclaim(&mut self, node_id: NodeId);
+    /// Records a newly written node ID as part of this transaction.
     fn add_new(&mut self, node_id: NodeId);
+    /// Records the staged tree height for this transaction.
     fn record_staged_height(&mut self, height: usize);
+    /// Records the staged entry count for this transaction.
     fn record_staged_size(&mut self, size: usize);
 }
 
+/// A point-in-time snapshot of committed tree metadata.
 #[derive(Debug, Clone)]
 pub struct MetadataSnapshot {
+    /// Root node page ID at snapshot time.
     pub root_id: NodeId,
+    /// Tree height at snapshot time.
     pub height: usize,
+    /// Approximate number of entries at snapshot time.
     pub size: usize,
+    /// Transaction ID of the snapshot.
     pub txn_id: u64,
+    /// B+ tree order (maximum number of children per internal node).
     pub order: usize,
 }
 
+/// Staged (not yet committed) metadata produced by a write transaction.
 #[derive(Debug, Clone)]
 pub struct StagedMetadata {
+    /// New root node page ID.
     pub root_id: NodeId,
+    /// New tree height.
     pub height: usize,
+    /// New approximate entry count.
     pub size: usize,
 }
 
-// Pointer to the committed metadata
+/// Holds a raw pointer to the committed metadata used as the compare-exchange base.
 pub struct BaseVersion {
+    /// Raw pointer to the committed [`Metadata`] at transaction start.
     pub committed_ptr: *const Metadata,
 }
 
+/// Runtime configuration for a B+ tree instance.
 pub struct TreeConfig {
-    pub page_size: usize,  // 4096 default (runtime, don't const-generic this yet)
-    pub key_format_id: u8, // 0=Raw, 1=Raw+Restarts, 2=Prefix+Restarts (or whatever mapping)
-    pub restart_interval: u16, // used by Prefix; ignored by others (or constrain via keyfmt)
-    pub target_fill_bytes: usize, // split/merge by bytes, not count
+    /// Page size in bytes (4096 by default).
+    pub page_size: usize,
+    /// Key-format identifier: 0 = Raw, 1 = Raw+Restarts, 2 = Prefix+Restarts.
+    pub key_format_id: u8,
+    /// Restart interval used by prefix formats; ignored by raw formats.
+    pub restart_interval: u16,
+    /// Target page fill in bytes; splits and merges are triggered by byte budget, not key count.
+    pub target_fill_bytes: usize,
 }
 
-
-/// B+ tree structure with generic key and value types, and a storage backend
+/// B+ tree with generic storage backends for nodes and pages.
 pub struct BPlusTree<'s, S, P>
 where
-    S: NodeStorage + HasEpoch + Send + Sync + 'static,
-        P: PageStorage + Send + Sync + 'static,
+    S: NodeStorage + Send + Sync + 'static,
+    P: PageStorage + Send + Sync + 'static,
 {
-    // B+ tree properties (immutable after init)
-    // identity + wiring
     id: TreeId,
     storage: &'s S,
     page_storage: &'s P,
-
-    // comparator contract (immutable)
+    epoch_mgr: Arc<EpochManager>,
     key_encoding: KeyEncodingId,
     encoding_version: u16,
-
-    // layout contract (immutable)
     key_format: KeyFormat,
-
-    // where meta lives (immutable)
     meta_a: u64,
-    meta_b: u64, 
-    // B+ tree order and balancing (immutable)
+    meta_b: u64,
     max_keys: usize,
     min_internal_keys: usize,
     min_leaf_keys: usize,
-    // Current state (updated on commit)
-    commit_count: AtomicUsize,    // Number of commits made to the tree
-    txn_id: AtomicU64,            // Slot of metadata storage
-    committed: AtomicPtr<Metadata>, // Pointer to the committed metadata,
+    commit_count: AtomicUsize,
+    txn_id: AtomicU64,
+    committed: AtomicPtr<Metadata>,
 }
 
+/// Default [`TxnTracker`] implementation that accumulates node accounting in memory.
 #[derive(Default)]
 pub struct TransactionTracker {
+    /// Node IDs to be freed after the transaction commits.
     pub reclaimed: Vec<NodeId>,
+    /// Node IDs written during this transaction.
     pub added: Vec<NodeId>,
+    /// Staged tree height, if updated.
     pub staged_height: Option<usize>,
+    /// Staged entry count, if updated.
     pub staged_size: Option<usize>,
 }
 
 impl TransactionTracker {
+    /// Creates a new, empty [`TransactionTracker`].
     pub fn new() -> Self {
         Self {
             reclaimed: Vec::new(),
@@ -188,21 +214,26 @@ impl TxnTracker for TransactionTracker {
     }
 }
 
-// Result of a write operation (insert or delete)
+/// Result of a write operation (insert or delete).
 #[derive(Debug)]
 pub struct WriteResult {
+    /// New root node ID after the write.
     pub new_root_id: NodeId,
+    /// Node IDs that can be freed after commit.
     pub reclaimed_nodes: Vec<NodeId>,
+    /// Node IDs written speculatively during this operation.
     pub staged_nodes: Vec<NodeId>,
+    /// New tree height after the write.
     pub new_height: usize,
+    /// New approximate entry count after the write.
     pub new_size: usize,
 }
 
-// ------------ Shared BPlusTree Arc wrapper ----------
+/// A cheaply clonable, shared handle to a [`BPlusTree`].
 pub struct SharedBPlusTree<'s, S, P>
 where
-    S: NodeStorage + HasEpoch + Send + Sync + 'static,
-        P: PageStorage + Send + Sync + 'static,
+    S: NodeStorage + Send + Sync + 'static,
+    P: PageStorage + Send + Sync + 'static,
 {
     inner: Arc<BPlusTree<'s, S, P>>,
 }
@@ -224,16 +255,19 @@ where
     S: NodeStorage + HasEpoch + Send + Sync + 'static,
     P: PageStorage + Send + Sync + 'static,
 {
+    /// Creates a new shared handle by wrapping `tree` in an [`Arc`].
     pub fn new(tree: BPlusTree<'s, S, P>) -> Self {
         Self {
             inner: Arc::new(tree),
         }
     }
 
+    /// Creates a shared handle from an existing [`Arc`].
     pub fn from_arc(tree: Arc<BPlusTree<'s, S, P>>) -> Self {
         Self { inner: tree }
     }
 
+    /// Inserts a key-value pair starting from the given root node ID.
     pub fn put_with_root<K: AsRef<[u8]>, V: AsRef<[u8]>>(
         &self,
         key: K,
@@ -241,9 +275,7 @@ where
         root_id: NodeId,
     ) -> Result<WriteResult, TreeError> {
         let mut collector = TransactionTracker::new();
-        let new_root_id = self
-            .inner
-            .put_inner(key, value, root_id, &mut collector)?;
+        let new_root_id = self.inner.put_inner(key, value, root_id, &mut collector)?;
         let write_res = WriteResult {
             new_root_id,
             reclaimed_nodes: std::mem::take(&mut collector.reclaimed),
@@ -254,12 +286,22 @@ where
         Ok(write_res)
     }
 
-    pub fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&self, key: K, value: V) -> Result<WriteResult, TreeError> {
+    /// Inserts a key-value pair using the current committed root.
+    pub fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<WriteResult, TreeError> {
         let root_id = self.inner.get_root_id();
         self.put_with_root(key, value, root_id)
     }
 
-    pub fn delete_with_root<K: AsRef<[u8]>>(&self, key: &K, root_id: NodeId) -> Result<WriteResult, TreeError> {
+    /// Deletes a key starting from the given root node ID.
+    pub fn delete_with_root<K: AsRef<[u8]>>(
+        &self,
+        key: &K,
+        root_id: NodeId,
+    ) -> Result<WriteResult, TreeError> {
         let mut collector = TransactionTracker::new();
         let delete_res = self.inner.delete_inner(key, root_id, &mut collector)?;
         let DeleteResult::Deleted(new_root_id) = delete_res else {
@@ -278,39 +320,52 @@ where
         Ok(write_res)
     }
 
+    /// Searches for a key using the current committed root.
     pub fn search<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, TreeError> {
         self.inner.get(key)
     }
 
-    pub fn search_with_root<K: AsRef<[u8]>>(&self, key: &K, root_id: NodeId) -> Result<Option<Vec<u8>>, TreeError> {
+    /// Searches for a key starting from the given root node ID.
+    pub fn search_with_root<K: AsRef<[u8]>>(
+        &self,
+        key: &K,
+        root_id: NodeId,
+    ) -> Result<Option<Vec<u8>>, TreeError> {
         self.inner.get_inner(key, root_id)
     }
 
+    /// Returns the current committed root node ID.
     pub fn get_root_id(&self) -> NodeId {
         self.inner.get_root_id()
     }
 
+    /// Returns the current committed tree height.
     pub fn get_height(&self) -> usize {
         self.inner.get_height()
     }
 
+    /// Returns the current approximate entry count.
     pub fn get_size(&self) -> usize {
         self.inner.get_size()
     }
 
+    /// Returns the current committed transaction ID.
     pub fn get_txn_id(&self) -> NodeId {
         self.inner.txn_id.load(Ordering::SeqCst)
     }
 
+    /// Flushes pending node storage writes to disk.
     pub fn flush(&mut self) -> Result<(), TreeError> {
         self.inner.storage.flush()?;
         Ok(())
     }
 
+    /// Returns a snapshot of the current committed metadata.
     pub fn get_snapshot(&self) -> MetadataSnapshot {
         self.inner.get_snapshot()
     }
 
+    /// Attempts to commit the staged metadata via a compare-and-exchange.
     pub fn try_commit(
         &self,
         version: &BaseVersion,
@@ -319,118 +374,164 @@ where
         self.inner.try_commit(version, new_metadata)
     }
 
+    /// Returns a raw pointer to the committed metadata.
     pub fn get_metadata_ptr(&self) -> *const Metadata {
         self.inner.committed.load(Ordering::SeqCst)
     }
 
+    /// Returns a reference to the committed metadata.
     pub fn get_metadata(&self) -> &Metadata {
         unsafe { &*self.inner.committed.load(Ordering::Acquire) }
     }
 
-    pub fn arc(&self) -> Arc<BPlusTree<S ,P>> {
+    /// Returns a clone of the inner [`Arc`].
+    pub fn arc(&self) -> Arc<BPlusTree<S, P>> {
         Arc::clone(&self.inner)
     }
 
     #[allow(clippy::should_implement_trait)]
+    /// Returns a new shared handle pointing to the same tree.
     pub fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
         }
     }
 
-    //pub fn traverse(&self) -> Result<Vec<(&[u8], &[u8])>, TreeError> {
-    //    self.inner.traverse()
-    //}
-
-    /*
-    pub fn search_range_at_root<'a, K: AsRef<[u8]>>(
-        &'a self,
+    /// Alias for [`put_with_root`] using the conventional `insert` vocabulary.
+    pub fn insert_with_root<K: AsRef<[u8]>, V: AsRef<[u8]>>(
+        &self,
+        key: K,
+        value: V,
         root_id: NodeId,
-        start: K,
-        end: K,
-    ) -> Result<Option<BPlusTreeIter<'a, S>>, TreeError> {
-        self.inner.search_range(root_id, start, end)
+    ) -> Result<WriteResult, TreeError> {
+        self.put_with_root(key, value, root_id)
     }
 
-    pub fn search_in_range<'a, K: AsRef<[u8]>>(
-        &'a self,
-        start:K,
-        end: K,
-    ) -> Result<Option<BPlusTreeIter<'a, S>>, TreeError> {
-        let root_id = self.inner.get_root_id();
-        self.inner.search_range(root_id, start, end)
+    /// Alias for [`put`] using the conventional `insert` vocabulary.
+    pub fn insert<K: AsRef<[u8]>, V: AsRef<[u8]>>(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<WriteResult, TreeError> {
+        self.put(key, value)
     }
 
-    */
+    // TODO: implement traverse() and search_range() once the iterator API is stable.
 
+    /// Returns a clone of the shared epoch manager.
     pub fn epoch_mgr(&self) -> Arc<EpochManager> {
-        Arc::clone(&self.inner.storage.epoch_mgr())
+        Arc::clone(&self.inner.epoch_mgr)
     }
 
+    /// Reclaims a node by registering it for deferred freeing.
     pub fn reclaim_node(&self, node_id: NodeId) -> Result<(), TreeError> {
         self.inner.reclaim_node(node_id)
     }
 }
 
-// -------------------------- BPlusTree implementation ----------------------------
 impl<'s, S, P> BPlusTree<'s, S, P>
 where
-    S: NodeStorage + HasEpoch + Send + Sync + 'static,
-    P : PageStorage + Send + Sync + 'static,
+    S: NodeStorage + Send + Sync + 'static,
+    P: PageStorage + Send + Sync + 'static,
 {
-
-    pub fn new(storage: &'s S, page_storage: &'s P, meta: &TreeMeta) -> Result<BPlusTree<'s, S, P>, TreeError> {
+    /// Creates a new [`BPlusTree`] from its storage backends and catalog metadata.
+    ///
+    /// Writes an initial empty leaf node and sets up the committed metadata pointer.
+    pub fn new(
+        storage: &'s S,
+        page_storage: &'s P,
+        meta: &TreeMeta,
+        epoch_mgr: Arc<EpochManager>,
+    ) -> Result<BPlusTree<'s, S, P>, TreeError> {
         let keyfmt = meta.keyfmt_id;
-        let root_node = NodeView::Leaf { page: LeafPage::new(keyfmt), };
-        // Initialize the root node ID
+        let root_node = NodeView::Leaf {
+            page: LeafPage::new(keyfmt),
+        };
         let init_id = storage
             .write_node_view(&root_node)
             .map_err(|e| TreeError::BackendAny(e.to_string()))?;
-        storage.write_node_view_at_offset(&root_node, meta.root_id)
+        storage
+            .write_node_view_at_offset(&root_node, meta.root_id)
             .map_err(|e| TreeError::BackendAny(format!("failed to write root node {}:", e)))?;
 
-        let init_txn_id = 1; // Initial transaction ID
+        let init_txn_id = 1;
 
         let md1 = Metadata {
             root_node_id: init_id,
-            txn_id: init_txn_id, // Initial transaction ID
-            height: 1,           // Initial height
-            checksum: 0,         // Placeholder for checksum
-            size: 0,             // Initial size
+            txn_id: init_txn_id,
+            height: 1,
+            checksum: 0,
+            size: 0,
             order: meta.order,
-            id: meta.id
+            id: meta.id,
         };
 
-        let md_ptr = Box::new(md1); // Convert metadata to raw pointer
+        let md_ptr = Box::new(md1);
 
         Ok(Self {
             id: meta.id.clone(),
             storage,
             page_storage,
+            epoch_mgr,
             key_encoding: meta.key_encoding,
             key_format: meta.keyfmt_id,
             encoding_version: meta.format_version,
             meta_a: meta.meta_a,
             meta_b: meta.meta_b,
             max_keys: meta.order - 1,
-            min_internal_keys: meta.order.div_ceil(2) - 1, // Ensure min_internal_keys is at least 2
-            min_leaf_keys: (meta.order - 1).div_ceil(2),   // Ensure min_keys is at least 1
-            commit_count: AtomicUsize::new(0),        // Initialize commit count
-            txn_id: AtomicU64::new(init_txn_id),      // Initialize transaction ID
-            committed: AtomicPtr::new(Box::into_raw(md_ptr)), // Initialize committed pointer
+            min_internal_keys: meta.order.div_ceil(2) - 1,
+            min_leaf_keys: (meta.order - 1).div_ceil(2),
+            commit_count: AtomicUsize::new(0),
+            txn_id: AtomicU64::new(init_txn_id),
+            committed: AtomicPtr::new(Box::into_raw(md_ptr)),
         })
     }
 
-    // ---- Utilities for reading/writing nodes and metadata from/to storage ----
+    /// Opens a [`BPlusTree`] over existing on-disk data without writing any nodes or metadata.
+    ///
+    /// Unlike [`new`], `open` does not initialise a root node, making it safe to call when
+    /// reopening a previously persisted tree after a crash or restart.
+    pub fn open(
+        storage: &'s S,
+        page_storage: &'s P,
+        meta: Metadata,
+        meta_a: u64,
+        meta_b: u64,
+        key_format: KeyFormat,
+        key_encoding: KeyEncodingId,
+        epoch_mgr: Arc<EpochManager>,
+    ) -> BPlusTree<'s, S, P> {
+        let id = meta.id;
+        let txn_id = meta.txn_id;
+        let order = meta.order;
+        let md_ptr = Box::into_raw(Box::new(meta));
+        Self {
+            id,
+            storage,
+            page_storage,
+            epoch_mgr,
+            key_encoding,
+            key_format,
+            encoding_version: 1,
+            meta_a,
+            meta_b,
+            max_keys: order - 1,
+            min_internal_keys: order.div_ceil(2) - 1,
+            min_leaf_keys: (order - 1).div_ceil(2),
+            commit_count: AtomicUsize::new(0),
+            txn_id: AtomicU64::new(txn_id),
+            committed: AtomicPtr::new(md_ptr),
+        }
+    }
 
-    // Reads a node view from the B+ tree storage.
+    /// Reads a node view from storage by its ID.
     fn read_node_view(&self, id: NodeId) -> Result<Option<NodeView>, TreeError> {
         self.storage
             .read_node_view(id)
             .map_err(|e| TreeError::BackendAny(format!("failed to read node view {}:", e)))
     }
 
-    // Writes a node to the B+ tree storage.
+    /// Writes a node view to storage and records it with the transaction tracker.
     fn write_node_view(
         &self,
         node: &NodeView,
@@ -444,11 +545,7 @@ where
         Ok(new_id)
     }
 
-    // ------------------------------ Path finding logic --------------------------------
-    // Returns the path of where a key should be inserted, without decoding the nodes for
-    // efficiency.
-    //put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V)
-
+    /// Returns the path to the leaf where `key` belongs, without fully decoding nodes.
     pub fn get_insertion_path<K: AsRef<[u8]>>(
         &self,
         key: K,
@@ -462,29 +559,24 @@ where
                 Some(node) => match &node {
                     NodeView::Leaf { .. } => {
                         let mut found = false;
-                        let i = match node
-                            .lower_bound(key.as_ref())
-                        {
+                        let i = match node.lower_bound(key.as_ref()) {
                             Ok(i) => {
                                 found = true;
                                 i
                             }
                             Err(i) => i,
                         };
-                        path.push((current_id, i)); // Record the current node and index
+                        path.push((current_id, i));
                         return Ok((path, found));
                     }
                     NodeView::Internal { .. } => {
-                        // Find the insertion point in the internal node
-                        let i = match node
-                            .lower_bound(key.as_ref())
-                        {
+                        let i = match node.lower_bound(key.as_ref()) {
                             Ok(i) => i + 1,
                             Err(i) => i,
                         };
-                        path.push((current_id, i)); // Record the current node and index
-                        let child_id = node.child_ptr_at(i)?; // Move to the child node
-                        current_id = child_id; // Continue iteration
+                        path.push((current_id, i));
+                        let child_id = node.child_ptr_at(i)?;
+                        current_id = child_id;
                     }
                 },
                 None => {
@@ -497,8 +589,7 @@ where
         }
     }
 
-    // -------------------------- Insertion logic and split handling ----------------------------
-    // Inserts a key-value pair into the B+ tree, acquiring an epoch guard to ensure consistency.
+    /// Inserts a key-value pair using the current committed root.
     pub fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(
         &self,
         key: K,
@@ -509,8 +600,7 @@ where
         self.put_inner(key, value, root_id, track)
     }
 
-    // Inserts a key-value pair into the B+ tree.
-    //put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V)
+    /// Inserts a key-value pair starting from `root_id`.
     pub fn put_inner<K: AsRef<[u8]>, V: AsRef<[u8]>>(
         &self,
         key: K,
@@ -518,7 +608,7 @@ where
         root_id: NodeId,
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
-        let _guard = self.storage.epoch_mgr().pin();
+        let _guard = self.epoch_mgr.pin();
         let (mut path, found) = self.get_insertion_path(&key, root_id)?;
         let (leaf_node_id, idx) = path.pop().ok_or_else(|| {
             TreeError::BackendAny("Insertion path is empty, tree might be corrupted".to_string())
@@ -539,8 +629,9 @@ where
             leaf_node.insert_at(idx, key.as_ref(), value.as_ref())?;
         }
 
-        track.record_staged_size(self.get_size() + 1); // Update staged size
-        track.record_staged_height(self.get_height()); // Update staged height - could be increased later
+        track.record_staged_size(self.get_size() + 1);
+        // Height may be increased later if a root split occurs.
+        track.record_staged_height(self.get_height());
 
         if leaf_node.keys_len() > self.max_keys {
             self.handle_leaf_split(path, leaf_node, track)
@@ -549,7 +640,7 @@ where
         }
     }
 
-    // Handles the split of a leaf node when it exceeds the maximum number of keys.
+    /// Splits an overfull leaf node and propagates the new separator key upward.
     fn handle_leaf_split(
         &self,
         path: Vec<(NodeId, usize)>,
@@ -567,16 +658,11 @@ where
         self.propagate_split(path, left_id, right_id, split_key, track)
     }
 
-    // Splits a leaf node into two nodes and returns the new right node, the left node, and the
-    // first key of the right node to be pushed up to the parent.
-    fn split_leaf_node(
-        &self,
-        mut leaf_node: NodeView,
-    ) -> Result<SplitResult<NodeView>, TreeError> {
-        // Equally split the keys and values between the two nodes.
+    /// Splits a leaf node in half and returns both halves plus the first key of the right half.
+    fn split_leaf_node(&self, mut leaf_node: NodeView) -> Result<SplitResult<NodeView>, TreeError> {
         if let NodeView::Leaf { .. } = &mut leaf_node {
             let mid = leaf_node.keys_len() / 2;
-            let split_idx = mid; // Index to split the keys and values
+            let split_idx = mid;
             let right_node = leaf_node.split_off(split_idx)?;
             let split_key = right_node.first_key()?;
 
@@ -592,15 +678,14 @@ where
         }
     }
 
-    // Splits an internal node into two nodes and returns the new right node, the left node, and
-    // the middle key to be pushed up to the parent.
+    /// Splits an internal node in half and returns both halves plus the middle key to push up.
     fn split_internal_node(
         &self,
         mut internal_node: NodeView,
     ) -> Result<SplitResult<NodeView>, TreeError> {
         if let NodeView::Internal { .. } = &mut internal_node {
             let mid = internal_node.keys_len() / 2;
-            let split_idx = mid + 1; // Index to split the keys and values
+            let split_idx = mid + 1;
             let right_node = internal_node.split_off(split_idx)?;
             let split_key = internal_node.pop_key()?.ok_or_else(|| {
                 TreeError::BackendAny("Internal node has no mid keys for split".to_string())
@@ -618,7 +703,7 @@ where
         }
     }
 
-    // Writes a node view and propagates the update to the parent nodes.
+    /// Writes a node and propagates the new ID up the parent path.
     fn write_and_propagate(
         &self,
         path: Vec<(u64, usize)>,
@@ -634,7 +719,7 @@ where
         }
     }
 
-    // Propagates an update to a node view
+    /// Propagates a node update up the parent path, rewriting each ancestor.
     fn propagate_node_update(
         &self,
         mut path: Vec<(NodeId, usize)>,
@@ -657,17 +742,15 @@ where
                     insert_pos, parent_id
                 )));
             }
-            // Reclaim the original child node and update the child pointer
+            // Reclaim the original child and replace its pointer.
             track.reclaim(parent_node.child_ptr_at(insert_pos)?);
             parent_node.replace_child_at(insert_pos, updated_child_id)?;
-            // Propagate up the path
             updated_child_id = self.write_node_view(&parent_node, track)?;
         }
-        Ok(updated_child_id) // Return the new root ID
+        Ok(updated_child_id)
     }
 
-    // Insert into a parent node, the path is the collection of the nodes that are parent to the
-    // leaf, try inserting in a lifo manner.
+    /// Propagates a node split up the parent path, creating a new root if needed.
     fn propagate_split(
         &self,
         mut path: Vec<(NodeId, usize)>,
@@ -688,19 +771,16 @@ where
                     "Expected internal node in propagation path".to_string(),
                 ));
             };
-            // reclaim the  child at insert_pos
-            // insert encoded key + right child at insert_pos
-            // replace left child at insert_pos
             let left_child_prev = node.child_ptr_at(insert_pos)?;
             track.reclaim(left_child_prev);
             node.insert_separator_at(insert_pos, &key, right)?;
             node.replace_child_at(insert_pos, left)?;
 
-            // if there is no further overflow we can just propagate the update and return
+            // No further overflow: write the updated parent and return.
             if node.keys_len() <= self.max_keys {
                 return self.write_and_propagate(path, &node, track);
             }
-            // Handle internal node split
+            // Parent itself overflowed; split it and continue up.
             let SplitResult::SplitNodes {
                 left_node,
                 right_node,
@@ -715,26 +795,28 @@ where
         let mut new_root = NodeView::new_internal(self.key_format);
         new_root.write_leftmost_child(left)?;
         new_root.insert_separator_at(0, &key, right)?;
-        
+
         let new_root_id = self.write_node_view(&new_root, track)?;
-        track.record_staged_height(self.get_height() + 1); // Update staged height
+        track.record_staged_height(self.get_height() + 1);
 
         Ok(new_root_id)
     }
 
-    // ----- Searches -----
-    // Search for a key in the B+ tree, acquiring an epoch guard to ensure consistency.
+    /// Searches for a key and returns its value, or `None` if not found.
     pub fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, TreeError> {
         let root_id = self.get_root_id();
         self.get_inner(key, root_id)
     }
 
-    // Search for a key and return the value if exists, without decoding the nodes for efficiency.
-    pub fn get_inner<K: AsRef<[u8]>>(&self, key: K, root_id: NodeId) -> Result<Option<Vec<u8>>, TreeError> {
-        let _guard = self.storage.epoch_mgr().pin();
+    /// Searches for a key starting from `root_id` and returns its value, or `None` if not found.
+    pub fn get_inner<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        root_id: NodeId,
+    ) -> Result<Option<Vec<u8>>, TreeError> {
+        let _guard = self.epoch_mgr.pin();
         let mut current_id = root_id;
 
-        // Find insertion point
         loop {
             match self
                 .storage
@@ -749,23 +831,19 @@ where
                                 return Ok(Some(vb.to_vec()));
                             }
                             Err(_i) => {
-                                return Ok(None); // Key not found
+                                return Ok(None);
                             }
                         };
                     }
                     NodeView::Internal { .. } => {
-                        // Find the insertion point in the internal node
-                        let i = match node
-                            .lower_bound(key.as_ref())
-                        {
+                        let i = match node.lower_bound(key.as_ref()) {
                             Ok(i) => i + 1,
                             Err(i) => i,
                         };
-                        current_id = node.child_ptr_at(i)?; // Move to the child node
+                        current_id = node.child_ptr_at(i)?;
                     }
                 },
                 None => {
-                    // Node not found, this should not happen as we are traversing the path
                     return Err(TreeError::BackendAny(
                         "Node not found while getting insertion path".to_string(),
                     ));
@@ -774,29 +852,28 @@ where
         }
     }
 
-/*
-    // Searches for a range of keys in the B+ tree and returns an iterator over the key-value
-    // pairs.
-    //<K: AsRef<[u8]>, V: AsRef<[u8]>>
-    pub fn search_range<'a, K: AsRef<[u8]>>(
-        &'a self,
-        root_id: NodeId,
-        start: K,
-        end: K,
-    ) -> Result<Option<BPlusTreeIter<'a, S>>, TreeError> {
-        let _guard = self.storage.epoch_mgr().pin();
-        Ok(Some(BPlusTreeIter::new(
-            &self.storage,
-            root_id,
-            self.storage.epoch_mgr().clone(),
-            start,
-            end,
-        )))
-    }
-*/
+    /*
+        // Searches for a range of keys in the B+ tree and returns an iterator over the key-value
+        // pairs.
+        //<K: AsRef<[u8]>, V: AsRef<[u8]>>
+        pub fn search_range<'a, K: AsRef<[u8]>>(
+            &'a self,
+            root_id: NodeId,
+            start: K,
+            end: K,
+        ) -> Result<Option<BPlusTreeIter<'a, S>>, TreeError> {
+            let _guard = self.storage.epoch_mgr().pin();
+            Ok(Some(BPlusTreeIter::new(
+                &self.storage,
+                root_id,
+                self.storage.epoch_mgr().clone(),
+                start,
+                end,
+            )))
+        }
+    */
 
-    // ----- Deletes and underflow handling -----
-    // Deletes a key from the B+ tree.
+    /// Deletes a key from the tree, returning an error if the key is not found.
     pub fn delete<K: AsRef<[u8]>>(
         &mut self,
         key: K,
@@ -807,19 +884,19 @@ where
         match res {
             DeleteResult::NotFound => Err(TreeError::BackendAny(
                 "Key not found for deletion".to_string(),
-            )), // Key not found, return current root
+            )),
             DeleteResult::Deleted(new_root_id) => Ok(new_root_id),
         }
     }
 
-    // Delete the key value pair and handle underflow of leaf nodes
+    /// Deletes a key starting from `root_id` and handles any resulting leaf underflow.
     pub fn delete_inner<K: AsRef<[u8]>>(
         &self,
         key: K,
         root_id: NodeId,
         track: &mut impl TxnTracker,
     ) -> Result<DeleteResult<NodeId>, TreeError> {
-        let _guard = self.storage.epoch_mgr().pin();
+        let _guard = self.epoch_mgr.pin();
 
         let (mut path, found) = self.get_insertion_path(key, root_id)?;
         let (leaf_node_id, idx) = path.pop().ok_or_else(|| {
@@ -827,7 +904,7 @@ where
         })?;
 
         if !found {
-            return Ok(DeleteResult::NotFound); // Key not found
+            return Ok(DeleteResult::NotFound);
         }
 
         let mut leaf_node = self.storage.read_node_view(leaf_node_id)?.ok_or_else(|| {
@@ -843,9 +920,10 @@ where
         leaf_node.delete_at(idx)?;
 
         track.record_staged_size(self.get_size().saturating_sub(1));
-        track.record_staged_height(self.get_height()); // Update staged height, it may be decreased later
+        // Height may decrease later if the root collapses.
+        track.record_staged_height(self.get_height());
 
-        // no underflow if the node has enough keys or it is the root node
+        // No underflow if the node has enough keys or it is the root.
         if leaf_node.entry_count() >= self.min_leaf_keys || path.is_empty() {
             let new_root_id = self.write_and_propagate(path, &leaf_node, track)?;
             return Ok(DeleteResult::Deleted(new_root_id));
@@ -855,7 +933,7 @@ where
         Ok(DeleteResult::Deleted(new_root_id))
     }
 
-    // Underflow  handling for leaf and internal nodes
+    /// Resolves underflow for leaf and internal nodes by borrowing or merging with siblings.
     fn handle_underflow(
         &self,
         mut path: Vec<(NodeId, usize)>,
@@ -874,15 +952,12 @@ where
                         "Expected internal node as parent".to_string(),
                     ));
                 };
-                // If the root has only one child, replace the root with that child
+                // If the root has only one child left, collapse it.
                 if path.is_empty() && parent_node.children_len()? == 1 {
                     parent_node.child_ptr_at(0)?;
                 }
-                // Try borrowing from left or right sibling, on success just propagate the update,
-                // no change in number of keys in the parent node
-                if idx > 0
-                    && self.try_borrow_from_left(&mut node, &mut parent_node, idx, track)?
-                {
+                // Try borrowing from a sibling first; on success the parent key count is unchanged.
+                if idx > 0 && self.try_borrow_from_left(&mut node, &mut parent_node, idx, track)? {
                     return self.write_and_propagate(path, &parent_node, track);
                 }
                 if (idx < parent_node.keys_len())
@@ -890,7 +965,7 @@ where
                 {
                     return self.write_and_propagate(path, &parent_node, track);
                 }
-                // Try to merge with left or right sibling
+                // Borrowing failed; try merging with a sibling.
                 let mut merged = None;
                 if let Some(id) =
                     self.try_merge_with_left(&mut node, &mut parent_node, idx, track)?
@@ -901,11 +976,10 @@ where
                 {
                     merged = Some(id);
                 }
-                // We should have merged with a sibling or borrowed from it otherwise invalid state
                 if merged.is_some() {
-                    // the parent node underflowed after merge
+                    // Parent underflowed after merge.
                     if parent_node.keys_len() < self.min_internal_keys {
-                        // handle root node underflow
+                        // Handle root underflow: collapse the root if it has a single child.
                         if path.is_empty() {
                             if parent_node.children_len()? == 1 {
                                 track.reclaim(parent_id);
@@ -915,11 +989,11 @@ where
                                 return self.write_and_propagate(path, &parent_node, track);
                             }
                         }
-                        // Continue handling underflow
-                       node = parent_node;
+                        // Continue resolving underflow up the tree.
+                        node = parent_node;
                         continue;
                     } else {
-                        // Parent node didn't underflow, just write the updated parent node
+                        // Parent is still balanced; write and return.
                         return self.write_and_propagate(path, &parent_node, track);
                     }
                 }
@@ -930,7 +1004,7 @@ where
         ))
     }
 
-    // try and borrow a key (and child for internal nodes) from the left sibling
+    /// Attempts to borrow a key (and child pointer for internal nodes) from the left sibling.
     fn try_borrow_from_left(
         &self,
         node: &mut NodeView,
@@ -941,8 +1015,9 @@ where
         if idx == 0 {
             return Ok(false);
         }
-        let parent_key_idx = idx - 1; // The key in the parent node that separates the two children
-        let left_child_idx = idx - 1; // The index of the left sibling in the children array
+        // The separator key in the parent sits one position to the left of the current child.
+        let parent_key_idx = idx - 1;
+        let left_child_idx = idx - 1;
         let left_sibling_id = parent_node.child_ptr_at(left_child_idx)?;
         let Some(mut left_sibling) = self.storage.read_node_view(left_sibling_id)? else {
             return Err(TreeError::NodeNotFound(
@@ -950,37 +1025,25 @@ where
             ));
         };
         match (&mut left_sibling, &mut *node) {
-            (
-                NodeView::Leaf {
-                    ..
-                },
-                NodeView::Leaf {
-                    ..
-                },
-            ) => {
+            (NodeView::Leaf { .. }, NodeView::Leaf { .. }) => {
                 if left_sibling.keys_len() > self.min_leaf_keys {
                     let borrowed_key = left_sibling.key_bytes_at(left_sibling.keys_len() - 1)?;
-                    let borrowed_value = left_sibling.value_bytes_at(left_sibling.keys_len() - 1)?;
+                    let borrowed_value =
+                        left_sibling.value_bytes_at(left_sibling.keys_len() - 1)?;
                     node.insert_at(0, borrowed_key, borrowed_value)?;
 
-                    // Update the separator key with the borrowed key - separator should alwasy be the first key of the right child
+                    // The separator must always equal the first key of the right child.
                     parent_node.replace_key_at(parent_key_idx, borrowed_key)?;
                     left_sibling.delete_at(left_sibling.keys_len() - 1)?;
                 } else {
                     return Ok(false);
                 }
             }
-            (
-                NodeView::Internal {
-                    ..
-                },
-                NodeView::Internal {
-                    ..
-                },
-            ) => {
+            (NodeView::Internal { .. }, NodeView::Internal { .. }) => {
                 if left_sibling.keys_len() > self.min_internal_keys {
                     let borrowed_key = left_sibling.key_bytes_at(left_sibling.keys_len() - 1)?;
-                    let borrowed_child = left_sibling.child_ptr_at(left_sibling.children_len()? - 1)?;
+                    let borrowed_child =
+                        left_sibling.child_ptr_at(left_sibling.children_len()? - 1)?;
                     let separator_key = parent_node.key_bytes_at(parent_key_idx)?;
                     node.push_front(separator_key, borrowed_child)?;
 
@@ -1002,7 +1065,7 @@ where
 
         track.reclaim(left_sibling_id);
         parent_node.replace_child_at(left_child_idx, new_left_node_id)?;
-        
+
         let current_child_id = parent_node.child_ptr_at(idx)?;
         track.reclaim(current_child_id);
 
@@ -1011,7 +1074,7 @@ where
         Ok(true)
     }
 
-    // try and borrow a key (and child for internal nodes) from the right sibling
+    /// Attempts to borrow a key (and child pointer for internal nodes) from the right sibling.
     fn try_borrow_from_right(
         &self,
         node: &mut NodeView,
@@ -1020,9 +1083,9 @@ where
         track: &mut impl TxnTracker,
     ) -> Result<bool, TreeError> {
         if idx >= parent_node.keys_len() {
-            return Ok(false); // No right sibling to borrow from
+            return Ok(false);
         }
-        let parent_key_idx = idx; // The key in the parent node that separates the two children
+        let parent_key_idx = idx;
         let right_sibling_id = parent_node.child_ptr_at(idx + 1)?;
         let Some(mut right_sibling) = self.storage.read_node_view(right_sibling_id)? else {
             return Err(TreeError::NodeNotFound(
@@ -1030,51 +1093,36 @@ where
             ));
         };
         match (&mut *node, &mut right_sibling) {
-            (
-                NodeView::Leaf {
-                    ..
-                },
-                NodeView::Leaf {
-                    ..
-                },
-            ) => {
+            (NodeView::Leaf { .. }, NodeView::Leaf { .. }) => {
                 if right_sibling.keys_len() > self.min_leaf_keys {
-                    // Borrow from the right sibling
                     let borrowed_key = right_sibling.key_bytes_at(0)?;
                     let borrowed_value = right_sibling.value_bytes_at(0)?;
-                    node.insert_at(node.keys_len(), borrowed_key.as_bytes(), borrowed_value.as_bytes())?;
+                    node.insert_at(
+                        node.keys_len(),
+                        borrowed_key.as_bytes(),
+                        borrowed_value.as_bytes(),
+                    )?;
                     right_sibling.delete_at(0)?;
-                    
-                    let separator_key = right_sibling.key_bytes_at(0)?;
 
-                    // Update the separator key with the first key  of the right sibling
+                    // Separator must equal the new first key of the right sibling.
+                    let separator_key = right_sibling.key_bytes_at(0)?;
                     parent_node.replace_key_at(parent_key_idx, separator_key.as_bytes())?;
                 } else {
-                    return Ok(false); // Not enough keys to borrow
+                    return Ok(false);
                 }
             }
-            (
-                NodeView::Internal {
-                    ..
-                },
-                NodeView::Internal {
-                    ..
-                },
-            ) => {
+            (NodeView::Internal { .. }, NodeView::Internal { .. }) => {
                 if right_sibling.keys_len() > self.min_internal_keys {
-                    // Steps for Internal node are diffent we need to swap the first key of the
-                    // right sibling with the separator from parent
-                    // 1. Get the first key of the right sibling and the separator key from parent
+                    // Rotate: pull separator from parent down into the left node,
+                    // push the right sibling's first key up into the parent.
                     let separator_key = parent_node.key_at(parent_key_idx)?;
                     let right_first_key = right_sibling.delete_key_at(0)?;
-                    // 2. Update the parent key with the first key of the right sibling
                     parent_node.replace_key_at(parent_key_idx, right_first_key.as_bytes())?;
                     let borrowed_child = right_sibling.child_ptr_at(0)?;
-                    // 3. Move separator key from parent to the left node
                     node.insert_separator_at(node.keys_len(), &separator_key, borrowed_child)?;
                     right_sibling.delete_child_at(0)?;
                 } else {
-                    return Ok(false); // Not enough keys to borrow
+                    return Ok(false);
                 }
             }
             _ => {
@@ -1095,7 +1143,7 @@ where
         Ok(true)
     }
 
-    // try and merge with left sibling node
+    /// Attempts to merge the current node into its left sibling.
     fn try_merge_with_left(
         &self,
         node: &mut NodeView,
@@ -1106,65 +1154,48 @@ where
         if idx == 0 {
             return Ok(None);
         }
-        let left_child_idx = idx - 1; // The index of the left sibling in the children array
+        let left_child_idx = idx - 1;
         let left_sibling_id = parent_node.child_ptr_at(left_child_idx)?;
-        let parent_key_idx = idx - 1; // The key in the parent node that separates the two children
+        let parent_key_idx = idx - 1;
         let Some(mut left_sibling) = self.storage.read_node_view(left_sibling_id)? else {
             return Err(TreeError::NodeNotFound(
                 format!("Left sibling id: {} not found", left_sibling_id).to_string(),
             ));
         };
         match (&mut left_sibling, &mut *node) {
-            (
-                NodeView::Leaf {
-                    ..
-                },
-                NodeView::Leaf {
-                    ..
-                },
-            ) => {
-                // Check if the total number of keys exceeds the maximum allowed
+            (NodeView::Leaf { .. }, NodeView::Leaf { .. }) => {
                 if left_sibling.keys_len() + node.keys_len() > self.max_keys {
-                    return Ok(None); // Cannot merge, total keys exceed max keys
+                    return Ok(None);
                 }
-                // Merge the current node with the left sibling
                 let merged_node = self.merge_nodes_view(&mut left_sibling, node)?;
                 let merged_node_id = self.write_node_view(merged_node, track)?;
 
-                track.reclaim(parent_node.child_ptr_at(idx)?); // Reclaim the right sibling node
+                track.reclaim(parent_node.child_ptr_at(idx)?);
                 parent_node.delete_child_at(idx)?;
-                track.reclaim(left_sibling_id); // Reclaim the left sibling node
-                parent_node.replace_child_at(left_child_idx, merged_node_id)?; // Update the left sibling with the merged node ID
-                // Update the parent keys
+                track.reclaim(left_sibling_id);
+                parent_node.replace_child_at(left_child_idx, merged_node_id)?;
                 if parent_node.keys_len() > 0 {
-                    parent_node.delete_key_at(parent_key_idx)?; // Update the parent key with the first key of the merged node
+                    parent_node.delete_key_at(parent_key_idx)?;
                 }
                 Ok(Some(merged_node_id))
             }
-            (
-                NodeView::Internal {
-                    ..
-                },
-                NodeView::Internal {
-                    ..
-                },
-            ) => {
-                // Check if the total number of keys exceeds the maximum allowed
+            (NodeView::Internal { .. }, NodeView::Internal { .. }) => {
                 if left_sibling.keys_len() + node.keys_len() > self.max_keys {
-                    return Ok(None); // Cannot merge, total keys exceed max keys
+                    return Ok(None);
                 }
-                // The key that separates
-                // The two children has to be removed and appended to the left sibling
+                // Pull the separator key from the parent down into the left sibling.
                 let seperator_key = parent_node.delete_key_at(parent_key_idx)?;
-                left_sibling.insert_separator_at(node.keys_len() + 1, seperator_key.as_bytes(), node.child_ptr_at(0)?)?;
-                // Merge the left sibling with the current node
+                left_sibling.insert_separator_at(
+                    node.keys_len() + 1,
+                    seperator_key.as_bytes(),
+                    node.child_ptr_at(0)?,
+                )?;
                 let merged_node = self.merge_nodes_view(&mut left_sibling, node)?;
                 let merged_node_id = self.write_node_view(merged_node, track)?;
-                // Update the parent node
-                track.reclaim(parent_node.child_ptr_at(idx)?); // Reclaim the left sibling node
+                track.reclaim(parent_node.child_ptr_at(idx)?);
                 parent_node.delete_child_at(idx)?;
-                track.reclaim(left_sibling_id); // Reclaim the left sibling node
-                parent_node.replace_child_at(left_child_idx, merged_node_id)?; // Update the left sibling with the merged node
+                track.reclaim(left_sibling_id);
+                parent_node.replace_child_at(left_child_idx, merged_node_id)?;
                 Ok(Some(merged_node_id))
             }
             _ => Err(TreeError::BackendAny(
@@ -1173,7 +1204,7 @@ where
         }
     }
 
-    // try and merge with right sibling node
+    /// Attempts to merge the current node with its right sibling.
     fn try_merge_with_right(
         &self,
         node: &mut NodeView,
@@ -1181,76 +1212,54 @@ where
         idx: usize,
         track: &mut impl TxnTracker,
     ) -> Result<Option<NodeId>, TreeError> {
-        // Check if there is a right sibling to merge with
         let right_idx = idx + 1;
         if right_idx >= parent_node.children_len()? {
             return Ok(None);
         }
 
         let right_sibling_id = parent_node.child_ptr_at(right_idx)?;
-        let parent_key_idx = idx; // The key in the parent node that separates the two children
+        let parent_key_idx = idx;
         let Some(mut right_sibling) = self.storage.read_node_view(right_sibling_id)? else {
             return Err(TreeError::NodeNotFound(
                 format!("Right sibling id: {} not found", right_sibling_id).to_string(),
             ));
         };
         match (&mut *node, &mut right_sibling) {
-            (
-                NodeView::Leaf {
-                    ..
-                },
-                NodeView::Leaf {
-                    ..
-                },
-            ) => {
-                // Check if the total number of keys exceeds the maximum allowed
+            (NodeView::Leaf { .. }, NodeView::Leaf { .. }) => {
                 if node.keys_len() + right_sibling.keys_len() > self.max_keys {
-                    return Ok(None); // Cannot merge, total keys exceed max keys
+                    return Ok(None);
                 }
-                // Merge the current node with the left sibling
                 let merged_node = self.merge_nodes_view(node, &mut right_sibling)?;
                 let merged_node_id = self.write_node_view(merged_node, track)?;
-                // Update the parent node
-                // Reclaim the right sibling node and  remove
                 track.reclaim(parent_node.child_ptr_at(right_idx)?);
                 parent_node.delete_child_at(right_idx)?;
-                // Reclaim the left sibling node
                 track.reclaim(parent_node.child_ptr_at(idx)?);
                 parent_node.replace_child_at(idx, merged_node_id)?;
-                // Update the parent keys
                 if parent_node.keys_len() > 0 {
-                    parent_node.delete_key_at(parent_key_idx)?; // Update the parent key with the first key of the merged node
+                    parent_node.delete_key_at(parent_key_idx)?;
                 }
                 Ok(Some(merged_node_id))
             }
-            (
-                NodeView::Internal {
-                    ..
-                },
-                NodeView::Internal {
-                    ..
-                },
-            ) => {
-                // Check if the total number of keys exceeds the maximum allowed
+            (NodeView::Internal { .. }, NodeView::Internal { .. }) => {
                 if node.keys_len() + right_sibling.keys_len() > self.max_keys {
-                    return Ok(None); // Cannot merge, total keys exceed max keys
+                    return Ok(None);
                 }
-                
+
+                // Pull the separator key from the parent down into the left node,
+                // then absorb the right sibling's first child pointer.
                 let seperator_key = parent_node.delete_key_at(parent_key_idx)?;
+                node.insert_separator_at(
+                    node.keys_len(),
+                    seperator_key.as_bytes(),
+                    right_sibling.child_ptr_at(0)?,
+                )?;
 
-                // The key that separates
-                // the two children has to be removed and added to the left sibling together with
-                // the first child of the right sibling
-                node.insert_separator_at(node.keys_len(), seperator_key.as_bytes(), right_sibling.child_ptr_at(0)?)?;
-
-                // Merge the current node with the right sibling
                 let merged_node = self.merge_nodes_view(node, &mut right_sibling)?;
                 let merged_node_id = self.write_node_view(merged_node, track)?;
-                
-                // Update the parent node
-                track.reclaim(parent_node.child_ptr_at(right_idx)?); // Reclaim the right sibling node
+
+                track.reclaim(parent_node.child_ptr_at(right_idx)?);
                 parent_node.delete_child_at(right_idx)?;
-                track.reclaim(parent_node.child_ptr_at(idx)?); // Reclaim the left sibling node
+                track.reclaim(parent_node.child_ptr_at(idx)?);
                 parent_node.replace_child_at(idx, merged_node_id)?;
                 Ok(Some(merged_node_id))
             }
@@ -1260,48 +1269,30 @@ where
         }
     }
 
-    // Merges two nodes into one, ensuring that the total number of keys does not exceed the
-    // maximum allowed.
+    /// Merges `right_node` into `left_node` and returns the combined node.
     pub fn merge_nodes_view(
         &'s self,
         left_node: &'s mut NodeView,
         right_node: &'s mut NodeView,
     ) -> Result<&'s NodeView, TreeError> {
         match (&mut *left_node, &mut *right_node) {
-            (
-                NodeView::Leaf {
-                    ..
-                },
-                NodeView::Leaf {
-                    ..
-                },
-            ) => {
-                // Check if the total number of keys exceeds the maximum allowed
+            (NodeView::Leaf { .. }, NodeView::Leaf { .. }) => {
                 if left_node.keys_len() + right_node.keys_len() > self.max_keys {
                     return Err(TreeError::BackendAny(
                         "Cannot merge leaf nodes, total keys exceed max keys".to_string(),
                     ));
                 }
-                //TODO : Merge into the emptier node
+                // TODO: merge into the emptier node.
                 left_node.merge_into(right_node)?;
                 Ok(left_node)
             }
-            (
-                NodeView::Internal {
-                    ..
-                },
-                NodeView::Internal {
-                    ..
-                },
-            ) => {
+            (NodeView::Internal { .. }, NodeView::Internal { .. }) => {
                 if left_node.keys_len() + right_node.keys_len() > self.max_keys {
                     return Err(TreeError::BackendAny(
                         "Cannot merge internal nodes, total keys exceed max keys".to_string(),
                     ));
                 }
-
-                // Update the parent node with the new node ID
-                //TODO : Merge into the emptier node
+                // TODO: merge into the emptier node.
                 left_node.merge_into(right_node)?;
                 Ok(left_node)
             }
@@ -1311,17 +1302,16 @@ where
         }
     }
 
-    // Reclaims a node by adding it to the reclamation candidates for the current epoch.
+    /// Registers a node for deferred reclamation after the current epoch retires.
     pub fn reclaim_node(&self, node_id: NodeId) -> Result<(), TreeError> {
-        let epoch = self.storage.epoch_mgr().get_current_thread_epoch().ok_or_else(|| {
+        let epoch = self.epoch_mgr.get_current_thread_epoch().ok_or_else(|| {
             TreeError::BackendAny("Failed to get epoch for current thread".to_string())
         })?;
-        self.storage.epoch_mgr().add_reclaim_candidate(epoch, node_id);
+        self.epoch_mgr.add_reclaim_candidate(epoch, node_id);
         Ok(())
     }
 
-    // ---- Commits and Metadata Management ----
-    // Returns the current valid snapshot of the tree's state.
+    /// Returns a snapshot of the current committed tree state.
     pub fn get_snapshot(&self) -> MetadataSnapshot {
         let ptr = self.committed.load(Ordering::Acquire);
         let meta = unsafe { &*ptr };
@@ -1334,19 +1324,17 @@ where
         }
     }
 
-    // Version of commit to be used for single threaded commits, use for testing and debugging
+    /// Commits new metadata in a single-threaded context; intended for testing and debugging.
     pub fn commit(
         &self,
         new_root_id: NodeId,
         _height: usize,
         _size: usize,
     ) -> Result<(), TreeError> {
-        // Now commit the new root
-        // 1. Write new metadata (to double-buffered slot)
         let new_txn_id = self.txn_id.fetch_add(1, Ordering::SeqCst) + 1;
+        // Write to whichever of the two metadata slots this transaction maps to.
         let target_slot = new_txn_id % 2;
 
-        // Commit the metadata for the new root
         MetadataManager::commit_metadata(
             self.page_storage,
             target_slot,
@@ -1360,7 +1348,6 @@ where
 
         let current_ptr = self.committed.load(Ordering::Acquire);
         let current = unsafe { &mut *current_ptr };
-        // Flush the storage to ensure all changes are written
         self.storage.flush()?;
 
         current.root_node_id = new_root_id;
@@ -1368,21 +1355,21 @@ where
 
         self.commit_count.fetch_add(1, Ordering::Relaxed);
 
-        let _new_epoch = self.storage.epoch_mgr().advance(); // Bump the epoch for transaction management
+        let _new_epoch = self.epoch_mgr.advance();
 
-        let safe_epoch = self.storage.epoch_mgr().oldest_active();
-        let reclaimed = self.storage.epoch_mgr().reclaim(safe_epoch);
+        let safe_epoch = self.epoch_mgr.oldest_active();
+        let reclaimed = self.epoch_mgr.reclaim(safe_epoch);
         for pid in reclaimed {
             self.storage.free_node(pid)?;
         }
 
         if (self.commit_count.load(Ordering::Relaxed) as u64) % COMMIT_COUNT == 0 {
-            self.storage.epoch_mgr().advance(); // Pin new epoch for reclamation
+            self.epoch_mgr.advance(); // Pin new epoch for reclamation
         }
         Ok(())
     }
 
-    // Attempts to commit the transaction with the given metadata.
+    /// Attempts to commit staged metadata via a lock-free compare-and-exchange.
     pub fn try_commit(
         &self,
         base_version: &BaseVersion,
@@ -1399,15 +1386,13 @@ where
         }
 
         let expected = base_version.committed_ptr;
-        // load current committed metadata
         let current_ptr = self.committed.load(Ordering::Acquire);
         let current = unsafe { &*current_ptr };
-        // Assign new txn_id here - the current txn_id in the committed metadata is the actual
-        // sequence number.
+        // The txn_id stored in committed metadata is the authoritative sequence number.
         let new_txn_id = current.txn_id + 1;
         let metadata = Metadata {
             root_node_id: new_meta.root_id,
-            id : self.id,
+            id: self.id,
             height: new_meta.height,
             size: new_meta.size,
             txn_id: new_txn_id,
@@ -1415,10 +1400,8 @@ where
             order: current.order,
         };
 
-        // 1. Prepare new metadata box and pointer
         let boxed = Box::new(metadata);
         let new_ptr = Box::into_raw(boxed);
-        // 2. Atomically commit metadata pointer
         let result = self.committed.compare_exchange(
             expected as *mut Metadata,
             new_ptr,
@@ -1427,42 +1410,42 @@ where
         );
 
         match result {
-            // ✅ cas has succeeded, proceed with commit to storage
+            // CAS succeeded; write metadata to the double-buffered slot.
             Ok(old_ptr) => {
-                // 3. Commit metadata to the double-buffered slot
                 let slot = new_txn_id % 2;
 
-                let res = 
-                    MetadataManager::commit_metadata_with_object(self.page_storage, slot, &metadata);
+                let res = MetadataManager::commit_metadata_with_object(
+                    self.page_storage,
+                    slot,
+                    &metadata,
+                );
                 if let Err(e) = res {
-                    // ❌ commit failed, restore old metadata
+                    // Metadata write failed; restore the previous pointer.
                     unsafe {
                         drop(Box::from_raw(new_ptr));
-                    } // Discard new metadata
-                    self.committed.store(current_ptr, Ordering::Release); // Restore old metadata
+                    }
+                    self.committed.store(current_ptr, Ordering::Release);
                     return Err(CommitError::Io(e));
                 }
-                self.storage.flush()?; // flush to disk
-                // 4. Advance the epoch manager
-                self.storage.epoch_mgr().advance();
-                let safe_epoch = self.storage.epoch_mgr().oldest_active();
-                let reclaimed = self.storage.epoch_mgr().reclaim(safe_epoch);
+                self.storage.flush()?;
+                self.epoch_mgr.advance();
+                let safe_epoch = self.epoch_mgr.oldest_active();
+                let reclaimed = self.epoch_mgr.reclaim(safe_epoch);
                 for nid in reclaimed {
                     self.storage.free_node(nid)?;
                 }
                 if (self.commit_count.load(Ordering::Relaxed) as u64) % COMMIT_COUNT == 0 {
-                    self.storage.epoch_mgr().advance(); // Pin new epoch for reclamation
+                    self.epoch_mgr.advance(); // Pin new epoch for reclamation
                 }
 
                 unsafe {
-                    // Reclaim old metadata
                     drop(Box::from_raw(old_ptr));
                 }
 
                 Ok(())
             }
             Err(_) => {
-                // ❌ Lost race, discard new metadata
+                // CAS lost the race; discard the speculative metadata.
                 unsafe {
                     drop(Box::from_raw(new_ptr));
                 }
@@ -1471,17 +1454,17 @@ where
         }
     }
 
-    // Safe accessor for current committed metadata
+    /// Returns a reference to the current committed metadata.
     pub fn metadata(&self) -> &Metadata {
         unsafe { &*self.committed.load(Ordering::Acquire) }
     }
 
-    // Safe accessor for current committed metadata
+    /// Returns a raw pointer to the current committed metadata.
     pub fn metadata_ptr(&self) -> *const Metadata {
         unsafe { &*self.committed.load(Ordering::Acquire) }
     }
 
-    // Returns a snapshot of the current metadata, useful for read-only operations.
+    /// Returns a copy of the current committed metadata.
     pub fn snapshot(&self) -> Metadata {
         let ptr = self.committed.load(Ordering::Acquire);
         let meta = unsafe { &*ptr };
@@ -1497,8 +1480,6 @@ where
         }
     }
 
-    // ----- Traversal and Utility Methods -----
-    // Traverses the B+ tree and returns all key-value pairs in a vector.
     //pub fn traverse(&self) -> Result<Vec<(&[u8], &[u8])>, TreeError> {
     //    let mut result = Vec::new();
     //    let root_id = self.get_root_id();
@@ -1534,29 +1515,33 @@ where
     //    Ok(())
     //}
 
-    // Helpers to get metadata information
+    /// Returns the current committed transaction ID.
     pub fn get_txn_id(&self) -> u64 {
         self.txn_id.load(Ordering::Relaxed)
     }
 
+    /// Returns the current committed root node ID.
     pub fn get_root_id(&self) -> NodeId {
         let ptr = self.committed.load(Ordering::Acquire);
         let meta = unsafe { &*ptr };
         meta.root_node_id
     }
 
+    /// Returns the current committed tree height.
     pub fn get_height(&self) -> usize {
         let ptr = self.committed.load(Ordering::Acquire);
         let meta = unsafe { &*ptr };
         meta.height
     }
 
+    /// Returns the current approximate entry count.
     pub fn get_size(&self) -> usize {
         let ptr = self.committed.load(Ordering::Acquire);
         let meta = unsafe { &*ptr };
         meta.size
     }
 
+    /// Returns the B+ tree order (maximum number of children per internal node).
     pub fn get_order(&self) -> usize {
         let ptr = self.committed.load(Ordering::Acquire);
         let meta = unsafe { &*ptr };
@@ -1564,6 +1549,7 @@ where
     }
 
     #[cfg(any(test, feature = "testing"))]
+    /// Force-publishes the given metadata without a CAS; for testing only.
     pub fn test_force_publish(&self, metadata: &Metadata) {
         let boxed = Box::new(*metadata);
         let new_ptr = Box::into_raw(boxed);
@@ -1571,8 +1557,9 @@ where
     }
 
     #[cfg(any(test, feature = "testing"))]
+    /// Returns the epoch manager; for testing only.
     pub fn get_epoch_mgr(&self) -> Arc<EpochManager> {
-        Arc::clone(&self.storage.epoch_mgr())
+        Arc::clone(&self.epoch_mgr)
     }
 }
 
@@ -1581,11 +1568,10 @@ mod tests {
     use super::*;
     use crate::tests::common::{test_storage::TestStorage, test_tree};
 
-    // test commit happy path
     #[test]
     fn commit_happy_path() {
-        let storage = TestStorage::new(); // Reset the test storage state
-        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let storage = TestStorage::new();
+        let test_harness = test_tree::<TestStorage>(storage, 128);
         let tree = test_harness.tree;
 
         let base = BaseVersion {
@@ -1610,7 +1596,7 @@ mod tests {
     #[test]
     fn commit_happy_path_2() {
         let storage = TestStorage::new(); // Reset the test storage state
-        let h = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let h = test_tree::<TestStorage>(storage, 128);
         let base = BaseVersion {
             committed_ptr: h.tree.metadata_ptr(),
         };
@@ -1643,7 +1629,7 @@ mod tests {
     fn commit_aborts_on_conflict() {
         let storage = TestStorage::new(); // Reset the test storage state
         storage.inject_commit_failure(true);
-        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let test_harness = test_tree::<TestStorage>(storage, 128);
         let tree = test_harness.tree;
         let _mocks = test_harness.storage;
         let base = BaseVersion {
@@ -1664,7 +1650,7 @@ mod tests {
     #[test]
     fn txn_id_is_strictly_monotonic() {
         let storage = TestStorage::new(); // Reset the test storage state
-        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
+        let h = test_tree::<TestStorage>(storage, 128);
         let mut prev = h.tree.metadata().txn_id;
 
         for i in 0..5 {
@@ -1696,7 +1682,7 @@ mod tests {
     #[test]
     fn slot_follows_txn_mod2() {
         let storage = TestStorage::new(); // Reset the test storage state
-        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
+        let h = test_tree::<TestStorage>(storage, 128);
         for i in 0..6 {
             let base = BaseVersion {
                 committed_ptr: h.tree.metadata_ptr(),
@@ -1721,7 +1707,7 @@ mod tests {
     fn commit_metadata_write_failure_is_abort() {
         let storage = TestStorage::new(); // Reset the test storage state
         storage.inject_commit_failure(true);
-        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let test_harness = test_tree::<TestStorage>(storage, 128);
         let tree = test_harness.tree;
         let _mocks = test_harness.storage;
         let base = BaseVersion {
@@ -1748,7 +1734,7 @@ mod tests {
     fn flush_failure_after_cas_keeps_published_state() {
         let storage = TestStorage::new(); // Reset the test storage state
         storage.inject_flush_failure(true);
-        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let test_harness = test_tree::<TestStorage>(storage, 128);
         let tree = test_harness.tree;
         let _mocks = test_harness.storage;
         let base = BaseVersion {

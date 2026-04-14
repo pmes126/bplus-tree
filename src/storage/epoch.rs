@@ -6,19 +6,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 
+/// A monotonically increasing epoch counter value.
 pub type Epoch = u64;
 
-pub const COMMIT_COUNT: u64 = 10; // Number of commits before a new epoch is created
+/// Number of commits between automatic epoch advances for deferred reclamation.
+pub const COMMIT_COUNT: u64 = 10;
 
-// Tracks active reader epochs and deferred_pages reclamation.
+/// Tracks active reader epochs and coordinates deferred page reclamation.
 #[derive(Debug)]
 pub struct EpochManager {
     global_epoch: AtomicU64,
     active_readers: Mutex<HashMap<ThreadId, Epoch>>,
-    deferred_pages: Mutex<BTreeMap<u64, Vec<NodeId>>>, // (epoch, NodeId)
+    /// Mapping from epoch to the node IDs deferred for reclamation at that epoch.
+    deferred_pages: Mutex<BTreeMap<u64, Vec<NodeId>>>,
 }
 
 impl EpochManager {
+    /// Creates a new [`EpochManager`] starting at epoch 1.
     pub fn new() -> Self {
         Self {
             global_epoch: AtomicU64::new(1),
@@ -27,6 +31,7 @@ impl EpochManager {
         }
     }
 
+    /// Creates a new [`EpochManager`] wrapped in an [`Arc`].
     pub fn new_shared() -> Arc<Self> {
         Arc::new(Self {
             global_epoch: AtomicU64::new(1),
@@ -35,16 +40,17 @@ impl EpochManager {
         })
     }
 
-    // Advance the epoch (typically called on commit)
+    /// Advances the global epoch by one and returns the new value.
     pub fn advance(&self) -> u64 {
         self.global_epoch.fetch_add(1, Ordering::SeqCst) + 1
     }
 
+    /// Returns the current global epoch value.
     pub fn current(&self) -> u64 {
         self.global_epoch.load(Ordering::SeqCst)
     }
 
-    // Register a page for future reclamation
+    /// Registers a page ID for deferred reclamation at the given epoch.
     pub fn add_reclaim_candidate(&self, epoch: u64, page_id: u64) {
         self.deferred_pages
             .lock()
@@ -54,9 +60,9 @@ impl EpochManager {
             .push(page_id);
     }
 
-    // Reader pins itself to current epoch
+    /// Pins the current thread to the current epoch and returns a guard that unpins on drop.
     pub fn pin(self: &Arc<Self>) -> ReaderGuard {
-        let epoch = self.global_epoch.load(Ordering::Relaxed); // Get the current epoch, no need for SeqCst here
+        let epoch = self.global_epoch.load(Ordering::Relaxed);
         let tid = std::thread::current().id();
         self.active_readers.lock().unwrap().insert(tid, epoch);
 
@@ -67,18 +73,18 @@ impl EpochManager {
         }
     }
 
-    // Reader unpins itself
+    /// Unpins the current thread from its epoch.
     pub fn unpin(&self) {
         let tid = std::thread::current().id();
         self.active_readers.lock().unwrap().remove(&tid);
     }
 
-    // Unpin for a specific thread ID
+    /// Unpins a specific thread by its ID.
     pub fn unpin_by_id(&self, tid: ThreadId) {
         self.active_readers.lock().unwrap().remove(&tid);
     }
 
-    // Return the minimum epoch still pinned
+    /// Returns the minimum epoch still pinned by any active reader.
     pub fn oldest_active(&self) -> Epoch {
         let readers = self.active_readers.lock().unwrap();
         readers
@@ -88,14 +94,14 @@ impl EpochManager {
             .unwrap_or(self.global_epoch.load(Ordering::Relaxed))
     }
 
-    // Reclaim all pages older than or equal to a safe epoch
+    /// Collects and returns all page IDs deferred at epochs up to and including `safe_epoch`.
     pub fn reclaim(&self, safe_epoch: Epoch) -> Vec<NodeId> {
         let mut reclaimed = vec![];
         let to_reclaim: Vec<u64> = self
             .deferred_pages
             .lock()
             .unwrap()
-            .range(..=safe_epoch) // exclude the safe_epoch itself anything older can be reclaimed
+            .range(..=safe_epoch)
             .map(|(e, _)| *e)
             .collect();
 
@@ -107,30 +113,33 @@ impl EpochManager {
         reclaimed
     }
 
-    // Get the current epoch for the current thread
+    /// Returns the epoch currently pinned by the calling thread, if any.
     pub fn get_current_thread_epoch(&self) -> Option<Epoch> {
         let tid = std::thread::current().id();
         self.active_readers.lock().unwrap().get(&tid).copied()
     }
 
     #[cfg(test)]
+    /// Returns a snapshot of the active readers map; for testing only.
     pub fn get_active_readers(&self) -> HashMap<ThreadId, Epoch> {
         self.active_readers.lock().unwrap().clone()
     }
 
     #[cfg(test)]
+    /// Returns a snapshot of the deferred pages map; for testing only.
     pub fn get_deferred_pages(&self) -> BTreeMap<u64, Vec<NodeId>> {
         self.deferred_pages.lock().unwrap().clone()
     }
 
     #[cfg(test)]
+    /// Returns the current global epoch value; for testing only.
     pub fn get_global_epoch(&self) -> Epoch {
         self.global_epoch.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
+    /// Overrides all active reader epochs to `epoch`; for testing only.
     pub fn set_oldest_active(&self, epoch: Epoch) {
-        // This is for testing purposes to set a specific oldest active epoch
         let mut readers = self.active_readers.lock().unwrap();
         for (_, e) in readers.iter_mut() {
             *e = epoch;
@@ -138,8 +147,8 @@ impl EpochManager {
     }
 
     #[cfg(test)]
+    /// Sets the deferred reclamation list for `epoch`; for testing only.
     pub fn set_reclaim_list(&self, epoch: u64, pages: Vec<NodeId>) {
-        // This is for testing purposes to set a specific reclaim list
         let mut deferred = self.deferred_pages.lock().unwrap();
         deferred.insert(epoch, pages);
     }
@@ -151,6 +160,7 @@ impl Default for EpochManager {
     }
 }
 
+/// An RAII guard that unpins the current thread from its epoch on drop.
 pub struct ReaderGuard {
     epoch_mgr: Arc<EpochManager>,
     tid: ThreadId,
@@ -158,6 +168,7 @@ pub struct ReaderGuard {
 }
 
 impl ReaderGuard {
+    /// Returns the epoch this guard is pinned to.
     fn epoch(&self) -> Epoch {
         self.epoch
     }

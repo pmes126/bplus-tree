@@ -1,6 +1,6 @@
 use self::storage::file_store::FileStore;
-use ::bplustree::*;
 use crate::api::DbBuilder;
+use ::bplustree::*;
 
 use reqwest::Error;
 use storage::page_store::PageStore;
@@ -16,8 +16,9 @@ async fn main() {
 
     let db = DbBuilder::new(store)
         .order(64)
-        .build_typed::<u64, String>().unwrap();
-    
+        .build_typed::<u64, String>()
+        .unwrap();
+
     let mut tx = db.begin_write().unwrap();
 
     let mut ticker = interval(Duration::from_secs(2));

@@ -1,23 +1,25 @@
-pub use crate::storage::file_store;
+//! [`NodeStorage`] implementation backed by a [`PageStorage`] instance.
+
+pub use crate::storage::paged_node_storage;
 
 use crate::bplustree::NodeView;
-use crate::storage::epoch::EpochManager;
 use crate::codec::bincode::NoopNodeViewCodec;
+use crate::database::manifest::writer::ManifestWriter;
 use crate::layout::PAGE_SIZE;
-use crate::storage::{Storage, HasEpoch, NodeStorage, PageStorage, StorageError};
-use crate::store::manifest::writer::ManifestWriter;
+use crate::storage::epoch::EpochManager;
+use crate::storage::{HasEpoch, NodeStorage, PageStorage, StorageError};
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-pub struct FileStore<S: PageStorage> 
-{
+/// A [`NodeStorage`] that encodes node views as pages and delegates I/O to a [`PageStorage`].
+pub struct PagedNodeStorage<S: PageStorage> {
     store: S,
-    epoch_mgr: Arc<EpochManager>, // Epoch manager for transaction management
-    manifest: Mutex<ManifestWriter>,  // single writer
+    epoch_mgr: Arc<EpochManager>,
+    manifest: Mutex<ManifestWriter>,
 }
 
-impl<S: PageStorage> HasEpoch for FileStore<S>
+impl<S: PageStorage> HasEpoch for PagedNodeStorage<S>
 where
     S: Send + Sync + 'static,
 {
@@ -26,11 +28,11 @@ where
     }
 }
 
-impl<S: PageStorage> FileStore<S>
-    where
-        S: Send + Sync + 'static,
-
+impl<S: PageStorage> PagedNodeStorage<S>
+where
+    S: Send + Sync + 'static,
 {
+    /// Opens (or creates) a [`PagedNodeStorage`] from the given data and manifest paths.
     pub fn new<P: AsRef<Path>>(storage_path: P, manifest_path: P) -> Result<Self, std::io::Error> {
         Ok(Self {
             store: S::open(storage_path)?,
@@ -38,11 +40,8 @@ impl<S: PageStorage> FileStore<S>
             manifest: Mutex::new(ManifestWriter::open(manifest_path.as_ref(), 0)?),
         })
     }
-
 }
-// NodeStorage impl: read/write node views as pages; encode/decode with NodeViewCodec; free pages
-// on demand.
-impl<S: PageStorage> NodeStorage for FileStore<S>
+impl<S: PageStorage> NodeStorage for PagedNodeStorage<S>
 where
     S: Send + Sync + 'static,
 {
@@ -58,7 +57,11 @@ where
         Ok(res)
     }
 
-    fn write_node_view_at_offset(&self, node_view: &NodeView, offset: u64) -> Result<u64, StorageError> {
+    fn write_node_view_at_offset(
+        &self,
+        node_view: &NodeView,
+        offset: u64,
+    ) -> Result<u64, StorageError> {
         let buf = NoopNodeViewCodec::encode(node_view)?;
         let res = self.store.write_page_at_offset(offset, buf)?;
         Ok(res)

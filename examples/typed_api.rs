@@ -62,4 +62,3 @@ fn main() -> anyhow::Result<()> {
 //// 5) Use it like normal
 //users.put(2u64, "SomeString".to_owned()).await?;
 //let v = users.get(2u64).await?;
-

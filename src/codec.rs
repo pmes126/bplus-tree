@@ -1,10 +1,12 @@
+//! Codec traits and error types for encoding and decoding keys, values, and nodes.
+
 pub mod bincode;
 
 use crate::bplustree::node::Node;
 use crate::layout::PAGE_SIZE;
 use thiserror::Error;
 
-// Trait for keys to binary storage transformation
+/// Encodes and decodes keys to and from their binary storage representation.
 pub trait KeyCodec<K> {
     /// Append an order-preserving encoding of `key` to `out`.
     fn encode_key(key: &K, out: &mut [u8]) -> Result<usize, CodecError>;
@@ -18,7 +20,7 @@ pub trait KeyCodec<K> {
     fn encoded_len(key: &K) -> usize;
 }
 
-// Trait for values to binary storage transformation
+/// Encodes and decodes values to and from their binary storage representation.
 pub trait ValueCodec<V> {
     fn encode_value(value: &V, out: &mut [u8]) -> Result<usize, CodecError>;
     fn decode_value(bytes: &[u8]) -> Result<V, CodecError>;

@@ -21,9 +21,9 @@ use crate::layout::PAGE_SIZE; // const PAGE_SIZE: usize
 use crate::page::LEAF_NODE_TAG;
 use crate::page::PageError;
 
+use std::convert::TryInto;
 use std::fmt;
 use std::fmt::Debug;
-use std::convert::TryInto;
 
 #[inline]
 fn read_u16_le(buf: &[u8], off: usize) -> u16 {
@@ -74,7 +74,7 @@ impl LeafPage {
         LeafPage {
             header: Header {
                 kind: LEAF_NODE_TAG,
-                keyfmt_id : keyfmt_id.id(),
+                keyfmt_id: keyfmt_id.id(),
                 key_count: 0u16,
                 key_block_len: 0u16,
                 values_hi: BUFFER_SIZE as u16, // the hi address within buf where values start
@@ -323,7 +323,9 @@ impl LeafPage {
 
         // Plan and get delta_k
         let kb = self.key_block(); // &[u8]
-        let (range, repl) = self.key_fmt().replace_plan(kb, idx, key_bytes, &mut scratch); // same idea as insert_plan
+        let (range, repl) = self
+            .key_fmt()
+            .replace_plan(kb, idx, key_bytes, &mut scratch); // same idea as insert_plan
         let delta_k = repl.len() as isize - (range.end - range.start) as isize; // usually negative
 
         // CAPACITY
@@ -368,11 +370,7 @@ impl LeafPage {
         Ok(())
     }
 
-    pub fn insert_key_at(
-        &mut self,
-        idx: usize,
-        key_enc: &[u8],
-    ) -> Result<(), PageError> {
+    pub fn insert_key_at(&mut self, idx: usize, key_enc: &[u8]) -> Result<(), PageError> {
         if idx > self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
         }
@@ -430,7 +428,10 @@ impl LeafPage {
             return Err(PageError::IndexOutOfBounds {});
         }
         let mut scratch = Vec::new();
-        let key = self.key_fmt().decode_at(self.key_block(), idx, &mut scratch).to_vec();
+        let key = self
+            .key_fmt()
+            .decode_at(self.key_block(), idx, &mut scratch)
+            .to_vec();
 
         // Plan and get delta_k
         let kb = self.key_block(); // &[u8]
@@ -475,30 +476,43 @@ impl LeafPage {
     pub fn append(&mut self, key_enc: &[u8], val: &[u8]) -> Result<(), PageError> {
         // plan as an append
         let kb = self.key_block();
-        let (range, repl) = self.key_fmt().insert_plan(kb, self.key_count() as usize, key_enc, &mut Vec::new());
+        let (range, repl) =
+            self.key_fmt()
+                .insert_plan(kb, self.key_count() as usize, key_enc, &mut Vec::new());
         debug_assert_eq!(range.start, kb.len());
-        debug_assert_eq!(range.end,   kb.len());
+        debug_assert_eq!(range.end, kb.len());
         let delta_k = repl.len() as isize;
-    
+
         // capacity check: keys grow by delta_k; slots grow by 1; values by val.len()
-        let keys_end_new  = (self.keys_end() as isize + delta_k) as usize;
+        let keys_end_new = (self.keys_end() as isize + delta_k) as usize;
         let slots_end_new = keys_end_new + (self.key_count() as usize + 1) * SLOT_SIZE;
-        let values_hi_new = self.values_hi_usize().checked_sub(val.len()).ok_or(PageError::PageFull {})?;
-        if slots_end_new > values_hi_new { return Err(PageError::PageFull {}); }
-    
+        let values_hi_new = self
+            .values_hi_usize()
+            .checked_sub(val.len())
+            .ok_or(PageError::PageFull {})?;
+        if slots_end_new > values_hi_new {
+            return Err(PageError::PageFull {});
+        }
+
         // move slot dir by delta_k (kept flush)
         self.move_slot_dir(delta_k)?;
-    
+
         // append key bytes (no tail shift)
         let ks = self.keys_start();
         let old_len = self.key_block_len() as usize;
         let new_len = old_len + repl.len();
-        self.buf[ks + old_len .. ks + new_len].copy_from_slice(&repl);
+        self.buf[ks + old_len..ks + new_len].copy_from_slice(&repl);
         self.set_key_block_len(new_len as u16);
-    
+
         // append value + write slot at the end
         let (off, len) = self.alloc_value_tail(val)?;
-        self.write_slot(self.key_count() as usize, LeafSlot { val_off: off, val_len: len })?;
+        self.write_slot(
+            self.key_count() as usize,
+            LeafSlot {
+                val_off: off,
+                val_len: len,
+            },
+        )?;
         self.set_key_count(self.key_count() + 1);
         Ok(())
     }
@@ -619,7 +633,7 @@ impl LeafPage {
 
         // 2) Sort by old offset ASC (we'll iterate DESC to move toward higher addresses)
         items.sort_unstable_by_key(|&(_, off, _)| off);
-        for &(idx, off, len) in items.iter().rev() { 
+        for &(idx, off, len) in items.iter().rev() {
             dst -= len;
             self.buf.copy_within(off..off + len, dst);
             // update slot
@@ -821,23 +835,23 @@ impl<'a> PageKeyRun<'a> {
 
 impl fmt::Debug for LeafPage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let keys_end      = self.keys_end();
-        let slots_base    = self.slots_base();
-        let slots_end     = self.slots_end();
-        let values_hi     = self.values_hi_usize();
-        let key_count     = self.key_count() as usize;
+        let keys_end = self.keys_end();
+        let slots_base = self.slots_base();
+        let slots_end = self.slots_end();
+        let values_hi = self.values_hi_usize();
+        let key_count = self.key_count() as usize;
         let key_block_len = self.key_block_len() as usize;
         let alternate = f.alternate();
 
         let mut dbg = f.debug_struct("LeafPage");
         dbg.field("fmt_id", &self.keyfmt_id())
-           .field("keys", &key_count)
-           .field("key_block_len", &key_block_len)
-           .field("keys_end", &keys_end)
-           .field("slots_base", &slots_base)
-           .field("slots_end", &slots_end)
-           .field("values_hi", &values_hi)
-           .field("free_bytes", &values_hi.saturating_sub(slots_end));
+            .field("keys", &key_count)
+            .field("key_block_len", &key_block_len)
+            .field("keys_end", &keys_end)
+            .field("slots_base", &slots_base)
+            .field("slots_end", &slots_end)
+            .field("values_hi", &values_hi)
+            .field("free_bytes", &values_hi.saturating_sub(slots_end));
 
         // Pretty mode: show a tiny preview
         if alternate {
@@ -873,7 +887,7 @@ mod tests {
     use crate::keyfmt::raw::RawFormat;
 
     fn make_page() -> LeafPage {
-        LeafPage::new(RawFormat.format_id())
+        LeafPage::new(KeyFormat::Raw(RawFormat))
     }
 
     #[test]

@@ -1,44 +1,89 @@
+//! Manifest log record definitions and binary encoding.
+
 pub mod reader;
 pub mod writer;
 
-use crate::api::{TreeId, KeyEncodingId, KeyLimits};
+use crate::api::{KeyEncodingId, KeyLimits, TreeId};
 use crate::keyfmt::KeyFormat;
+use std::fs::File;
 use std::io::{self, Read, Write};
+use std::path::PathBuf;
 
 const TAG_CREATE_TREE: u8 = 1;
 const TAG_DELETE_TREE: u8 = 2;
 const TAG_RENAME_TREE: u8 = 3;
-// ManifestRec represents a record in the manifest log. It is used to track the state of the trees
-// in the store, and to reconstruct the state of the store when loading the manifest. Each record
-// has a sequence number (seq) that is used to order the records in the log. The manifest log is
-// append-only, and each record is immutable once written.
+
+/// An append-only log record describing a change to the tree catalog.
 #[derive(Debug, Clone)]
 pub enum ManifestRec {
+    /// A new B+ tree was created.
     CreateTree {
+        /// Manifest sequence number assigned at write time.
         seq: u64,
+        /// Stable numeric identifier for the new tree.
         id: TreeId,
-        meta_a : u64,
-        meta_b : u64,
+        /// Page ID of metadata slot A.
+        meta_a: u64,
+        /// Page ID of metadata slot B.
+        meta_b: u64,
+        /// Logical name of the tree.
         name: String,
+        /// Key encoding strategy.
         key_encoding: KeyEncodingId,
+        /// On-page key layout.
         key_format: KeyFormat,
+        /// On-page encoding version.
         encoding_version: u16,
+        /// Optional key length constraints.
         key_limits: Option<KeyLimits>,
+        /// B+ tree order (branching factor).
         order: u64,
+        /// Initial root node page ID.
         root_id: u64,
+        /// Initial tree height.
         height: u64,
+        /// Initial entry count.
         size: u64,
     },
-    RenameTree { seq: u64, id: TreeId, new_name: String },
-    DeleteTree { seq: u64, id: TreeId },
-    Checkpoint { seq: u64 },
+    /// An existing tree was renamed.
+    RenameTree {
+        /// Manifest sequence number.
+        seq: u64,
+        /// ID of the tree being renamed.
+        id: TreeId,
+        /// New logical name.
+        new_name: String,
+    },
+    /// An existing tree was deleted.
+    DeleteTree {
+        /// Manifest sequence number.
+        seq: u64,
+        /// ID of the tree being deleted.
+        id: TreeId,
+    },
+    /// A durable checkpoint was written (no catalog change).
+    Checkpoint {
+        /// Manifest sequence number.
+        seq: u64,
+    },
 }
 
+/// An in-memory collection of manifest records.
 pub struct ManifestLog {
+    /// Ordered list of manifest records.
     pub recs: Vec<ManifestRec>,
 }
 
+/// An open handle to a manifest file on disk.
+pub struct ManifestFile {
+    /// Path to the manifest file.
+    pub path: PathBuf,
+    /// Open file handle.
+    pub file: File,
+}
+
 impl ManifestRec {
+    /// Encodes this record into the given writer.
     pub fn encode(&self, mut w: impl Write) -> io::Result<()> {
         match self {
             ManifestRec::CreateTree {
@@ -71,13 +116,13 @@ impl ManifestRec {
                 payload.extend_from_slice(&root_id.to_le_bytes());
                 payload.extend_from_slice(&height.to_le_bytes());
                 payload.extend_from_slice(&size.to_le_bytes());
-                    if let Some(limits) = key_limits {
-                        payload.push(1); // has limits
-                        payload.extend_from_slice(&limits.min_len.to_le_bytes());
-                        payload.extend_from_slice(&limits.max_len.to_le_bytes());
-                    } else {
-                        payload.push(0); // no limits
-                    }
+                if let Some(limits) = key_limits {
+                    payload.push(1); // 1 = has limits
+                    payload.extend_from_slice(&limits.min_len.to_le_bytes());
+                    payload.extend_from_slice(&limits.max_len.to_le_bytes());
+                } else {
+                    payload.push(0); // 0 = no limits
+                }
 
                 write_len_prefixed_payload(&mut w, &payload)
             }
@@ -97,13 +142,14 @@ impl ManifestRec {
                 write_len_prefixed_payload(&mut w, &payload)
             }
             ManifestRec::Checkpoint { seq } => {
-                w.write_all(&[0])?; // no tag for checkpoint, just a seq update
+                w.write_all(&[0])?; // 0 = checkpoint tag
                 let payload = seq.to_le_bytes();
                 write_len_prefixed_payload(&mut w, &payload)
             }
         }
     }
 
+    /// Decodes a record from the given reader.
     pub fn decode(mut r: impl Read) -> io::Result<Self> {
         let mut tag = [0u8; size_of::<u8>()];
         r.read_exact(&mut tag)?;
@@ -113,15 +159,14 @@ impl ManifestRec {
 
         match tag[0] {
             TAG_CREATE_TREE => {
-                let seq = read_u64(&mut cur)?; // seq is determined by the writer, not stored in the payload
+                let seq = read_u64(&mut cur)?;
                 let id = read_u64(&mut cur)?;
                 let name = read_string(&mut cur)?;
                 let meta_a = read_u64(&mut cur)?;
                 let meta_b = read_u64(&mut cur)?;
-                let key_encoding = KeyEncodingId::try_from(read_u64(&mut cur)?).map_err(|_| io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "invalid key encoding id",
-                ))?;
+                let key_encoding = KeyEncodingId::try_from(read_u64(&mut cur)?).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "invalid key encoding id")
+                })?;
                 let key_format_id = read_u64(&mut cur)? as u16;
                 let encoding_version = read_u64(&mut cur)? as u16;
                 let order = read_u64(&mut cur)?;
@@ -129,7 +174,7 @@ impl ManifestRec {
                 let height = read_u64(&mut cur)?;
                 let size = read_u64(&mut cur)?;
                 let has_limits = {
-                    let mut b = [0u8;1];
+                    let mut b = [0u8; 1];
                     cur.read_exact(&mut b)?;
                     b[0] != 0
                 };
@@ -144,7 +189,6 @@ impl ManifestRec {
                     io::ErrorKind::InvalidData,
                     format!("unknown key format id: {}", key_format_id),
                 ))?;
-
 
                 Ok(Self::CreateTree {
                     seq,
@@ -163,13 +207,12 @@ impl ManifestRec {
                 })
             }
             TAG_DELETE_TREE => {
-                let seq = read_u64(&mut cur)?; // seq is determined by the writer, not stored in the payload
+                let seq = read_u64(&mut cur)?;
                 let id = read_u64(&mut cur)?;
                 Ok(Self::DeleteTree { seq, id })
             }
             TAG_RENAME_TREE => {
-                let seq = read_u64(&mut cur)?; // seq is determined by the writer, not stored in
-                // the payload
+                let seq = read_u64(&mut cur)?;
                 let id = read_u64(&mut cur)?;
                 let new_name = read_string(&mut cur)?;
                 Ok(Self::RenameTree { seq, id, new_name })
@@ -182,6 +225,7 @@ impl ManifestRec {
     }
 }
 
+/// Reads a little-endian u64 from `r`.
 fn read_u64(mut r: impl Read) -> io::Result<u64> {
     let mut buf = [0u8; size_of::<u64>()];
     r.read_exact(&mut buf)?;
@@ -193,6 +237,7 @@ fn write_u64(mut w: impl Write, val: u64) -> io::Result<()> {
     w.write_all(&val.to_le_bytes())
 }
 
+/// Writes a length-prefixed UTF-8 string.
 fn write_string(mut w: impl Write, s: &str) -> io::Result<()> {
     let bytes = s.as_bytes();
     let len = u32::try_from(bytes.len())
@@ -202,6 +247,7 @@ fn write_string(mut w: impl Write, s: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Reads a length-prefixed UTF-8 string.
 fn read_string(mut r: impl Read) -> io::Result<String> {
     let mut len_buf = [0u8; size_of::<u32>()];
     r.read_exact(&mut len_buf)?;
@@ -212,6 +258,7 @@ fn read_string(mut r: impl Read) -> io::Result<String> {
     String::from_utf8(str_buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
+/// Writes a u32 length prefix followed by `payload`.
 fn write_len_prefixed_payload(mut w: impl Write, payload: &[u8]) -> io::Result<()> {
     let len = u32::try_from(payload.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "payload too large"))?;
@@ -221,6 +268,7 @@ fn write_len_prefixed_payload(mut w: impl Write, payload: &[u8]) -> io::Result<(
     Ok(())
 }
 
+/// Reads a u32 length prefix and returns the following payload bytes.
 fn read_len_prefixed_payload(mut r: impl Read) -> io::Result<Vec<u8>> {
     let mut len_buf = [0u8; size_of::<u32>()];
     r.read_exact(&mut len_buf)?;
@@ -230,4 +278,3 @@ fn read_len_prefixed_payload(mut r: impl Read) -> io::Result<Vec<u8>> {
     r.read_exact(&mut payload)?;
     Ok(payload)
 }
-

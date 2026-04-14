@@ -2,13 +2,13 @@ use crate::bplustree::{Node, NodeView};
 use crate::codec::{
     CodecError, KeyCodec, KeyCodecDefault, NodeCodec, ValueCodec, ValueCodecDefault,
 };
+use crate::keyfmt::KeyFormat;
 use crate::keyfmt::raw::RawFormat;
 use crate::layout::PAGE_SIZE;
 use crate::page::INTERNAL_NODE_TAG;
 use crate::page::InternalPage;
 use crate::page::LEAF_NODE_TAG;
 use crate::page::LeafPage;
-use crate::keyfmt::KeyFormat;
 
 // initial capacity for encoding buffers
 const INIT_ENC_CAP: usize = 256;

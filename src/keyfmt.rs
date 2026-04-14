@@ -66,7 +66,7 @@ pub trait KeyBlockFormat: Send + Sync + 'static {
         scratch: &mut Vec<u8>,
     ) -> (std::ops::Range<usize>, Vec<u8>);
     /// PLAN: return the byte range in the `block` to replace, and the exact bytes to insert there.
-    fn  replace_plan(
+    fn replace_plan(
         &self,
         block: &[u8],
         idx: usize,

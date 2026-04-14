@@ -1,10 +1,10 @@
+use crate::codec::{KeyCodec, ValueCodec};
 use crate::keyfmt::KeyFormat;
 use crate::page::{InternalPage, LeafPage};
-use crate::codec::{KeyCodec, ValueCodec};
 
 use anyhow::Result;
-use thiserror::Error;
 use std::fmt;
+use thiserror::Error;
 
 pub type NodeId = u64;
 
@@ -60,7 +60,7 @@ impl NodeView {
             _ => None,
         }
     }
-    
+
     pub fn as_internal(&self) -> Option<&InternalPage> {
         match self {
             NodeView::Internal { page } => Some(page),
@@ -100,9 +100,7 @@ impl NodeView {
     #[inline]
     pub fn child_ptr_at(&self, idx: usize) -> Result<u64> {
         match self {
-            NodeView::Internal { page } => page
-                .read_child_at(idx)
-                .map_err(|e| anyhow::anyhow!(e)),
+            NodeView::Internal { page } => page.read_child_at(idx).map_err(|e| anyhow::anyhow!(e)),
             NodeView::Leaf { .. } => Err(anyhow::anyhow!(NodeViewError::WrongKind)), // Leaf pages don't have children, but we return 0
         }
     }
@@ -140,12 +138,8 @@ impl NodeView {
     pub fn key_bytes_at(&self, i: usize) -> Result<&[u8]> {
         let mut scratch = Vec::new();
         match self {
-            NodeView::Internal { page } => {
-                Ok(page.get_key_at(i, &mut scratch)?)
-            }
-            NodeView::Leaf { page } => {
-                Ok(page.get_key_at(i, &mut scratch)?)
-            }
+            NodeView::Internal { page } => Ok(page.get_key_at(i, &mut scratch)?),
+            NodeView::Leaf { page } => Ok(page.get_key_at(i, &mut scratch)?),
         }
     }
 
@@ -230,7 +224,12 @@ impl NodeView {
     }
 
     #[inline]
-    pub fn insert_separator_at(&mut self, idx: usize, key: &[u8], child_ptr: u64) -> Result<(), anyhow::Error> {
+    pub fn insert_separator_at(
+        &mut self,
+        idx: usize,
+        key: &[u8],
+        child_ptr: u64,
+    ) -> Result<(), anyhow::Error> {
         match self {
             NodeView::Leaf { .. } => Err(anyhow::anyhow!(
                 "Leaf nodes do not have children, cannot insert separator"
@@ -258,7 +257,9 @@ impl NodeView {
     #[inline]
     pub fn delete_at(&mut self, idx: usize) -> Result<(), anyhow::Error> {
         match self {
-            NodeView::Internal { page } => page.delete_separator(idx).map_err(|e| anyhow::anyhow!(e)),
+            NodeView::Internal { page } => {
+                page.delete_separator(idx).map_err(|e| anyhow::anyhow!(e))
+            }
             NodeView::Leaf { page } => page.delete_at(idx).map_err(|e| anyhow::anyhow!(e)),
         }
     }
@@ -276,13 +277,18 @@ impl NodeView {
     pub fn split_off(&mut self, idx: usize) -> Result<NodeView, anyhow::Error> {
         match self {
             NodeView::Internal { page } => {
-                let keyfmt_id = KeyFormat::from_id(page.keyfmt_id()).ok_or_else(|| anyhow::anyhow!("Unknown key format id: {}", page.keyfmt_id()))?;
+                let keyfmt_id = KeyFormat::from_id(page.keyfmt_id()).ok_or_else(|| {
+                    anyhow::anyhow!("Unknown key format id: {}", page.keyfmt_id())
+                })?;
                 let mut new_page = InternalPage::new(keyfmt_id);
-                page.split_off_into(idx, &mut new_page).map_err(|e| anyhow::anyhow!(e))?;
+                page.split_off_into(idx, &mut new_page)
+                    .map_err(|e| anyhow::anyhow!(e))?;
                 Ok(NodeView::Internal { page: new_page })
             }
             NodeView::Leaf { page } => {
-                let keyfmt_id = KeyFormat::from_id(page.keyfmt_id()).ok_or_else(|| anyhow::anyhow!("Unknown key format id: {}", page.keyfmt_id()))?;
+                let keyfmt_id = KeyFormat::from_id(page.keyfmt_id()).ok_or_else(|| {
+                    anyhow::anyhow!("Unknown key format id: {}", page.keyfmt_id())
+                })?;
                 let mut new_page = LeafPage::new(keyfmt_id);
                 page.split_off_into(idx, &mut new_page)
                     .map_err(|e| anyhow::anyhow!(e))?;
@@ -337,13 +343,12 @@ impl NodeView {
     /// Write the leftmost child pointer of an internal node
     pub fn write_leftmost_child(&mut self, ptr: u64) -> Result<(), anyhow::Error> {
         match self {
-            NodeView::Internal { page } => {
-                page.write_leftmost_child(ptr)
-                    .map_err(|e| anyhow::anyhow!(e))
+            NodeView::Internal { page } => page
+                .write_leftmost_child(ptr)
+                .map_err(|e| anyhow::anyhow!(e)),
+            NodeView::Leaf { .. } => {
+                Err(anyhow::anyhow!("Leaf nodes do not have children to write"))
             }
-            NodeView::Leaf { .. } => Err(anyhow::anyhow!(
-                "Leaf nodes do not have children to write"
-            )),
         }
     }
 
@@ -371,7 +376,7 @@ impl NodeView {
 
     /// Deletes a key at a given index in the node
     pub fn delete_key_at(&mut self, idx: usize) -> Result<Vec<u8>, anyhow::Error> {
-            let mut scratch = Vec::new();
+        let mut scratch = Vec::new();
         match self {
             NodeView::Internal { page } => page
                 .delete_key_at(idx, &mut scratch)
@@ -385,21 +390,19 @@ impl NodeView {
     /// Inserts a key at a given index in the node
     pub fn insert_key_at(&mut self, idx: usize, key: &[u8]) -> Result<(), anyhow::Error> {
         match self {
-            NodeView::Internal { page } => page
-                .insert_key_at(idx, key)
-                .map_err(|e| anyhow::anyhow!(e)),
-            NodeView::Leaf { page } => page
-                .insert_key_at(idx, key)
-                .map_err(|e| anyhow::anyhow!(e)),
+            NodeView::Internal { page } => {
+                page.insert_key_at(idx, key).map_err(|e| anyhow::anyhow!(e))
+            }
+            NodeView::Leaf { page } => page.insert_key_at(idx, key).map_err(|e| anyhow::anyhow!(e)),
         }
     }
 
     /// Delete child pointer at a given index in an internal node
     pub fn delete_child_at(&mut self, idx: usize) -> Result<(), anyhow::Error> {
         match self {
-            NodeView::Internal { page } => page
-                .delete_child_at(idx)
-                .map_err(|e| anyhow::anyhow!(e)),
+            NodeView::Internal { page } => {
+                page.delete_child_at(idx).map_err(|e| anyhow::anyhow!(e))
+            }
             NodeView::Leaf { .. } => Err(anyhow::anyhow!(
                 "Leaf nodes do not have children, cannot delete"
             )),
@@ -432,7 +435,7 @@ impl NodeView {
         }
     }
 
-    pub fn view_content<KC, VC, K, V>(&self) -> Result<(), anyhow::Error> 
+    pub fn view_content<KC, VC, K, V>(&self) -> Result<(), anyhow::Error>
     where
         K: std::fmt::Debug,
         V: std::fmt::Debug,
@@ -451,8 +454,7 @@ impl NodeView {
                 }
                 Ok(())
             }
-            NodeView::Leaf { page } => 
-            {
+            NodeView::Leaf { page } => {
                 let key_count = page.key_count();
                 let mut scratch = Vec::new();
                 for i in 0..key_count as usize {
@@ -460,7 +462,7 @@ impl NodeView {
                     println!("Key {}: {:?}, Value: {:?}", i, k, v);
                 }
                 Ok(())
-            } 
+            }
         }
     }
 }
@@ -468,7 +470,7 @@ impl NodeView {
 impl fmt::Debug for NodeView {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            NodeView::Leaf { page }     => page.fmt(f),
+            NodeView::Leaf { page } => page.fmt(f),
             NodeView::Internal { page } => page.fmt(f),
         }
     }
@@ -477,16 +479,17 @@ impl fmt::Debug for NodeView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keyfmt::raw::RawFormat;
 
     #[test]
     fn test_node_view_merge() -> Result<()> {
         // Create first leaf node and insert some key-value pairs
-        let mut leaf1 = NodeView::new_leaf(0u8);
+        let mut leaf1 = NodeView::new_leaf(KeyFormat::Raw(RawFormat));
         leaf1.insert(b"key1", Some(b"value1"), None)?;
         leaf1.insert(b"key2", Some(b"value2"), None)?;
 
         // Create second leaf node and insert some key-value pairs
-        let mut leaf2 = NodeView::new_leaf(0u8);
+        let mut leaf2 = NodeView::new_leaf(KeyFormat::Raw(RawFormat));
         leaf2.insert(b"key3", Some(b"value3"), None)?;
         leaf2.insert(b"key4", Some(b"value4"), None)?;
 
@@ -504,11 +507,11 @@ mod tests {
         assert_eq!(leaf1.key_at(3)?, b"key4");
         assert_eq!(leaf1.value_at(3)?, b"value4".to_vec());
 
-        let mut internal1 = NodeView::new_internal(0u8);
+        let mut internal1 = NodeView::new_internal(KeyFormat::Raw(RawFormat));
         internal1.write_leftmost_child(0)?; // Leftmost child
         internal1.insert(b"key2", None, Some(1))?;
         internal1.insert(b"key4", None, Some(2))?;
-        let mut internal2 = NodeView::new_internal(0u8);    
+        let mut internal2 = NodeView::new_internal(KeyFormat::Raw(RawFormat));
         internal2.write_leftmost_child(3)?; // Leftmost child
         internal2.insert(b"key6", None, Some(3))?;
         internal2.insert(b"key8", None, Some(4))?;

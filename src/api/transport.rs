@@ -1,43 +1,27 @@
 pub mod service;
-pub use service::{KvService, RawClient, TreeMeta};
 
-#[cfg(feature = "transport-grpc")]
-pub mod grpc;
-#[cfg(feature = "transport-grpc")]
-pub use grpc::GrpcService;
-
-#[cfg(feature = "transport-inproc")]
-pub mod inproc;
-#[cfg(feature = "transport-inproc")]
-pub use inproc::InprocService;
-
-use std::{pin::Pin, sync::Arc};
+use bytes::Bytes;
 use futures::Stream;
 
-use crate::api::encoding::{KeyConstraints, KeyEncodingId};
-use crate::api::errors::ApiError;
+use crate::api::{ApiError, KeyConstraints, KeyEncodingId, KeyRange, Order};
+use crate::database::catalog::TreeMeta;
 
-pub type ResumeToken = Bytes;
+/// Transport-layer tree identifier — a name or opaque handle encoded as bytes.
+/// Distinct from the internal numeric `crate::api::TreeId`.
 pub type TreeId = Bytes;
+pub type ResumeToken = Bytes;
 
-#[derive(Clone, Copy, Debug)]
-pub enum Order { Fwd, Rev }
-
-#[derive(Clone, Debug)]
-pub struct KeyRange<'a> {
-    pub start: Bound<&'a [u8]>, // Unbounded | Included(&[u8]) | Excluded(&[u8])
-    pub end:   Bound<&'a [u8]>,
-}
-
-#[async_trait::async_trait] // if you target stable without GATs, keep this; see boxed variant below
 pub trait KvService: Send + Sync + 'static {
     // Associated stream type so implementors can avoid boxing
     type RangeStream<'a>: Stream<Item = Result<(Bytes, Bytes), ApiError>> + Send + 'a
     where
         Self: 'a;
 
-    async fn create_tree(&self, name: &str,
-        enc: KeyEncodingId, kc: KeyConstraints
+    async fn create_tree(
+        &self,
+        name: &str,
+        enc: KeyEncodingId,
+        kc: KeyConstraints,
     ) -> Result<TreeMeta, ApiError>;
 
     async fn describe_tree(&self, name: &str) -> Result<TreeMeta, ApiError>;
@@ -48,7 +32,7 @@ pub trait KvService: Send + Sync + 'static {
 
     async fn del(&self, tree: &TreeId, key: &[u8]) -> Result<bool, ApiError>;
 
-  // range scan with pagination
+    // range scan with pagination
     async fn range(
         &self,
         tree: &TreeId,
@@ -61,8 +45,8 @@ pub trait KvService: Send + Sync + 'static {
             // streaming out rows (zero-copy `Bytes`)
             std::pin::Pin<Box<dyn Stream<Item = Result<(Bytes, Bytes), ApiError>> + Send>>,
             // next page token (None if done)
-            Option<ResumeToken>
+            Option<ResumeToken>,
         ),
-        ApiError
+        ApiError,
     >;
 }

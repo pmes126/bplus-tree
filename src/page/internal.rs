@@ -12,18 +12,18 @@
 //! - key_count == number of slots
 
 use crate::bplustree::node::NodeId;
-use crate::keyfmt::raw;
-use crate::keyfmt::KeyFormat; // use the trait and resolve by id
 use crate::keyfmt::KeyBlockFormat; // use the trait and resolve by id
+use crate::keyfmt::KeyFormat; // use the trait and resolve by id
+use crate::keyfmt::raw;
 use crate::keyfmt::resolve_key_format; // you implement: u8 -> &'static dyn KeyBlockFormat
 use crate::layout::PAGE_SIZE;
 use crate::page::INTERNAL_NODE_TAG;
 use crate::page::PageError;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
+use std::convert::TryInto;
 use std::fmt;
 use std::fmt::Debug;
-use std::convert::TryInto;
 
 #[inline]
 fn read_u64_le(buf: &[u8]) -> u64 {
@@ -119,7 +119,7 @@ impl InternalPage {
     fn keys_start(&self) -> usize {
         0
     } // <-- buf already excludes the header
- 
+
     #[inline]
     fn keys_end(&self) -> usize {
         self.key_block_len() as usize
@@ -152,7 +152,7 @@ impl InternalPage {
         resolve_key_format(self.keyfmt_id())
             .expect("unknown key format id; register it in keyfmt::resolve_key_format")
     }
-    
+
     // Return the keyfmt_id of this page's header as a u8, for use in the manifest and page header.
     pub fn key_fmt_id(&self) -> u8 {
         self.keyfmt_id()
@@ -257,10 +257,7 @@ impl InternalPage {
     }
 
     /// Insert a new key at index `idx` (0..=key_count), shifting existing keys to the right.
-    pub fn insert_key_at(&mut self,
-        idx: usize, 
-        key: &[u8],
-    ) -> Result<(), PageError> {
+    pub fn insert_key_at(&mut self, idx: usize, key: &[u8]) -> Result<(), PageError> {
         if idx > self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
         }
@@ -339,7 +336,9 @@ impl InternalPage {
         let mut scratch = Vec::new();
 
         // PLAN for key-block deletion
-        let (range, repl) = self.key_fmt().delete_plan(self.key_block(), idx, &mut scratch); // same idea as insert_plan
+        let (range, repl) = self
+            .key_fmt()
+            .delete_plan(self.key_block(), idx, &mut scratch); // same idea as insert_plan
         let delta_k = repl.len() as isize - (range.end - range.start) as isize; // usually negative
 
         // capacity is fine when shrinking
@@ -351,7 +350,7 @@ impl InternalPage {
         // write replacement (often empty)
         //let hole_start = ks + range.start;
         //self.buf[hole_start .. hole_start + repl.len()].copy_from_slice(&repl);
-        
+
         // remove child at idx+1
         self.children_shift_left_from(idx + 1);
 
@@ -382,7 +381,9 @@ impl InternalPage {
 
         // Plan and get delta_k
         let kb = self.key_block(); // &[u8]
-        let (range, repl) = self.key_fmt().replace_plan(kb, idx, key_bytes, &mut scratch); // same idea as insert_plan
+        let (range, repl) = self
+            .key_fmt()
+            .replace_plan(kb, idx, key_bytes, &mut scratch); // same idea as insert_plan
         let delta_k = repl.len() as isize - (range.end - range.start) as isize; // usually negative
 
         // CAPACITY
@@ -429,8 +430,15 @@ impl InternalPage {
         Ok(())
     }
 
-    pub fn delete_key_at(&mut self, idx: usize, scratch: &mut Vec<u8>) -> Result<Vec<u8>, PageError> {
-        let key = self.key_fmt().decode_at(self.key_block(), idx, scratch).to_vec();
+    pub fn delete_key_at(
+        &mut self,
+        idx: usize,
+        scratch: &mut Vec<u8>,
+    ) -> Result<Vec<u8>, PageError> {
+        let key = self
+            .key_fmt()
+            .decode_at(self.key_block(), idx, scratch)
+            .to_vec();
 
         // PLAN for key-block deletion
         let (range, repl) = self.key_fmt().delete_plan(self.key_block(), idx, scratch);
@@ -473,7 +481,6 @@ impl InternalPage {
         self.insert_separator(idx, key, child)
     }
 
-
     // -------- child pointer array manipulation --------
 
     #[inline]
@@ -502,7 +509,7 @@ impl InternalPage {
     pub fn write_leftmost_child(&mut self, child: u64) -> Result<(), PageError> {
         self.write_child_at(0, child)
     }
-    
+
     /// Read the leftmost child pointer (at index 0).
     #[inline]
     pub fn read_leftmost_child(&mut self) -> Result<u64, PageError> {
@@ -515,7 +522,7 @@ impl InternalPage {
         self.write_child_at(idx, child)
     }
 
-    /// Delete the child pointer at idx 
+    /// Delete the child pointer at idx
     #[inline]
     pub fn delete_child_at(&mut self, idx: usize) -> Result<(), PageError> {
         self.children_shift_left_from(idx);
@@ -564,11 +571,7 @@ impl InternalPage {
     // --------- key accessors ---------
     /// Return the *encoded key bytes* at index `idx`.
     #[inline]
-    pub fn get_key_at(
-        &self,
-        idx: usize,
-        scratch: &mut Vec<u8>,
-    ) -> Result<&[u8], PageError> {
+    pub fn get_key_at(&self, idx: usize, scratch: &mut Vec<u8>) -> Result<&[u8], PageError> {
         if idx >= self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
         }
@@ -657,41 +660,41 @@ impl<'a> PageKeyRun<'a> {
 
 impl fmt::Debug for InternalPage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let key_count     = self.key_count() as usize;
+        let key_count = self.key_count() as usize;
         let key_block_len = self.key_block_len() as usize;
-        let keys_end      = self.keys_end();
+        let keys_end = self.keys_end();
         let children_base = self.children_base();
-        let children_end  = self.children_end();
+        let children_end = self.children_end();
 
         let mut dbg = f.debug_struct("InternalPage");
         dbg.field("fmt_id", &self.keyfmt_id())
-           .field("keys", &key_count)
-           .field("children", &(key_count + 1))
-           .field("key_block_len", &key_block_len)
-           .field("keys_end", &keys_end)
-           .field("children_base", &children_base)
-           .field("children_end", &children_end)
-           .field("used_bytes", &children_end);
+            .field("keys", &key_count)
+            .field("children", &(key_count + 1))
+            .field("key_block_len", &key_block_len)
+            .field("keys_end", &keys_end)
+            .field("children_base", &children_base)
+            .field("children_end", &children_end)
+            .field("used_bytes", &children_end);
 
-            let fmt_impl = self.key_fmt();
-            let mut scratch = Vec::new();
+        let fmt_impl = self.key_fmt();
+        let mut scratch = Vec::new();
 
-            // key previews
-            let mut previews: Vec<String> = Vec::new();
-            let sample = key_count;
-            for i in 0..sample {
-                let k = fmt_impl.decode_at(self.key_block(), i, &mut scratch);
-                previews.push(k.iter().map(|b| format!("{:02x}", b)).collect());
-            }
-            dbg.field("keys_preview(hex)", &previews);
-            // children previews
-            let mut previews: Vec<String> = Vec::new();
-            let sample = (key_count+1).min(10);
-            for i in 0..sample {
-                let k = self.read_child_at(i);
-                previews.push(k.iter().map(|b| format!("{}", b)).collect());
-            }
-            dbg.field("children_preview", &previews);
+        // key previews
+        let mut previews: Vec<String> = Vec::new();
+        let sample = key_count;
+        for i in 0..sample {
+            let k = fmt_impl.decode_at(self.key_block(), i, &mut scratch);
+            previews.push(k.iter().map(|b| format!("{:02x}", b)).collect());
+        }
+        dbg.field("keys_preview(hex)", &previews);
+        // children previews
+        let mut previews: Vec<String> = Vec::new();
+        let sample = (key_count + 1).min(10);
+        for i in 0..sample {
+            let k = self.read_child_at(i);
+            previews.push(k.iter().map(|b| format!("{}", b)).collect());
+        }
+        dbg.field("children_preview", &previews);
 
         dbg.finish()
     }
@@ -702,7 +705,7 @@ mod tests {
     use super::*;
     #[test]
     fn test_internal_page() {
-        let mut page = InternalPage::new(0);
+        let mut page = InternalPage::new(KeyFormat::Raw(raw::RawFormat));
         let key = b"test_key";
         let child = 42;
 
@@ -722,7 +725,7 @@ mod tests {
 
     #[test]
     fn test_internal_page_multiples() {
-        let mut page = InternalPage::new(0);
+        let mut page = InternalPage::new(KeyFormat::Raw(raw::RawFormat));
         let mut keys: Vec<String> = Vec::new();
         let mut children: Vec<u64> = Vec::new();
         let iterations = 10;
@@ -759,7 +762,7 @@ mod tests {
         use rand::Rng;
         let mut rng = rand::thread_rng();
 
-        let mut page = InternalPage::new(0);
+        let mut page = InternalPage::new(KeyFormat::Raw(raw::RawFormat));
         let iterations = 10;
         let scratch = &mut Vec::new();
 
@@ -790,7 +793,7 @@ mod tests {
 
     #[test]
     fn test_internal_page_replaces() {
-        let mut page = InternalPage::new(0);
+        let mut page = InternalPage::new(KeyFormat::Raw(raw::RawFormat));
         let iterations = 10;
         let scratch = &mut Vec::new();
 
@@ -820,7 +823,7 @@ mod tests {
 
     #[test]
     fn test_internal_page_pop_last() {
-        let mut page = InternalPage::new(0);
+        let mut page = InternalPage::new(KeyFormat::Raw(raw::RawFormat));
         let iterations = 10;
         let scratch = &mut Vec::new();
 
@@ -856,7 +859,7 @@ mod tests {
         use rand::Rng;
         let mut rng = rand::thread_rng();
 
-        let mut page = InternalPage::new(0);
+        let mut page = InternalPage::new(KeyFormat::Raw(raw::RawFormat));
         let scratch = &mut Vec::new();
         let iterations = 10;
         let mut keys: Vec<String> = Vec::new();
@@ -898,8 +901,8 @@ mod tests {
     }
 
     #[test]
-    fn  test_delete_key_at() {
-        let mut page = InternalPage::new(0);
+    fn test_delete_key_at() {
+        let mut page = InternalPage::new(KeyFormat::Raw(raw::RawFormat));
         let scratch = &mut Vec::new();
         let iterations = 10;
         let mut keys: Vec<String> = Vec::new();
@@ -946,7 +949,7 @@ mod tests {
         use rand::Rng;
         let mut rng = rand::thread_rng();
 
-        let mut page = InternalPage::new(0);
+        let mut page = InternalPage::new(KeyFormat::Raw(raw::RawFormat));
         let scratch = &mut Vec::new();
         let iterations = 10;
         let mut keys: Vec<String> = Vec::new();
@@ -971,7 +974,7 @@ mod tests {
             assert_eq!(retrieved_child, i as u64 + 1);
         }
 
-        let mut right = InternalPage::new(0);
+        let mut right = InternalPage::new(KeyFormat::Raw(raw::RawFormat));
         let split_idx = rng.gen_range(1..(page.key_count() as usize - 1));
 
         let sep = page.split_off_into(split_idx, &mut right).unwrap();

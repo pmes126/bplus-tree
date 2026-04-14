@@ -1,40 +1,45 @@
+//! File-backed implementation of [`PageStorage`].
+
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Read, Write};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use zerocopy::{AsBytes, FromZeroes};
-
 use crate::layout::PAGE_SIZE;
 use crate::storage::PageStorage;
 
-pub use crate::storage::page_store;
-pub use crate::store::superblock::FreeListSnaphotHeader;
+pub use crate::database::superblock::FreeListSnaphotHeader;
+pub use crate::storage::file_page_storage;
 
-// Reserve first 16 pages for future use.
+/// Page IDs 0–15 are reserved for internal metadata; user allocations start here.
 const INITIAL_PAGE_ID: u32 = 16;
 
-const FREE_LIST_SNAPSHOT_MAGIC: u32 = 0x314C5346; // "FLS1" in little-endian
+/// Magic number identifying a freelist snapshot file ("FLS1" in little-endian).
+const FREE_LIST_SNAPSHOT_MAGIC: u32 = 0x314C5346;
 
-pub struct PageStore {
+/// A [`PageStorage`] backend that reads and writes fixed-size pages to a single flat file.
+pub struct FilePageStorage {
     file: Arc<File>,
+    /// In-memory list of freed page IDs available for reuse.
     pub freed_pages: Mutex<Vec<u64>>,
+    /// Monotonically increasing counter for allocating new page IDs.
     pub next_page_id: AtomicU64,
 }
 
-impl PageStore {
+impl FilePageStorage {
+    /// Flushes data pages to disk without flushing file metadata.
     pub fn flush(&self) -> Result<(), std::io::Error> {
         self.file.sync_data()
     }
 
+    /// Flushes data to disk and closes the storage file.
     pub fn close(&self) -> Result<(), std::io::Error> {
         self.flush()
     }
 }
 
-impl Drop for PageStore {
+impl Drop for FilePageStorage {
     fn drop(&mut self) {
         if let Err(e) = self.close() {
             eprintln!("Error closing PageStore: {}", e);
@@ -42,7 +47,7 @@ impl Drop for PageStore {
     }
 }
 
-impl PageStorage for PageStore {
+impl PageStorage for FilePageStorage {
     fn open<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error>
     where
         Self: Sized,
@@ -60,7 +65,7 @@ impl PageStorage for PageStore {
             next_page_id: AtomicU64::new(INITIAL_PAGE_ID as u64),
         })
     }
-    
+
     fn close(&self) -> Result<(), std::io::Error> {
         self.flush()
     }

@@ -1,16 +1,23 @@
+//! Range-scan iterator for the B+ tree.
+//!
+//! NOTE: The iterator body is pending a rewrite after the `NodeStorage` API changed to return
+//! raw [`NodeView`] bytes instead of typed `Node<K, V>` values.
+
 #![allow(dead_code)]
-use crate::bplustree::tree::TreeError;
 use crate::bplustree::node::{Node, NodeId};
-use crate::storage::epoch::{EpochManager, ReaderGuard};
+use crate::bplustree::tree::TreeError;
 use crate::storage::NodeStorage;
+use crate::storage::epoch::{EpochManager, ReaderGuard};
 use std::sync::Arc;
 
+/// An internal stack frame used during tree traversal.
 struct TraversalFrame {
     node_id: NodeId,
     index: usize,
 }
 
-pub struct BPlusTreeIter<'a, S>
+/// A range iterator over key-value pairs in a B+ tree.
+pub struct BPlusTreeIter<'a, K, V, S>
 where
     S: NodeStorage,
 {
@@ -23,6 +30,7 @@ where
     reader_guard: ReaderGuard,
 }
 
+/// A cursor into a decoded leaf node for sequential reads.
 struct LeafCursor<'a, K, V> {
     node_id: NodeId,
     keys: &'a [K],
@@ -30,10 +38,13 @@ struct LeafCursor<'a, K, V> {
     pos: usize,
 }
 
-impl<'a, S> BPlusTreeIter<'a, S>
+impl<'a, K, V, S> BPlusTreeIter<'a, K, V, S>
 where
+    K: Clone + Ord,
+    V: Clone,
     S: NodeStorage,
 {
+    /// Creates a new iterator starting at `start` and ending at `end`.
     pub fn new(
         storage: &'a S,
         root_id: NodeId,
@@ -54,99 +65,26 @@ where
         iter
     }
 
-    fn descend_to_leaf(
-        &mut self,
-        mut node_id: NodeId,
-        key: Option<&K>,
-    ) -> Result<(), anyhow::Error> {
-        loop {
-            let node = self.storage.read_node(node_id)?;
-            match node {
-                Some(Node::Internal { keys, children }) => {
-                    let index = match key {
-                        Some(k) => match keys.binary_search(k) {
-                            Ok(i) => i + 1,
-                            Err(i) => i,
-                        },
-                        None => 0,
-                    };
-                    self.stack.push(TraversalFrame { node_id, index });
-                    node_id = children[index];
-                }
-                Some(Node::Leaf { ref keys, .. }) => {
-                    let pos = match key {
-                        Some(k) => match keys.binary_search(k) {
-                            Ok(i) => i,
-                            Err(i) => i,
-                        },
-                        None => 0,
-                    };
-                    self.index = pos;
-                    self.current_leaf = node;
-                    return Ok(());
-                }
-                None => {
-                    // If we reach here, it means the node does not exist
-                    return Err(anyhow::anyhow!("Node with ID {} does not exist", node_id));
-                }
-            }
-        }
+    // TODO: rewrite after storage API change. NodeStorage::read_node_view now returns NodeView
+    // (raw page bytes) rather than Node<K, V>. descend_to_leaf and Iterator::next need a
+    // codec (KeyCodec<K> + ValueCodec<V>) to decode NodeView → Node<K, V> before matching.
+    fn descend_to_leaf(&mut self, _node_id: NodeId, _key: Option<&K>) -> Result<(), anyhow::Error> {
+        todo!("rewrite: decode NodeView → Node<K,V> via codec")
     }
 }
 
+// TODO: Iterator impl needs rewriting alongside descend_to_leaf above.
+// NodeStorage no longer carries K/V generics; values come out as raw NodeView bytes
+// and must be decoded with the appropriate codec before yielding (K, V) pairs.
 impl<'a, K, V, S> Iterator for BPlusTreeIter<'a, K, V, S>
 where
     K: Clone + Ord,
     V: Clone,
-    S: NodeStorage<K, V>,
+    S: NodeStorage,
 {
     type Item = Result<(K, V), TreeError>;
 
-    // Returns the next item in the iteration, it returns a deep copy value of the Key and Value pair if it is within the range
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if let Some(Node::Leaf { keys, values, .. }) = &mut self.current_leaf {
-                if self.index < keys.len() {
-                    let (k, v) = (&keys[self.index], &values[self.index]);
-                    if k > &self.end {
-                        // If the key is beyond the end, stop iteration
-                        return None;
-                    }
-                    self.index += 1;
-                    return Some(Ok((k.clone(), v.clone())));
-                }
-            }
-
-            // Need to move to next subtree
-            while let Some(frame) = self.stack.pop() {
-                let node = self.storage.read_node(frame.node_id).map_err(Some).ok()?;
-                let i = frame.index;
-                match node {
-                    Some(Node::Internal { keys: _, children }) => {
-                        let next_idx = i + 1;
-                        if next_idx < children.len() {
-                            let next_node = children[next_idx];
-                            self.stack.push(TraversalFrame {
-                                node_id: frame.node_id,
-                                index: next_idx,
-                            });
-                            let _ = self.descend_to_leaf(next_node, None);
-                            break;
-                        }
-                    }
-                    Some(Node::Leaf { .. }) => {
-                        panic!("Invalid frame")
-                    }
-                    None => {
-                        // If we reach here, it means we have traversed all nodes
-                        return None;
-                    }
-                }
-            }
-            if self.stack.is_empty() {
-                // No more nodes to traverse
-                return None;
-            }
-        }
+        todo!("rewrite: decode NodeView → Node<K,V> via codec")
     }
 }
