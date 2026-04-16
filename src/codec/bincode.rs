@@ -54,7 +54,7 @@ impl ValueCodec<u64> for BeU64 {
     }
 
     fn decode_value(buf: &[u8]) -> Result<u64, CodecError> {
-        Ok(u64::from_le_bytes(
+        Ok(u64::from_be_bytes(
             buf.try_into()
                 .map_err(|e| CodecError::FromSliceError { source: e })?,
         ))
