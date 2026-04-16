@@ -82,7 +82,7 @@ fn commit_and_load_tree() -> Result<()> {
     tree.try_commit(&base, StagedMetadata { root_id, height, size })?;
 
     for i in 0..iterations {
-        let res = tree.search(&k(i as u64))?;
+        let res = tree.search(k(i as u64))?;
         assert!(res.is_some(), "Committed tree should have key {}", i);
     }
 
@@ -90,7 +90,7 @@ fn commit_and_load_tree() -> Result<()> {
     assert!(loaded.get_root_id() != 0, "Loaded tree should have a valid root");
 
     for i in 0..iterations {
-        let res = loaded.search(&k(i as u64))?;
+        let res = loaded.search(k(i as u64))?;
         assert!(res.is_some(), "Loaded tree should have key {}", i);
         assert_eq!(
             res.unwrap(),
@@ -120,7 +120,7 @@ fn write_and_read_value() -> Result<(), anyhow::Error> {
             size: tree.get_size(),
         },
     )?;
-    let res = tree.search(&k(1))?;
+    let res = tree.search(k(1))?;
     assert!(res.is_some(), "Value should be found after commit");
     assert_eq!(res.unwrap(), v_bytes(1), "Value should match what was inserted");
     Ok(())
@@ -199,7 +199,7 @@ fn write_and_read_string_as_key() -> Result<(), anyhow::Error> {
             size: tree.get_size(),
         },
     )?;
-    let res = tree.search(&key.as_bytes())?;
+    let res = tree.search(key.as_bytes())?;
     assert!(res.is_some(), "Value should be found after commit");
     assert_eq!(res.unwrap(), value.as_bytes(), "Value should match");
     Ok(())
@@ -300,7 +300,7 @@ fn write_and_delete_values() -> Result<(), anyhow::Error> {
 
     for i in 0..order as u64 * multiplier {
         assert!(
-            tree.search(&k(i))?.is_none(),
+            tree.search(k(i))?.is_none(),
             "Key {} should be absent after full deletion + commit",
             i
         );
@@ -328,7 +328,7 @@ fn write_and_delete_values_random() -> Result<(), anyhow::Error> {
     for i in values_to_delete {
         let res = tree.delete_with_root(&k(i), root_id)?;
         root_id = res.new_root_id;
-        assert!(tree.search(&k(i))?.is_none(), "Key {} should be gone", i);
+        assert!(tree.search(k(i))?.is_none(), "Key {} should be gone", i);
     }
     Ok(())
 }
