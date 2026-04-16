@@ -98,9 +98,9 @@ impl MetadataManager {
         txn_id: u64,
         id: u64,
         root: u64,
-        height: usize,
-        order: usize,
-        size: usize,
+        height: u64,
+        order: u64,
+        size: u64,
     ) -> Result<(), MetadataError> {
         let mut metadata_page = new_metadata_page(root, txn_id, id, 0, height, order, size);
         Self::write_metadata(storage, slot, &mut metadata_page)
@@ -121,7 +121,7 @@ impl MetadataManager {
     fn bootstrap_metadata<S: PageStorage>(
         storage: &S,
         id: u64,
-        order: usize,
+        order: u64,
     ) -> Result<(u64, u64, Metadata), MetadataError> {
         let initial_txn_id = 1;
         let meta_a = storage.allocate_page()?;

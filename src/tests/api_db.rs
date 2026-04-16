@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 //! Tests for the public embedded API: Db, Tree<K,V>, WriteTxn, RangeIter.
 
 use crate::api::Db;

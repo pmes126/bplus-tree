@@ -24,11 +24,11 @@ pub struct Metadata {
     /// Monotonically increasing transaction counter; incremented on every commit.
     pub txn_id: u64,
     /// Height of the B+ tree (0 = empty, 1 = root leaf only).
-    pub height: usize,
+    pub height: u64,
     /// Branching factor / order of the B+ tree.
-    pub order: usize,
+    pub order: u64,
     /// Approximate number of key-value entries in the tree.
-    pub size: usize,
+    pub size: u64,
     /// CRC32 checksum covering all fields except this one.
     pub checksum: u64,
 }
@@ -48,9 +48,9 @@ pub fn new_metadata_page(
     id: u64,
     txn_id: u64,
     checksum: u64,
-    height: usize,
-    order: usize,
-    size: usize,
+    height: u64,
+    order: u64,
+    size: u64,
 ) -> MetadataPage {
     MetadataPage {
         data: Metadata {

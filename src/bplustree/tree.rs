@@ -100,9 +100,9 @@ pub trait TxnTracker {
     /// Records a newly written node ID as part of this transaction.
     fn add_new(&mut self, node_id: NodeId);
     /// Records the staged tree height for this transaction.
-    fn record_staged_height(&mut self, height: usize);
+    fn record_staged_height(&mut self, height: u64);
     /// Records the staged entry count for this transaction.
-    fn record_staged_size(&mut self, size: usize);
+    fn record_staged_size(&mut self, size: u64);
 }
 
 /// A point-in-time snapshot of committed tree metadata.
@@ -111,13 +111,13 @@ pub struct MetadataSnapshot {
     /// Root node page ID at snapshot time.
     pub root_id: NodeId,
     /// Tree height at snapshot time.
-    pub height: usize,
+    pub height: u64,
     /// Approximate number of entries at snapshot time.
-    pub size: usize,
+    pub size: u64,
     /// Transaction ID of the snapshot.
     pub txn_id: u64,
     /// B+ tree order (maximum number of children per internal node).
-    pub order: usize,
+    pub order: u64,
 }
 
 /// Staged (not yet committed) metadata produced by a write transaction.
@@ -126,9 +126,9 @@ pub struct StagedMetadata {
     /// New root node page ID.
     pub root_id: NodeId,
     /// New tree height.
-    pub height: usize,
+    pub height: u64,
     /// New approximate entry count.
-    pub size: usize,
+    pub size: u64,
 }
 
 /// Holds a raw pointer to the committed metadata used as the compare-exchange base.
@@ -184,9 +184,9 @@ pub struct TransactionTracker {
     /// Node IDs written during this transaction.
     pub added: Vec<NodeId>,
     /// Staged tree height, if updated.
-    pub staged_height: Option<usize>,
+    pub staged_height: Option<u64>,
     /// Staged entry count, if updated.
-    pub staged_size: Option<usize>,
+    pub staged_size: Option<u64>,
 }
 
 impl TransactionTracker {
@@ -208,10 +208,10 @@ impl TxnTracker for TransactionTracker {
     fn add_new(&mut self, node_id: NodeId) {
         self.added.push(node_id);
     }
-    fn record_staged_height(&mut self, height: usize) {
+    fn record_staged_height(&mut self, height: u64) {
         self.staged_height = Some(height);
     }
-    fn record_staged_size(&mut self, size: usize) {
+    fn record_staged_size(&mut self, size: u64) {
         self.staged_size = Some(size);
     }
 }
@@ -226,9 +226,9 @@ pub struct WriteResult {
     /// Node IDs written speculatively during this operation.
     pub staged_nodes: Vec<NodeId>,
     /// New tree height after the write.
-    pub new_height: usize,
+    pub new_height: u64,
     /// New approximate entry count after the write.
-    pub new_size: usize,
+    pub new_size: u64,
 }
 
 /// A cheaply clonable, shared handle to a [`BPlusTree`].
@@ -339,12 +339,12 @@ where
     }
 
     /// Returns the current committed tree height.
-    pub fn get_height(&self) -> usize {
+    pub fn get_height(&self) -> u64 {
         self.inner.get_height()
     }
 
     /// Returns the current approximate entry count.
-    pub fn get_size(&self) -> usize {
+    pub fn get_size(&self) -> u64 {
         self.inner.get_size()
     }
 
@@ -489,9 +489,9 @@ where
             encoding_version: meta.format_version,
             meta_a: meta.meta_a,
             meta_b: meta.meta_b,
-            max_keys: meta.order - 1,
-            min_internal_keys: meta.order.div_ceil(2) - 1,
-            min_leaf_keys: (meta.order - 1).div_ceil(2),
+            max_keys: meta.order as usize - 1,
+            min_internal_keys: (meta.order as usize).div_ceil(2) - 1,
+            min_leaf_keys: (meta.order as usize - 1).div_ceil(2),
             commit_count: AtomicUsize::new(0),
             txn_id: AtomicU64::new(init_txn_id),
             committed: AtomicPtr::new(Box::into_raw(md_ptr)),
@@ -527,9 +527,9 @@ where
             encoding_version: 1,
             meta_a,
             meta_b,
-            max_keys: order - 1,
-            min_internal_keys: order.div_ceil(2) - 1,
-            min_leaf_keys: (order - 1).div_ceil(2),
+            max_keys: order as usize - 1,
+            min_internal_keys: (order as usize).div_ceil(2) - 1,
+            min_leaf_keys: (order as usize - 1).div_ceil(2),
             commit_count: AtomicUsize::new(0),
             txn_id: AtomicU64::new(txn_id),
             committed: AtomicPtr::new(md_ptr),
@@ -1297,8 +1297,8 @@ where
     pub fn commit(
         &self,
         new_root_id: NodeId,
-        _height: usize,
-        _size: usize,
+        _height: u64,
+        _size: u64,
     ) -> Result<(), TreeError> {
         let new_txn_id = self.txn_id.fetch_add(1, Ordering::SeqCst) + 1;
         // Write to whichever of the two metadata slots this transaction maps to.
@@ -1497,21 +1497,21 @@ where
     }
 
     /// Returns the current committed tree height.
-    pub fn get_height(&self) -> usize {
+    pub fn get_height(&self) -> u64 {
         let ptr = self.committed.load(Ordering::Acquire);
         let meta = unsafe { &*ptr };
         meta.height
     }
 
     /// Returns the current approximate entry count.
-    pub fn get_size(&self) -> usize {
+    pub fn get_size(&self) -> u64 {
         let ptr = self.committed.load(Ordering::Acquire);
         let meta = unsafe { &*ptr };
         meta.size
     }
 
     /// Returns the B+ tree order (maximum number of children per internal node).
-    pub fn get_order(&self) -> usize {
+    pub fn get_order(&self) -> u64 {
         let ptr = self.committed.load(Ordering::Acquire);
         let meta = unsafe { &*ptr };
         meta.order
@@ -1633,7 +1633,7 @@ mod tests {
                         StagedMetadata {
                             root_id: 100 + i,
                             height: 3,
-                            size: i as usize,
+                            size: i,
                         },
                     )
                     .is_ok()
@@ -1662,7 +1662,7 @@ mod tests {
                     StagedMetadata {
                         root_id: 200 + i,
                         height: 3,
-                        size: i as usize,
+                        size: i,
                     },
                 )
                 .unwrap();

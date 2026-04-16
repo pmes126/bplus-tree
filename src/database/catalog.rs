@@ -23,11 +23,11 @@ pub struct TreeMeta {
     /// Currently committed root node page ID.
     pub root_id: u64,
     /// Current height of the B+ tree.
-    pub height: usize,
+    pub height: u64,
     /// Approximate number of entries (copied from the metadata page).
-    pub size: usize,
+    pub size: u64,
     /// Order of the B+ tree (copied from the metadata page).
-    pub order: usize,
+    pub order: u64,
     /// Last manifest sequence number that modified this record.
     pub last_seq: u64,
 }
@@ -100,10 +100,10 @@ impl Catalog {
                         meta_a,
                         meta_b,
                         format_version: encoding_version,
-                        order: order as usize,
+                        order,
                         root_id,
-                        height: height as usize,
-                        size: size as usize,
+                        height,
+                        size,
                         last_seq: seq,
                     },
                 );

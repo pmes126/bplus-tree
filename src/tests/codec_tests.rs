@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 //! Tests for codec encode/decode roundtrips, order preservation, and error handling.
 
 use crate::codec::kv::{KeyCodec, ValueCodec};
@@ -20,7 +18,7 @@ fn u64_key_roundtrip() {
 #[test]
 fn u64_key_preserves_order() {
     let values: Vec<u64> = vec![0, 1, 2, 100, 1000, u64::MAX - 1, u64::MAX];
-    let encoded: Vec<Vec<u8>> = values.iter().map(|v| KeyCodec::encode(v)).collect();
+    let encoded: Vec<Vec<u8>> = values.iter().map(KeyCodec::encode).collect();
 
     for i in 0..encoded.len() - 1 {
         assert!(
@@ -62,7 +60,7 @@ fn i64_key_roundtrip() {
 #[test]
 fn i64_key_preserves_order() {
     let values: Vec<i64> = vec![i64::MIN, -1000, -1, 0, 1, 1000, i64::MAX];
-    let encoded: Vec<Vec<u8>> = values.iter().map(|v| KeyCodec::encode(v)).collect();
+    let encoded: Vec<Vec<u8>> = values.iter().map(KeyCodec::encode).collect();
 
     for i in 0..encoded.len() - 1 {
         assert!(
@@ -103,14 +101,14 @@ fn string_key_roundtrip() {
 
 #[test]
 fn string_key_preserves_lexicographic_order() {
-    let values = vec![
+    let values = [
         "aaa".to_string(),
         "aab".to_string(),
         "ab".to_string(),
         "b".to_string(),
         "ba".to_string(),
     ];
-    let encoded: Vec<Vec<u8>> = values.iter().map(|v| KeyCodec::encode(v)).collect();
+    let encoded: Vec<Vec<u8>> = values.iter().map(KeyCodec::encode).collect();
 
     for i in 0..encoded.len() - 1 {
         assert!(

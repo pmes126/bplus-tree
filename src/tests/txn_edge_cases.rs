@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 //! Edge-case tests for WriteTransaction: mixed ops, overwrites, retry exhaustion.
 
 use crate::bplustree::transaction::WriteTransaction;
@@ -29,7 +27,7 @@ fn txn_insert_then_delete_same_key() {
     txn.commit(&tree).expect("commit");
 
     assert!(
-        tree.search(&k(1)).unwrap().is_none(),
+        tree.search(k(1)).unwrap().is_none(),
         "key inserted then deleted in same txn should be absent"
     );
 }
@@ -41,17 +39,17 @@ fn txn_delete_then_reinsert_same_key() {
 
     // Seed the tree.
     let mut seed = WriteTransaction::new(tree.clone());
-    seed.insert(k(1), b"original".to_vec());
+    seed.insert(k(1), b"original");
     seed.commit(&tree).expect("seed commit");
 
     // Delete then re-insert.
     let mut txn = WriteTransaction::new(tree.clone());
     txn.delete(k(1));
-    txn.insert(k(1), b"replaced".to_vec());
+    txn.insert(k(1), b"replaced");
     txn.commit(&tree).expect("commit");
 
     assert_eq!(
-        tree.search(&k(1)).unwrap(),
+        tree.search(k(1)).unwrap(),
         Some(b"replaced".to_vec()),
         "re-inserted value should be visible"
     );
@@ -63,13 +61,13 @@ fn txn_multiple_overwrites_of_same_key() {
     let tree = common::make_tree(&dir, 16).expect("create tree");
 
     let mut txn = WriteTransaction::new(tree.clone());
-    txn.insert(k(1), b"first".to_vec());
-    txn.insert(k(1), b"second".to_vec());
-    txn.insert(k(1), b"third".to_vec());
+    txn.insert(k(1), b"first");
+    txn.insert(k(1), b"second");
+    txn.insert(k(1), b"third");
     txn.commit(&tree).expect("commit");
 
     assert_eq!(
-        tree.search(&k(1)).unwrap(),
+        tree.search(k(1)).unwrap(),
         Some(b"third".to_vec()),
         "last write in batch should win"
     );
@@ -92,7 +90,7 @@ fn txn_large_batch() {
     txn.commit(&tree).expect("commit");
 
     for i in 0..n {
-        assert_eq!(tree.search(&k(i)).unwrap(), Some(v_bytes(i)));
+        assert_eq!(tree.search(k(i)).unwrap(), Some(v_bytes(i)));
     }
 }
 
@@ -117,7 +115,7 @@ fn txn_large_batch_delete() {
     txn.commit(&tree).expect("delete commit");
 
     for i in 0..n {
-        assert!(tree.search(&k(i)).unwrap().is_none());
+        assert!(tree.search(k(i)).unwrap().is_none());
     }
 }
 
@@ -149,10 +147,10 @@ fn txn_interleaved_ops_on_disjoint_keys() {
 
     for i in 0..20u64 {
         if i % 2 == 0 {
-            assert!(tree.search(&k(i)).unwrap().is_none(), "even key {i} should be deleted");
+            assert!(tree.search(k(i)).unwrap().is_none(), "even key {i} should be deleted");
         } else {
             assert_eq!(
-                tree.search(&k(i)).unwrap(),
+                tree.search(k(i)).unwrap(),
                 Some(v_bytes(i)),
                 "odd key {i} should be present"
             );

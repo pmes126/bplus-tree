@@ -49,7 +49,7 @@ impl Db {
     pub fn create_tree<K, V>(
         &self,
         name: &str,
-        order: usize,
+        order: u64,
     ) -> Result<Tree<K, V>, ApiError>
     where
         K: KeyCodec,
@@ -97,7 +97,7 @@ impl Db {
     pub fn tree<K, V>(
         &self,
         name: &str,
-        order: usize,
+        order: u64,
     ) -> Result<Tree<K, V>, ApiError>
     where
         K: KeyCodec,
@@ -193,7 +193,7 @@ where
     }
 
     /// Returns the number of entries currently in the tree.
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> u64 {
         self.inner.get_size()
     }
 

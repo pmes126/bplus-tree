@@ -58,7 +58,7 @@ where
 /// The storage is leaked onto the heap to satisfy the `'static` lifetime required by
 /// [`BPlusTree`].  This is intentional: tests run in short-lived processes.
 #[cfg(any(test, feature = "testing"))]
-pub fn test_tree<S>(storage: S, order: usize) -> TestHarness<S, S>
+pub fn test_tree<S>(storage: S, order: u64) -> TestHarness<S, S>
 where
     S: NodeStorage + PageStorage + HasEpoch + Send + Sync + 'static,
 {
@@ -88,7 +88,7 @@ where
 pub fn test_tree_with_epoch<S>(
     storage: S,
     epoch_mgr: Arc<EpochManager>,
-    order: usize,
+    order: u64,
 ) -> TestHarness<S, S>
 where
     S: NodeStorage + PageStorage + HasEpoch + Send + Sync + 'static,
@@ -132,7 +132,7 @@ where
 #[cfg(any(test, feature = "testing"))]
 pub fn make_tree(
     dir: &TempDir,
-    order: usize,
+    order: u64,
 ) -> anyhow::Result<SharedBPlusTree<'static, PagedNodeStorage<FilePageStorage>, FilePageStorage>>
 {
     let data_path = dir.path().join("data.db");
@@ -219,17 +219,6 @@ pub fn load_tree(
     Ok(SharedBPlusTree::new(tree))
 }
 
-/// Identical to [`make_tree`]; the `K` and `V` type parameters are unused by the
-/// raw-bytes tree core but are kept for call-site compatibility with older tests.
-#[cfg(any(test, feature = "testing"))]
-pub fn make_tree_generic<K, V>(
-    dir: &TempDir,
-    order: usize,
-) -> anyhow::Result<SharedBPlusTree<'static, PagedNodeStorage<FilePageStorage>, FilePageStorage>>
-{
-    make_tree(dir, order)
-}
-
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
@@ -238,7 +227,7 @@ pub fn make_tree_generic<K, V>(
 ///
 /// The root node ID is left as 0; [`TestStorage`] ignores all page reads so
 /// the tree never actually dereferences it.
-fn fake_metadata(order: usize) -> Metadata {
+fn fake_metadata(order: u64) -> Metadata {
     Metadata {
         root_node_id: 0,
         id: TEST_TREE_ID,

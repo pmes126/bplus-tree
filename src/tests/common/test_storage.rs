@@ -18,7 +18,7 @@ use zerocopy::FromBytes;
 pub struct StorageState {
     /// Record of every metadata page written via [`PageStorage::write_page_at_offset`].
     /// Each tuple is `(slot, txn_id, root_id, height, order, size)`.
-    pub commits: Vec<(u8, u64, u64, usize, usize, usize)>,
+    pub commits: Vec<(u8, u64, u64, u64, u64, u64)>,
     /// Number of successful `flush` calls.
     pub flushes: u64,
     /// Page IDs passed to `free_node` or `free_page`.
@@ -69,12 +69,12 @@ impl TestStorage {
     // --- Introspection ---
 
     /// Returns the most recent commit record, if any.
-    pub fn last_commit(&self) -> Option<(u8, u64, u64, usize, usize, usize)> {
+    pub fn last_commit(&self) -> Option<(u8, u64, u64, u64, u64, u64)> {
         self.state.lock().unwrap().commits.last().copied()
     }
 
     /// Returns all commit records in the order they were written.
-    pub fn all_commits(&self) -> Vec<(u8, u64, u64, usize, usize, usize)> {
+    pub fn all_commits(&self) -> Vec<(u8, u64, u64, u64, u64, u64)> {
         self.state.lock().unwrap().commits.clone()
     }
 

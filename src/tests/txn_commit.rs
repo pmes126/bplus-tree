@@ -44,7 +44,7 @@ fn commit_happy_path() {
     trx.commit(&tree).expect("commit");
 
     for i in 0..100u64 {
-        assert_eq!(tree.search(&k(i)).expect("get"), Some(v_bytes(i)));
+        assert_eq!(tree.search(k(i)).expect("get"), Some(v_bytes(i)));
     }
 }
 
@@ -65,7 +65,7 @@ fn commit_with_random_inserts() {
     trx.commit(&tree).expect("commit");
 
     for &key in &keys {
-        assert_eq!(tree.search(&k(key)).expect("get"), Some(v_bytes(key)));
+        assert_eq!(tree.search(k(key)).expect("get"), Some(v_bytes(key)));
     }
 }
 
@@ -88,7 +88,7 @@ fn contending_parallel_transactions() {
         }
     });
     for i in 0..1000u64 {
-        assert_eq!(tree.search(&k(i)).expect("get"), Some(v_bytes(i)));
+        assert_eq!(tree.search(k(i)).expect("get"), Some(v_bytes(i)));
     }
 }
 
@@ -101,14 +101,14 @@ fn commit_with_conflicting_transactions() {
     let mut t1 = WriteTransaction::new(tree.clone());
     let mut t2 = WriteTransaction::new(tree.clone());
 
-    t1.insert(k(42), b"value_42_t1".to_vec());
-    t2.insert(k(42), b"value_42_t2".to_vec());
+    t1.insert(k(42), b"value_42_t1");
+    t2.insert(k(42), b"value_42_t2");
 
     t1.commit(&tree).expect("commit t1");
     // t2 will rebase on top of t1's commit and win.
     t2.commit(&tree).expect("commit t2");
 
-    tree.search(&k(42))
+    tree.search(k(42))
         .expect("get")
         .map_or_else(
             || panic!("Key 42 should exist after both commits"),

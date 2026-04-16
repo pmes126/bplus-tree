@@ -78,7 +78,7 @@ impl<S: PageStorage + Send + Sync + 'static> Database<S> {
         name: &str,
         enc: KeyEncodingId,
         key_format: KeyFormat,
-        order: usize,
+        order: u64,
         limits: Option<KeyLimits>,
     ) -> Result<TreeMeta, DatabaseError> {
         let id = self.alloc_tree_id(name);
@@ -119,7 +119,7 @@ impl<S: PageStorage + Send + Sync + 'static> Database<S> {
             key_limits: limits,
             meta_a,
             meta_b,
-            order: order as u64,
+            order,
             root_id,
             height: 1,
             size: 0,

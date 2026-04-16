@@ -1,7 +1,5 @@
-#![cfg(test)]
-
 use crate::bplustree::tree::{BaseVersion, StagedMetadata};
-use crate::tests::common::{make_tree, make_tree_generic};
+use crate::tests::common::make_tree;
 
 use tempfile::TempDir;
 
@@ -22,7 +20,7 @@ fn v_bytes(i: u64) -> Vec<u8> {
 }
 
 /// Helper: insert keys 0..n into the tree and commit.
-fn populate_and_commit(dir: &TempDir, order: usize, n: u64) -> crate::bplustree::tree::SharedBPlusTree<'static, crate::storage::paged_node_storage::PagedNodeStorage<crate::storage::file_page_storage::FilePageStorage>, crate::storage::file_page_storage::FilePageStorage> {
+fn populate_and_commit(dir: &TempDir, order: u64, n: u64) -> crate::bplustree::tree::SharedBPlusTree<'static, crate::storage::paged_node_storage::PagedNodeStorage<crate::storage::file_page_storage::FilePageStorage>, crate::storage::file_page_storage::FilePageStorage> {
     let tree = make_tree(dir, order).expect("create tree");
     let mut root_id = tree.get_root_id();
 
@@ -37,7 +35,7 @@ fn populate_and_commit(dir: &TempDir, order: usize, n: u64) -> crate::bplustree:
     tree.try_commit(&base, StagedMetadata {
         root_id,
         height: tree.get_height(),
-        size: n as usize,
+        size: n,
     }).expect("commit");
 
     tree
@@ -242,7 +240,7 @@ fn range_with_large_order() {
 fn range_string_keys() {
     let dir = TempDir::new().unwrap();
     let order = 8;
-    let tree = make_tree_generic::<String, String>(&dir, order).expect("create tree");
+    let tree = make_tree(&dir, order).expect("create tree");
     let mut root_id = tree.get_root_id();
 
     let keys: Vec<String> = (0..50).map(|i| format!("key_{:04}", i)).collect();

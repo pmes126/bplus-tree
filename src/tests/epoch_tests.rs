@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 //! Tests for the epoch manager: concurrent pin/unpin, guard cleanup, reclaim safety.
 
 use crate::storage::epoch::EpochManager;
