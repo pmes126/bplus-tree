@@ -9,6 +9,7 @@ pub mod storage;
 pub(crate) mod keyfmt;
 pub(crate) mod layout;
 pub(crate) mod page;
+#[cfg(test)]
 pub(crate) mod tests;
 
 //pub use api::{DbBytes, TypedDb};

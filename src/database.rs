@@ -366,7 +366,7 @@ where
 fn replay_manifest(reader: &mut ManifestReader) -> Result<(Catalog, u64), DatabaseError> {
     let mut catalog = Catalog::new();
     let mut last_seq = 0u64;
-    while let Some(rec) = reader.next()? {
+    while let Some(rec) = reader.read_next()? {
         last_seq = seq_of(&rec);
         catalog.replay_record(&rec);
     }

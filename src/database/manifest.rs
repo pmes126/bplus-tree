@@ -126,13 +126,13 @@ impl ManifestRec {
 
                 write_len_prefixed_payload(&mut w, &payload)
             }
-            ManifestRec::DeleteTree { seq, id } => {
+            ManifestRec::DeleteTree { seq: _, id } => {
                 w.write_all(&[TAG_DELETE_TREE])?;
 
                 let payload = id.to_le_bytes();
                 write_len_prefixed_payload(&mut w, &payload)
             }
-            ManifestRec::RenameTree { seq, id, new_name } => {
+            ManifestRec::RenameTree { seq: _, id, new_name } => {
                 w.write_all(&[TAG_RENAME_TREE])?;
 
                 let mut payload = Vec::new();
@@ -230,11 +230,6 @@ fn read_u64(mut r: impl Read) -> io::Result<u64> {
     let mut buf = [0u8; size_of::<u64>()];
     r.read_exact(&mut buf)?;
     Ok(u64::from_le_bytes(buf))
-}
-
-#[inline]
-fn write_u64(mut w: impl Write, val: u64) -> io::Result<()> {
-    w.write_all(&val.to_le_bytes())
 }
 
 /// Writes a length-prefixed UTF-8 string.

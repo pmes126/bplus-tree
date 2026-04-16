@@ -45,14 +45,20 @@ pub struct Catalog {
     pub next_seq: u64,
 }
 
-impl Catalog {
-    /// Creates an empty catalog with sequence numbering starting at 1.
-    pub fn new() -> Self {
+impl Default for Catalog {
+    fn default() -> Self {
         Self {
             by_name: HashMap::new(),
             metas: HashMap::new(),
             next_seq: 1,
         }
+    }
+}
+
+impl Catalog {
+    /// Creates an empty catalog with sequence numbering starting at 1.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Looks up a tree by its logical name.
@@ -83,11 +89,11 @@ impl Catalog {
                 height,
                 size,
             } => {
-                self.by_name.insert(name.clone(), id.clone());
+                self.by_name.insert(name.clone(), id);
                 self.metas.insert(
-                    id.clone(),
+                    id,
                     TreeMeta {
-                        id: id.clone(),
+                        id,
                         name: name.clone(),
                         key_encoding,
                         keyfmt_id: key_format,
@@ -108,7 +114,7 @@ impl Catalog {
                 if let Some(m) = self.metas.get_mut(&id) {
                     self.by_name.remove(&m.name);
                     m.name = new_name.clone();
-                    self.by_name.insert(new_name.clone(), id.clone());
+                    self.by_name.insert(new_name.clone(), id);
                     m.last_seq = seq;
                     self.next_seq = self.next_seq.max(seq + 1);
                 }

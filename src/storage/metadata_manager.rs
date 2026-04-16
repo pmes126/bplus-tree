@@ -91,6 +91,7 @@ impl MetadataManager {
     }
 
     /// Constructs a metadata page from individual fields and writes it to `slot`.
+    #[allow(clippy::too_many_arguments)]
     pub fn commit_metadata<S: PageStorage>(
         storage: &S,
         slot: u64,
@@ -116,6 +117,7 @@ impl MetadataManager {
     }
 
     /// Allocates two metadata pages and writes initial metadata to both.
+    #[allow(dead_code)]
     fn bootstrap_metadata<S: PageStorage>(
         storage: &S,
         id: u64,

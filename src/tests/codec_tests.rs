@@ -147,14 +147,11 @@ fn bytes_key_roundtrip() {
 
 #[test]
 fn u64_value_roundtrip() {
-    // Note: the u64 ValueCodec encodes as big-endian but decodes as little-endian.
-    // This is a known asymmetry in bincode.rs. Test the actual encode/decode path
-    // rather than expecting mathematical roundtrip.
-    for val in [0u64, 1, u64::MAX] {
+    for val in [0u64, 1, 42, u64::MAX / 2, u64::MAX] {
         let bytes = <u64 as ValueCodec>::encode(&val);
         assert_eq!(bytes.len(), 8, "u64 value should encode to 8 bytes");
-        // Verify decode doesn't panic.
-        let _decoded = <u64 as ValueCodec>::decode(&bytes).unwrap();
+        let decoded = <u64 as ValueCodec>::decode(&bytes).unwrap();
+        assert_eq!(val, decoded, "u64 value roundtrip failed for {val}");
     }
 }
 

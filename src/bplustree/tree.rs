@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
@@ -24,10 +22,6 @@ use zerocopy::AsBytes;
 pub type NodeId = u64;
 /// A node on the traversal path, represented as (node ID, index in parent).
 pub type PathNode = (NodeId, usize);
-
-fn print_vec<T: std::fmt::Debug>(vec: &Vec<T>, msg: &str) {
-    println!("{}: {:?}", msg, vec);
-}
 
 /// Result of inserting into a B+ tree node.
 pub enum InsertResult<N> {
@@ -165,10 +159,14 @@ where
     storage: &'s S,
     page_storage: &'s P,
     epoch_mgr: Arc<EpochManager>,
+    #[allow(dead_code)]
     key_encoding: KeyEncodingId,
+    #[allow(dead_code)]
     encoding_version: u16,
     key_format: KeyFormat,
+    #[allow(dead_code)]
     meta_a: u64,
+    #[allow(dead_code)]
     meta_b: u64,
     max_keys: usize,
     min_internal_keys: usize,
@@ -482,7 +480,7 @@ where
         let md_ptr = Box::new(md1);
 
         Ok(Self {
-            id: meta.id.clone(),
+            id: meta.id,
             storage,
             page_storage,
             epoch_mgr,
@@ -504,6 +502,7 @@ where
     ///
     /// Unlike [`new`], `open` does not initialise a root node, making it safe to call when
     /// reopening a previously persisted tree after a crash or restart.
+    #[allow(clippy::too_many_arguments)]
     pub fn open(
         storage: &'s S,
         page_storage: &'s P,
@@ -538,6 +537,7 @@ where
     }
 
     /// Reads a node view from storage by its ID.
+    #[allow(dead_code)]
     fn read_node_view(&self, id: NodeId) -> Result<Option<NodeView>, TreeError> {
         Ok(self.storage.read_node_view(id)?)
     }
@@ -616,9 +616,9 @@ where
     ) -> Result<NodeId, TreeError> {
         let _guard = self.epoch_mgr.pin();
         let (mut path, found) = self.get_insertion_path(&key, root_id)?;
-        let (leaf_node_id, idx) = path.pop().ok_or_else(|| {
+        let (leaf_node_id, idx) = path.pop().ok_or(
             TreeError::Invariant("insertion path is empty")
-        })?;
+        )?;
         let mut leaf_node = self.storage.read_node_view(leaf_node_id)?.ok_or_else(|| {
             TreeError::NodeNotFound(format!("Leaf node with ID {} not found", leaf_node_id))
         })?;
@@ -887,9 +887,9 @@ where
         let _guard = self.epoch_mgr.pin();
 
         let (mut path, found) = self.get_insertion_path(key, root_id)?;
-        let (leaf_node_id, idx) = path.pop().ok_or_else(|| {
+        let (leaf_node_id, idx) = path.pop().ok_or(
             TreeError::Invariant("insertion path is empty")
-        })?;
+        )?;
 
         if !found {
             return Ok(DeleteResult::NotFound);

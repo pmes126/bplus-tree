@@ -51,7 +51,7 @@ pub fn write_freepages_snapshot(
         count: ids.len() as u32,
         _pad2: 0,
     };
-    f.write_all(&hdr.as_bytes())?;
+    f.write_all(hdr.as_bytes())?;
     for &pid in ids {
         f.write_all(&pid.to_le_bytes())?;
     }
@@ -69,10 +69,10 @@ pub fn read_freepages_snapshot(
     let hdr = FreeListSnaphotHeader::from_bytes(&buf)?;
     hdr.validate()?;
     let mut ids = vec![0u64; hdr.count as usize];
-    for i in 0..ids.len() {
+    for slot in &mut ids {
         let mut b = [0u8; 8];
         f.read_exact(&mut b)?;
-        ids[i] = u64::from_le_bytes(b);
+        *slot = u64::from_le_bytes(b);
     }
     Ok((hdr.next_page_id, ids))
 }

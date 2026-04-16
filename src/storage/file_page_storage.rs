@@ -16,6 +16,7 @@ pub use crate::storage::file_page_storage;
 const INITIAL_PAGE_ID: u32 = 16;
 
 /// Magic number identifying a freelist snapshot file ("FLS1" in little-endian).
+#[allow(dead_code)]
 const FREE_LIST_SNAPSHOT_MAGIC: u32 = 0x314C5346;
 
 /// A [`PageStorage`] backend that reads and writes fixed-size pages to a single flat file.

@@ -2,6 +2,7 @@ pub mod prefix;
 pub mod raw;
 
 #[derive(Debug, thiserror::Error)]
+#[allow(dead_code)]
 pub enum KeyFmtError {
     #[error("truncated")]
     Truncated,
@@ -136,6 +137,7 @@ pub fn resolve_key_format(id: u8) -> Option<&'static dyn KeyBlockFormat> {
     }
 }
 
+#[allow(dead_code)]
 pub fn key_format_to_u8(fmt: &dyn KeyBlockFormat) -> u8 {
     fmt.format_id()
 }

@@ -78,8 +78,9 @@ impl InternalPage {
     }
 
     #[inline]
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_bytes(&self) -> Result<&[u8; PAGE_SIZE], std::array::TryFromSliceError> {
-        let array: &[u8; PAGE_SIZE] = self.as_bytes().try_into()?; // also scoped
+        let array: &[u8; PAGE_SIZE] = self.as_bytes().try_into()?;
         Ok(array)
     }
 

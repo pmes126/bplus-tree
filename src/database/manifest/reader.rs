@@ -3,7 +3,7 @@
 use crate::database::manifest::ManifestRec;
 use std::{
     fs::File,
-    io::{self, Read},
+    io::{self},
     path::Path,
 };
 
@@ -23,8 +23,8 @@ impl ManifestReader {
     /// Reads and decodes the next record from the log.
     ///
     /// Returns `None` at end of file, or an error on a corrupt or truncated record.
-    pub fn next(&mut self) -> io::Result<Option<ManifestRec>> {
+    pub fn read_next(&mut self) -> io::Result<Option<ManifestRec>> {
         // TODO: add CRC framing verification.
-        ManifestRec::decode(&mut self.file.by_ref()).map(Some)
+        ManifestRec::decode(&mut self.file).map(Some)
     }
 }
