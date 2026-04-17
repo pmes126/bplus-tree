@@ -1535,9 +1535,13 @@ where
     #[cfg(any(test, feature = "testing"))]
     /// Force-publishes the given metadata without a CAS; for testing only.
     pub fn test_force_publish(&self, metadata: &Metadata) {
-        let boxed = Box::new(*metadata);
-        let new_ptr = Box::into_raw(boxed);
-        self.committed.store(new_ptr, Ordering::SeqCst);
+        let old_ptr = self.committed.swap(
+            Box::into_raw(Box::new(*metadata)),
+            Ordering::SeqCst,
+        );
+        if !old_ptr.is_null() {
+            unsafe { drop(Box::from_raw(old_ptr)); }
+        }
     }
 
     #[cfg(any(test, feature = "testing"))]

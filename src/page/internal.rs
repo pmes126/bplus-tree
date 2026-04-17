@@ -751,10 +751,10 @@ mod tests {
             assert_eq!(retrieved_child, i as u64 + 1);
         }
         // Retrieve the entries
-        for i in 0..iterations {
+        for (i, key) in keys.iter().enumerate().take(iterations) {
             let scratch = &mut Vec::new();
             let retrieved_key = page.get_key_at(i, scratch).unwrap();
-            assert_eq!(retrieved_key, keys[i].as_bytes());
+            assert_eq!(retrieved_key, key.as_bytes());
         }
     }
 

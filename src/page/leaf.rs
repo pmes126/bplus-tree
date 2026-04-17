@@ -926,8 +926,8 @@ mod tests {
         }
         let mut scratch = Vec::new();
 
-        for i in 0..keys.len() {
-            let idx = page.lower_bound(keys[i].as_bytes(), &mut scratch); //.expect("inserted value not found");
+        for k in &keys {
+            let idx = page.lower_bound(k.as_bytes(), &mut scratch);
             let s = match idx {
                 Ok(i) => i,
                 Err(i) => i,
@@ -935,7 +935,7 @@ mod tests {
             let key = page
                 .get_key_at(s, &mut scratch)
                 .expect("Could not retrieve key");
-            assert_eq!(*keys[i].as_bytes(), *key);
+            assert_eq!(*k.as_bytes(), *key);
         }
     }
 
