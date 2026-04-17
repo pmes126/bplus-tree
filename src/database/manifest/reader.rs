@@ -25,6 +25,10 @@ impl ManifestReader {
     /// Returns `None` at end of file, or an error on a corrupt or truncated record.
     pub fn read_next(&mut self) -> io::Result<Option<ManifestRec>> {
         // TODO: add CRC framing verification.
-        ManifestRec::decode(&mut self.file).map(Some)
+        match ManifestRec::decode(&mut self.file) {
+            Ok(rec) => Ok(Some(rec)),
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 }

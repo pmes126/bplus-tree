@@ -110,8 +110,8 @@ impl ManifestRec {
                 payload.extend_from_slice(&meta_a.to_le_bytes());
                 payload.extend_from_slice(&meta_b.to_le_bytes());
                 payload.extend_from_slice(&(*key_encoding as u64).to_le_bytes());
-                payload.extend_from_slice(&key_format.id().to_le_bytes());
-                payload.extend_from_slice(&encoding_version.to_le_bytes());
+                payload.extend_from_slice(&(key_format.id() as u64).to_le_bytes());
+                payload.extend_from_slice(&(*encoding_version as u64).to_le_bytes());
                 payload.extend_from_slice(&order.to_le_bytes());
                 payload.extend_from_slice(&root_id.to_le_bytes());
                 payload.extend_from_slice(&height.to_le_bytes());
@@ -126,16 +126,19 @@ impl ManifestRec {
 
                 write_len_prefixed_payload(&mut w, &payload)
             }
-            ManifestRec::DeleteTree { seq: _, id } => {
+            ManifestRec::DeleteTree { seq, id } => {
                 w.write_all(&[TAG_DELETE_TREE])?;
 
-                let payload = id.to_le_bytes();
+                let mut payload = Vec::new();
+                payload.extend_from_slice(&seq.to_le_bytes());
+                payload.extend_from_slice(&id.to_le_bytes());
                 write_len_prefixed_payload(&mut w, &payload)
             }
-            ManifestRec::RenameTree { seq: _, id, new_name } => {
+            ManifestRec::RenameTree { seq, id, new_name } => {
                 w.write_all(&[TAG_RENAME_TREE])?;
 
                 let mut payload = Vec::new();
+                payload.extend_from_slice(&seq.to_le_bytes());
                 payload.extend_from_slice(&id.to_le_bytes());
                 write_string(&mut payload, new_name)?;
 

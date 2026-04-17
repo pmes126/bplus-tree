@@ -164,9 +164,7 @@ where
     #[allow(dead_code)]
     encoding_version: u16,
     key_format: KeyFormat,
-    #[allow(dead_code)]
     meta_a: u64,
-    #[allow(dead_code)]
     meta_b: u64,
     max_keys: usize,
     min_internal_keys: usize,
@@ -1317,7 +1315,11 @@ where
     ) -> Result<(), TreeError> {
         let new_txn_id = self.txn_id.fetch_add(1, Ordering::SeqCst) + 1;
         // Write to whichever of the two metadata slots this transaction maps to.
-        let target_slot = new_txn_id % 2;
+        let target_slot = if new_txn_id % 2 == 0 {
+            self.meta_a
+        } else {
+            self.meta_b
+        };
 
         MetadataManager::commit_metadata(
             self.page_storage,
@@ -1396,7 +1398,11 @@ where
         match result {
             // CAS succeeded; write metadata to the double-buffered slot.
             Ok(old_ptr) => {
-                let slot = new_txn_id % 2;
+                let slot = if new_txn_id % 2 == 0 {
+                    self.meta_a
+                } else {
+                    self.meta_b
+                };
 
                 let res = MetadataManager::commit_metadata_with_object(
                     self.page_storage,

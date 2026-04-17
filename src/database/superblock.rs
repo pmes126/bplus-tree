@@ -1,6 +1,6 @@
 //! Superblock and freelist snapshot helpers for the page store.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
@@ -64,15 +64,17 @@ pub fn read_freepages_snapshot(
     path: &Path,
     offset: u64,
 ) -> Result<(u64, Vec<u64>), std::io::Error> {
-    let mut f = std::fs::OpenOptions::new().read(true).open(path)?;
+    let f = std::fs::OpenOptions::new().read(true).open(path)?;
     let mut buf = [0u8; FREELIST_SNAPSHOT_HEADER_SIZE];
     f.read_exact_at(&mut buf, offset)?;
     let hdr = FreeListSnaphotHeader::from_bytes(&buf)?;
     hdr.validate()?;
     let mut ids = vec![0u64; hdr.count as usize];
+    let mut pos = offset + FREELIST_SNAPSHOT_HEADER_SIZE as u64;
     for slot in &mut ids {
         let mut b = [0u8; 8];
-        f.read_exact(&mut b)?;
+        f.read_exact_at(&mut b, pos)?;
+        pos += 8;
         *slot = u64::from_le_bytes(b);
     }
     Ok((hdr.next_page_id, ids))

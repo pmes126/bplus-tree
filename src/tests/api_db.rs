@@ -361,15 +361,6 @@ fn freelist_persists_across_close_and_reopen() {
         "freelist.snapshot should be written on close"
     );
 
-    // Debug: check data.db state before reopen.
-    let data_path = dir.path().join("data.db");
-    let file_len = std::fs::metadata(&data_path).map(|m| m.len()).unwrap_or(0);
-    eprintln!("data.db size before reopen: {file_len} bytes");
-    if file_len >= 16 {
-        let raw = std::fs::read(&data_path).unwrap();
-        eprintln!("first 16 bytes: {:02x?}", &raw[..16]);
-    }
-
     // Phase 2: reopen — the freed pages should be restored and reused.
     {
         let db = Db::open(dir.path()).unwrap();
