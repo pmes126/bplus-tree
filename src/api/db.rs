@@ -118,6 +118,10 @@ impl Db {
     /// [`RangeIter`] handles derived from this `Db` are still alive.
     /// Using a tree handle after `close` is undefined behaviour.
     pub unsafe fn close(self) {
+        // Persist freelist so freed pages survive restart.
+        if let Err(e) = self.database.checkpoint_freelist() {
+            eprintln!("warning: failed to checkpoint freelist: {e}");
+        }
         let ptr = self.database as *const Database<FilePageStorage> as *mut Database<FilePageStorage>;
         drop(unsafe { Box::from_raw(ptr) });
     }

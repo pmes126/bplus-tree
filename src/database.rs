@@ -19,7 +19,10 @@ use crate::database::manifest::ManifestRec;
 use crate::database::manifest::reader::ManifestReader;
 use crate::database::manifest::writer::ManifestWriter;
 use crate::database::metadata::Metadata;
-use crate::database::superblock::{Superblock, SUPERBLOCK_MAGIC, SUPERBLOCK_VERSION};
+use crate::database::superblock::{
+    Superblock, SUPERBLOCK_MAGIC, SUPERBLOCK_VERSION,
+    read_freepages_snapshot, write_freepages_snapshot, FREELIST_SNAPSHOT_VERSION,
+};
 use crate::keyfmt::KeyFormat;
 use crate::layout::PAGE_SIZE;
 use crate::page::LeafPage;
@@ -64,6 +67,7 @@ pub struct Database<S: PageStorage + Send + Sync + 'static> {
     manifest: Mutex<ManifestWriter>,
     catalog: RwLock<Catalog>,
     format_version: u32,
+    base_path: std::path::PathBuf,
 }
 
 impl<S: PageStorage + Send + Sync + 'static> Database<S> {
@@ -193,6 +197,23 @@ impl<S: PageStorage + Send + Sync + 'static> Database<S> {
     /// Returns the on-disk format version read from the superblock.
     pub fn format_version(&self) -> u32 {
         self.format_version
+    }
+
+    /// Writes the current freelist and next-page-id to a snapshot file.
+    ///
+    /// Called during graceful shutdown so that freed pages are restored on
+    /// the next open, preventing page-id exhaustion after many deletes.
+    pub fn checkpoint_freelist(&self) -> Result<(), DatabaseError> {
+        let freelist_path = self.base_path.join("freelist.snapshot");
+        let freed = self.meta_storage.as_ref().get_freelist();
+        let next_pid = self.meta_storage.as_ref().get_next_page_id();
+        write_freepages_snapshot(
+            &freelist_path,
+            FREELIST_SNAPSHOT_VERSION,
+            next_pid,
+            &freed,
+        )?;
+        Ok(())
     }
 
     // -----------------------------------------------------------------
@@ -352,6 +373,20 @@ where
         (catalog, manifest)
     };
 
+    // Restore freelist from snapshot if present.
+    let freelist_path = base.join("freelist.snapshot");
+    if freelist_path.exists() {
+        match read_freepages_snapshot(&freelist_path, 0) {
+            Ok((next_pid, freed_ids)) => {
+                storage.as_ref().set_next_page_id(next_pid)?;
+                storage.as_ref().set_freelist(freed_ids)?;
+            }
+            Err(e) => {
+                eprintln!("warning: failed to read freelist snapshot: {e}");
+            }
+        }
+    }
+
     Ok(Database {
         node_storage,
         meta_storage: storage,
@@ -359,6 +394,7 @@ where
         manifest: Mutex::new(manifest),
         catalog: RwLock::new(catalog),
         format_version,
+        base_path: base.to_path_buf(),
     })
 }
 

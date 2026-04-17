@@ -127,4 +127,12 @@ impl PageStorage for FilePageStorage {
         *freed = freed_pages;
         Ok(())
     }
+
+    fn get_next_page_id(&self) -> u64 {
+        self.next_page_id.load(Ordering::SeqCst)
+    }
+
+    fn get_freelist(&self) -> Vec<u64> {
+        self.freed_pages.lock().unwrap().clone()
+    }
 }

@@ -41,6 +41,7 @@ pub fn write_freepages_snapshot(
     let mut f = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
+        .create(true)
         .truncate(true)
         .open(path)?;
     let hdr = FreeListSnaphotHeader {

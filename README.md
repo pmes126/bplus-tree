@@ -136,6 +136,43 @@ retries (up to a configurable limit). Readers never block writers.
 
 ---
 
+## Durability and fsync
+
+Each commit follows a strict sequence:
+
+1. **CAS publish** — the new metadata pointer becomes visible to in-process readers
+   immediately (atomic swap, no disk I/O).
+2. **Write metadata page** — the new `(root_id, height, size, txn_id)` is written to the
+   inactive A/B metadata slot via positional `write_all_at()` (kernel page cache, not yet
+   durable).
+3. **`fdatasync()`** — a single `sync_data()` call flushes all dirty pages in the data
+   file to disk: both the COW node pages written during the transaction and the metadata
+   page from step 2.
+
+### Crash safety
+
+The **A/B metadata slot alternation** provides atomic commit semantics without a WAL.
+Each commit writes to `slot = txn_id % 2`, leaving the previous slot untouched. On
+recovery, `MetadataManager::read_active_meta` reads both slots and picks the one with
+the highest `txn_id` and a valid CRC32 checksum.
+
+- **Crash before `fdatasync()`** — the new metadata page may not be on disk. Recovery
+  reads the old slot, which is still valid. The tree rolls back to the prior commit.
+- **Torn write to new slot** — the CRC32 checksum detects it. Recovery falls back to
+  the old slot.
+- **Crash after `fdatasync()`** — both node pages and metadata are durable. Recovery
+  picks the new slot.
+
+### Known side effect
+
+`sync_data()` operates on the entire file descriptor, not a byte range. This means a
+commit also flushes speculative COW pages written by other concurrent writers that have
+not yet committed. Those pages are harmless (orphaned if the writer never commits) but
+represent minor wasted I/O under concurrent write workloads. This is inherent to the
+single-file, shared page pool design and is not a correctness issue.
+
+---
+
 ## Epoch-based reclamation
 
 Readers pin an **epoch** while walking a snapshot; writers retire old pages with the
@@ -237,7 +274,8 @@ lifetime, and hands out typed `Tree<K, V>` handles. Purely synchronous.
 - **Order-preserving keys:** if your codec doesn't preserve lexicographic order, scans will be wrong.
 - **Commit conflicts:** normal under load. `WriteTxn` retries automatically up to a budget.
 - **Large values:** must fit in a single 4 KB page. Overflow pages are not yet implemented.
-- **Durability:** depends on storage `fsync` policy.
+- **Durability:** each commit calls `fdatasync()` once. Node pages have no checksums
+  (only metadata pages are CRC32-protected).
 
 ---
 

@@ -329,3 +329,74 @@ fn multiple_named_trees_are_independent() {
         "delete in one tree must not affect another"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Freelist persistence
+// ---------------------------------------------------------------------------
+
+#[test]
+fn freelist_persists_across_close_and_reopen() {
+    let dir = TempDir::new().unwrap();
+
+    // Phase 1: create a tree, insert keys, delete some to generate freed pages.
+    {
+        let db = Db::open(dir.path()).unwrap();
+        let tree = db.create_tree::<u64, String>("data", 8).unwrap();
+
+        for i in 0u64..50 {
+            tree.put(&i, &format!("value-{i}")).unwrap();
+        }
+        // Delete half the keys to free pages.
+        for i in 0u64..25 {
+            tree.delete(&i).unwrap();
+        }
+
+        // Close checkpoints the freelist.
+        unsafe { db.close() };
+    }
+
+    // The snapshot file should exist.
+    assert!(
+        dir.path().join("freelist.snapshot").exists(),
+        "freelist.snapshot should be written on close"
+    );
+
+    // Debug: check data.db state before reopen.
+    let data_path = dir.path().join("data.db");
+    let file_len = std::fs::metadata(&data_path).map(|m| m.len()).unwrap_or(0);
+    eprintln!("data.db size before reopen: {file_len} bytes");
+    if file_len >= 16 {
+        let raw = std::fs::read(&data_path).unwrap();
+        eprintln!("first 16 bytes: {:02x?}", &raw[..16]);
+    }
+
+    // Phase 2: reopen — the freed pages should be restored and reused.
+    {
+        let db = Db::open(dir.path()).unwrap();
+        let tree = db.open_tree::<u64, String>("data").unwrap();
+
+        // Surviving keys are still accessible.
+        for i in 25u64..50 {
+            assert_eq!(
+                tree.get(&i).unwrap().as_deref(),
+                Some(format!("value-{i}").as_str()),
+                "key {i} should survive close/reopen"
+            );
+        }
+
+        // Insert new keys — these should reuse freed page IDs rather than
+        // growing the file. We can't easily assert on page IDs from the API,
+        // but we verify correctness: the inserts succeed and reads work.
+        for i in 100u64..150 {
+            tree.put(&i, &format!("new-{i}")).unwrap();
+        }
+        for i in 100u64..150 {
+            assert_eq!(
+                tree.get(&i).unwrap().as_deref(),
+                Some(format!("new-{i}").as_str()),
+            );
+        }
+
+        unsafe { db.close() };
+    }
+}

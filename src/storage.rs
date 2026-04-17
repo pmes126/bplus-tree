@@ -74,6 +74,12 @@ pub trait PageStorage {
 
     /// Replaces the freelist with the given list of freed page IDs.
     fn set_freelist(&self, freed_pages: Vec<u64>) -> Result<(), std::io::Error>;
+
+    /// Returns the current next page ID (allocation high-water mark).
+    fn get_next_page_id(&self) -> u64;
+
+    /// Returns a snapshot of the current freelist.
+    fn get_freelist(&self) -> Vec<u64>;
 }
 
 /// Unified node storage interface for reading and writing encoded B+ tree nodes.

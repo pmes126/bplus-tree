@@ -216,4 +216,12 @@ impl PageStorage for TestStorage {
     fn set_freelist(&self, _freed_pages: Vec<u64>) -> Result<(), std::io::Error> {
         Ok(())
     }
+
+    fn get_next_page_id(&self) -> u64 {
+        self.next_page_id.load(Ordering::SeqCst)
+    }
+
+    fn get_freelist(&self) -> Vec<u64> {
+        Vec::new()
+    }
 }
