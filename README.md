@@ -353,13 +353,39 @@ guaranteeing that at least two entries always fit per page so splits produce val
 
 ## Roadmap
 
-- Prefix-compressed key block format (`PrefixRestarts`)
-- Sorted batch replay for write transactions
-- Bulk-load path for large initial imports
-- Overflow pages for values exceeding `MAX_ENTRY_PAYLOAD`
-- Fuzz testing (`cargo-fuzz`) for page layout and codec correctness
-- Configurable page size (currently hardcoded to 4 KB)
-- CI pipeline (build, test, lint, benchmarks)
+- **Prefix-compressed key block format (`PrefixRestarts`)** — Keys are currently stored
+  verbatim in each slot. When keys share long common prefixes, this wastes significant
+  page space. Prefix compression stores the shared prefix once and only the differing
+  suffix per key, with periodic restart points for random access within the block. This
+  increases key density per page and reduces I/O for prefix-heavy workloads.
+
+- **Sorted batch replay for write transactions** — `WriteTxn` currently replays buffered
+  operations in insertion order. Sorting the batch by key before replay means consecutive
+  inserts land in the same (or nearby) leaves, so the already-staged COW pages are reused
+  rather than cloning a different leaf for each insert. Fewer COW copies, better cache
+  locality, and lower write amplification for large batches.
+
+- **Bulk-load path for large initial imports** — Inserting N keys one-by-one through the
+  tree incurs O(height) COW copies per key. A bulk-load path sorts all keys upfront,
+  fills leaves left-to-right, and builds internal nodes bottom-up. Orders of magnitude
+  faster for initial data ingestion compared to incremental inserts.
+
+- **Overflow pages for values exceeding `MAX_ENTRY_PAYLOAD`** — Currently key + value
+  must fit within 2038 bytes. Overflow pages would store large values across multiple
+  linked pages, removing this size constraint. This is standard in production B-trees
+  (SQLite, LMDB).
+
+- **Fuzz testing (`cargo-fuzz`)** — Use coverage-guided fuzzing to generate random
+  sequences of inserts, deletes, splits, and merges, then verify tree invariants hold
+  after each operation. Catches edge cases in the slotted page layout and codec
+  encode/decode roundtrips that hand-written tests are unlikely to cover.
+
+- **Configurable page size** — Currently hardcoded to 4 KB. Some workloads benefit from
+  larger pages (16 KB, 64 KB) for fewer tree levels and better sequential throughput;
+  smaller pages reduce write amplification under update-heavy workloads. Making this
+  configurable requires storing the page size in the superblock and threading it through
+  the page layer.
+
 - **Sharded epoch pinning** — `EpochManager::pin()`/`unpin()` currently acquire a
   central `Mutex<HashMap<ThreadId, Epoch>>` on every read operation. Under high reader
   concurrency this serialises the pin/unpin brackets even though the tree walk itself is
