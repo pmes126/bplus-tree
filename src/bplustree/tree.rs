@@ -1572,6 +1572,8 @@ where
                     return Err(CommitError::Metadata(e));
                 }
                 self.storage.flush()?;
+                // Reclamation of old nodes is deferred until after the new metadata is durable and
+                // visible.
                 self.epoch_mgr.advance();
                 let safe_epoch = self.epoch_mgr.oldest_active();
                 let reclaimed = self.epoch_mgr.reclaim(safe_epoch);
