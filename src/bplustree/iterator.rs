@@ -4,9 +4,9 @@
 //! The epoch is pinned for the lifetime of the iterator, guaranteeing that
 //! all pages seen during the scan remain valid (COW snapshot isolation).
 
+use crate::bplustree::NodeView;
 use crate::bplustree::node_view::NodeId;
 use crate::bplustree::tree::TreeError;
-use crate::bplustree::NodeView;
 use crate::storage::NodeStorage;
 use crate::storage::epoch::{EpochManager, ReaderGuard};
 

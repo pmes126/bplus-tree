@@ -7,11 +7,11 @@
 use std::marker::PhantomData;
 use std::path::Path;
 
-use crate::codec::kv::{KeyCodec, ValueCodec};
 use crate::api::ApiError;
 use crate::bplustree::iterator::BPlusTreeIter;
 use crate::bplustree::transaction::{TxnStatus, WriteTransaction};
 use crate::bplustree::tree::SharedBPlusTree;
+use crate::codec::kv::{KeyCodec, ValueCodec};
 use crate::database::{self, Database};
 use crate::keyfmt::KeyFormat;
 use crate::keyfmt::raw::RawFormat;
@@ -47,11 +47,7 @@ impl Db {
     }
 
     /// Creates a new named tree and returns a typed handle.
-    pub fn create_tree<K, V>(
-        &self,
-        name: &str,
-        order: u64,
-    ) -> Result<Tree<K, V>, ApiError>
+    pub fn create_tree<K, V>(&self, name: &str, order: u64) -> Result<Tree<K, V>, ApiError>
     where
         K: KeyCodec,
         V: ValueCodec,
@@ -95,11 +91,7 @@ impl Db {
 
     /// Opens an existing tree, or creates one with the given `order` if it
     /// does not exist yet.
-    pub fn tree<K, V>(
-        &self,
-        name: &str,
-        order: u64,
-    ) -> Result<Tree<K, V>, ApiError>
+    pub fn tree<K, V>(&self, name: &str, order: u64) -> Result<Tree<K, V>, ApiError>
     where
         K: KeyCodec,
         V: ValueCodec,
@@ -122,7 +114,8 @@ impl Db {
         if let Err(e) = self.database.checkpoint_freelist() {
             eprintln!("warning: failed to checkpoint freelist: {e}");
         }
-        let ptr = self.database as *const Database<FilePageStorage> as *mut Database<FilePageStorage>;
+        let ptr =
+            self.database as *const Database<FilePageStorage> as *mut Database<FilePageStorage>;
         drop(unsafe { Box::from_raw(ptr) });
     }
 }

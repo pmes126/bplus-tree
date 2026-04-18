@@ -16,11 +16,16 @@ fn main() -> anyhow::Result<()> {
     let beta = tree.get(&b"beta".to_vec())?;
     println!(
         "alpha -> {}",
-        alpha.as_deref().map(String::from_utf8_lossy).unwrap_or_default()
+        alpha
+            .as_deref()
+            .map(String::from_utf8_lossy)
+            .unwrap_or_default()
     );
     println!(
         "beta  -> {}",
-        beta.as_deref().map(String::from_utf8_lossy).unwrap_or_default()
+        beta.as_deref()
+            .map(String::from_utf8_lossy)
+            .unwrap_or_default()
     );
 
     Ok(())

@@ -90,7 +90,10 @@ fn reclaim_returns_only_pages_at_or_before_safe_epoch() {
     assert!(reclaimed.contains(&100));
     assert!(reclaimed.contains(&101));
     assert!(reclaimed.contains(&200));
-    assert!(!reclaimed.contains(&300), "epoch 3 should not be reclaimed at safe_epoch=2");
+    assert!(
+        !reclaimed.contains(&300),
+        "epoch 3 should not be reclaimed at safe_epoch=2"
+    );
 
     // Epoch 3 should still be deferred.
     let remaining = mgr.get_deferred_pages();

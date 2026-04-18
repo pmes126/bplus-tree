@@ -79,7 +79,14 @@ fn commit_and_load_tree() -> Result<()> {
     let height = tree.get_height();
     let size = tree.get_size();
 
-    tree.try_commit(&base, StagedMetadata { root_id, height, size })?;
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id,
+            height,
+            size,
+        },
+    )?;
 
     for i in 0..iterations {
         let res = tree.search(k(i))?;
@@ -87,7 +94,10 @@ fn commit_and_load_tree() -> Result<()> {
     }
 
     let loaded = load_tree(&dir)?;
-    assert!(loaded.get_root_id() != 0, "Loaded tree should have a valid root");
+    assert!(
+        loaded.get_root_id() != 0,
+        "Loaded tree should have a valid root"
+    );
 
     for i in 0..iterations {
         let res = loaded.search(k(i))?;
@@ -122,7 +132,11 @@ fn write_and_read_value() -> Result<(), anyhow::Error> {
     )?;
     let res = tree.search(k(1))?;
     assert!(res.is_some(), "Value should be found after commit");
-    assert_eq!(res.unwrap(), v_bytes(1), "Value should match what was inserted");
+    assert_eq!(
+        res.unwrap(),
+        v_bytes(1),
+        "Value should match what was inserted"
+    );
     Ok(())
 }
 
@@ -296,7 +310,14 @@ fn write_and_delete_values() -> Result<(), anyhow::Error> {
     let base = BaseVersion {
         committed_ptr: tree.get_metadata(),
     };
-    tree.try_commit(&base, StagedMetadata { root_id, height: tree.get_height(), size })?;
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id,
+            height: tree.get_height(),
+            size,
+        },
+    )?;
 
     for i in 0..order * multiplier {
         assert!(
@@ -346,23 +367,44 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
         let res = tree.insert_with_root(k(i), v_bytes(i), root_id)?;
         root_id = res.new_root_id;
         tree.try_commit(
-            &BaseVersion { committed_ptr: tree.get_metadata() },
-            StagedMetadata { root_id, height: res.new_height, size: res.new_size },
+            &BaseVersion {
+                committed_ptr: tree.get_metadata(),
+            },
+            StagedMetadata {
+                root_id,
+                height: res.new_height,
+                size: res.new_size,
+            },
         )?;
     }
     root_id = tree.get_root_id();
-    assert_eq!(tree.get_height(), 1, "Height should be 1 after {} inserts", order - 1);
+    assert_eq!(
+        tree.get_height(),
+        1,
+        "Height should be 1 after {} inserts",
+        order - 1
+    );
 
     // Delete all — height stays at 1.
     for i in 0..order - 1 {
         let res = tree.delete_with_root(&k(i), root_id)?;
         root_id = res.new_root_id;
         tree.try_commit(
-            &BaseVersion { committed_ptr: tree.get_metadata() },
-            StagedMetadata { root_id, height: res.new_height, size: res.new_size },
+            &BaseVersion {
+                committed_ptr: tree.get_metadata(),
+            },
+            StagedMetadata {
+                root_id,
+                height: res.new_height,
+                size: res.new_size,
+            },
         )?;
     }
-    assert_eq!(tree.get_height(), 1, "Height should remain 1 after all deletions");
+    assert_eq!(
+        tree.get_height(),
+        1,
+        "Height should remain 1 after all deletions"
+    );
 
     // Large insert/delete cycle.
     let iterations = order * multiplier;
@@ -370,19 +412,35 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
         let res = tree.insert_with_root(k(i), v_bytes(i), root_id)?;
         root_id = res.new_root_id;
         tree.try_commit(
-            &BaseVersion { committed_ptr: tree.get_metadata() },
-            StagedMetadata { root_id, height: res.new_height, size: res.new_size },
+            &BaseVersion {
+                committed_ptr: tree.get_metadata(),
+            },
+            StagedMetadata {
+                root_id,
+                height: res.new_height,
+                size: res.new_size,
+            },
         )?;
     }
     for i in 0..iterations {
         let res = tree.delete_with_root(&k(i), root_id)?;
         root_id = res.new_root_id;
         tree.try_commit(
-            &BaseVersion { committed_ptr: tree.get_metadata() },
-            StagedMetadata { root_id, height: res.new_height, size: res.new_size },
+            &BaseVersion {
+                committed_ptr: tree.get_metadata(),
+            },
+            StagedMetadata {
+                root_id,
+                height: res.new_height,
+                size: res.new_size,
+            },
         )?;
     }
-    assert_eq!(tree.get_height(), 1, "Height should remain 1 after full delete cycle");
+    assert_eq!(
+        tree.get_height(),
+        1,
+        "Height should remain 1 after full delete cycle"
+    );
     Ok(())
 }
 
@@ -402,14 +460,22 @@ fn insert_duplicate_keys_should_overwrite_value() {
     let base = BaseVersion {
         committed_ptr: tree.get_metadata(),
     };
-    tree.try_commit(&base, StagedMetadata {
-        root_id,
-        height: res.new_height,
-        size: res.new_size,
-    }).unwrap();
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id,
+            height: res.new_height,
+            size: res.new_size,
+        },
+    )
+    .unwrap();
 
     let val = tree.search(k(42)).unwrap();
-    assert_eq!(val, Some(b"second".to_vec()), "second insert should overwrite the first");
+    assert_eq!(
+        val,
+        Some(b"second".to_vec()),
+        "second insert should overwrite the first"
+    );
 }
 
 /// Range scan via `search_range` returns entries in key order within the given bounds.
@@ -429,11 +495,15 @@ fn range_search_test() {
     let base = BaseVersion {
         committed_ptr: tree.get_metadata(),
     };
-    tree.try_commit(&base, StagedMetadata {
-        root_id,
-        height: tree.get_height(),
-        size: n,
-    }).unwrap();
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id,
+            height: tree.get_height(),
+            size: n,
+        },
+    )
+    .unwrap();
 
     // Bounded range [10, 20).
     let results: Vec<_> = tree
@@ -445,7 +515,11 @@ fn range_search_test() {
     assert_eq!(results.len(), 10, "range [10,20) should yield 10 entries");
     for (offset, (key, val)) in results.iter().enumerate() {
         let expected = 10 + offset as u64;
-        assert_eq!(key.as_slice(), &k(expected), "key mismatch at offset {offset}");
+        assert_eq!(
+            key.as_slice(),
+            &k(expected),
+            "key mismatch at offset {offset}"
+        );
         assert_eq!(val, &v_bytes(expected), "value mismatch at offset {offset}");
     }
 
@@ -537,7 +611,10 @@ fn concurrent_writers_retry_until_success() {
                             committed_ptr: t.get_metadata_ptr(),
                         };
                         match t.try_commit(&base, staged.clone()) {
-                            Ok(()) => { ok += 1; break; }
+                            Ok(()) => {
+                                ok += 1;
+                                break;
+                            }
                             Err(CommitError::RebaseRequired) => continue,
                             Err(e) => panic!("unexpected IO error: {e:?}"),
                         }

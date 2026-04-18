@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use crate::api::{KeyEncodingId, TreeId};
-use crate::bplustree::node_view::NodeViewError;
 use crate::bplustree::NodeView;
+use crate::bplustree::node_view::NodeViewError;
 use crate::database::catalog::TreeMeta;
 use crate::database::metadata::Metadata;
 use crate::keyfmt::KeyFormat;
@@ -75,7 +75,9 @@ pub enum TreeError {
     #[error(transparent)]
     NodeView(#[from] NodeViewError),
     /// The key-value pair is too large to fit in a single page.
-    #[error("entry too large: key ({key_len} bytes) + value ({val_len} bytes) exceeds max {max_len} bytes")]
+    #[error(
+        "entry too large: key ({key_len} bytes) + value ({val_len} bytes) exceeds max {max_len} bytes"
+    )]
     EntryTooLarge {
         key_len: usize,
         val_len: usize,
@@ -84,8 +86,7 @@ pub enum TreeError {
 }
 
 /// Per-entry overhead in a leaf page: u16 key-length prefix + LeafSlot (val_off + val_len).
-const LEAF_PER_ENTRY_OVERHEAD: usize =
-    std::mem::size_of::<u16>() + crate::page::leaf::SLOT_SIZE;
+const LEAF_PER_ENTRY_OVERHEAD: usize = std::mem::size_of::<u16>() + crate::page::leaf::SLOT_SIZE;
 
 /// Maximum combined key + value size (in bytes) that can be inserted into a
 /// leaf page.
@@ -99,8 +100,7 @@ const LEAF_PER_ENTRY_OVERHEAD: usize =
 /// split produces two valid pages.  Therefore:
 ///
 ///   `max_entry_payload = LEAF_BUFFER_SIZE / 2 - LEAF_PER_ENTRY_OVERHEAD`
-pub const MAX_ENTRY_PAYLOAD: usize =
-    crate::page::leaf::BUFFER_SIZE / 2 - LEAF_PER_ENTRY_OVERHEAD;
+pub const MAX_ENTRY_PAYLOAD: usize = crate::page::leaf::BUFFER_SIZE / 2 - LEAF_PER_ENTRY_OVERHEAD;
 
 /// Errors that can occur when committing a transaction.
 #[derive(Debug, Error)]
@@ -364,7 +364,9 @@ where
         let mut collector = TransactionTracker::new();
         let delete_res = self.inner.delete_inner(key, root_id, &mut collector)?;
         let DeleteResult::Deleted(new_root_id) = delete_res else {
-            return Err(TreeError::NodeNotFound("key not found for deletion".to_string()));
+            return Err(TreeError::NodeNotFound(
+                "key not found for deletion".to_string(),
+            ));
         };
         let write_res = WriteResult {
             new_root_id,
@@ -689,15 +691,17 @@ where
 
         loop {
             let (mut path, found) = self.get_insertion_path(key_bytes, current_root)?;
-            let (leaf_node_id, idx) = path.pop().ok_or(
-                TreeError::Invariant("insertion path is empty")
-            )?;
+            let (leaf_node_id, idx) = path
+                .pop()
+                .ok_or(TreeError::Invariant("insertion path is empty"))?;
             let mut leaf_node = self.storage.read_node_view(leaf_node_id)?.ok_or_else(|| {
                 TreeError::NodeNotFound(format!("Leaf node with ID {} not found", leaf_node_id))
             })?;
 
             let NodeView::Leaf { .. } = &mut leaf_node else {
-                return Err(TreeError::Invariant("expected leaf node at insertion point"));
+                return Err(TreeError::Invariant(
+                    "expected leaf node at insertion point",
+                ));
             };
 
             if found {
@@ -785,9 +789,9 @@ where
             let mid = internal_node.keys_len() / 2;
             let split_idx = mid + 1;
             let right_node = internal_node.split_off(split_idx)?;
-            let split_key = internal_node
-                .pop_key()?
-                .ok_or(TreeError::Invariant("internal node has no mid key for split"))?;
+            let split_key = internal_node.pop_key()?.ok_or(TreeError::Invariant(
+                "internal node has no mid key for split",
+            ))?;
 
             Ok(SplitResult::SplitNodes {
                 left_node: internal_node,
@@ -828,10 +832,14 @@ where
             })?;
 
             let NodeView::Internal { .. } = parent_node else {
-                return Err(TreeError::Invariant("expected internal node while updating parents"));
+                return Err(TreeError::Invariant(
+                    "expected internal node while updating parents",
+                ));
             };
             if insert_pos > parent_node.keys_len() + 1 {
-                return Err(TreeError::Invariant("insert position out of bounds for parent node"));
+                return Err(TreeError::Invariant(
+                    "insert position out of bounds for parent node",
+                ));
             }
             // Reclaim the original child and replace its pointer.
             track.reclaim(parent_node.child_ptr_at(insert_pos)?);
@@ -858,7 +866,9 @@ where
                 ));
             };
             let NodeView::Internal { .. } = &mut node else {
-                return Err(TreeError::Invariant("expected internal node in propagation path"));
+                return Err(TreeError::Invariant(
+                    "expected internal node in propagation path",
+                ));
             };
             let left_child_prev = node.child_ptr_at(insert_pos)?;
             track.reclaim(left_child_prev);
@@ -943,10 +953,7 @@ where
         let mut current_id = root_id;
 
         loop {
-            match self
-                .storage
-                .read_node_view(current_id)?
-            {
+            match self.storage.read_node_view(current_id)? {
                 Some(node) => match &node {
                     NodeView::Leaf { .. } => {
                         match node.lower_bound(key.as_ref()) {
@@ -1019,9 +1026,9 @@ where
         let _guard = self.epoch_mgr.pin();
 
         let (mut path, found) = self.get_insertion_path(key, root_id)?;
-        let (leaf_node_id, idx) = path.pop().ok_or(
-            TreeError::Invariant("insertion path is empty")
-        )?;
+        let (leaf_node_id, idx) = path
+            .pop()
+            .ok_or(TreeError::Invariant("insertion path is empty"))?;
 
         if !found {
             return Ok(DeleteResult::NotFound);
@@ -1437,7 +1444,9 @@ where
         let epoch = self
             .epoch_mgr
             .get_current_thread_epoch()
-            .ok_or(TreeError::Invariant("failed to get epoch for current thread"))?;
+            .ok_or(TreeError::Invariant(
+                "failed to get epoch for current thread",
+            ))?;
         self.epoch_mgr.add_reclaim_candidate(epoch, node_id);
         Ok(())
     }
@@ -1461,12 +1470,7 @@ where
     /// unsound under concurrent access.  Gated behind `#[cfg(test)]` to
     /// prevent accidental use in production code.
     #[cfg(test)]
-    pub fn commit(
-        &self,
-        new_root_id: NodeId,
-        _height: u64,
-        _size: u64,
-    ) -> Result<(), TreeError> {
+    pub fn commit(&self, new_root_id: NodeId, _height: u64, _size: u64) -> Result<(), TreeError> {
         let new_txn_id = self.txn_id.fetch_add(1, Ordering::SeqCst) + 1;
         // Write to whichever of the two metadata slots this transaction maps to.
         let target_slot = if new_txn_id % 2 == 0 {
@@ -1697,12 +1701,13 @@ where
     #[cfg(any(test, feature = "testing"))]
     /// Force-publishes the given metadata without a CAS; for testing only.
     pub fn test_force_publish(&self, metadata: &Metadata) {
-        let old_ptr = self.committed.swap(
-            Box::into_raw(Box::new(*metadata)),
-            Ordering::SeqCst,
-        );
+        let old_ptr = self
+            .committed
+            .swap(Box::into_raw(Box::new(*metadata)), Ordering::SeqCst);
         if !old_ptr.is_null() {
-            unsafe { drop(Box::from_raw(old_ptr)); }
+            unsafe {
+                drop(Box::from_raw(old_ptr));
+            }
         }
     }
 

@@ -65,26 +65,42 @@ fn buf_decode_value<V, C: BufValueCodec<V>>(bytes: &[u8]) -> Result<V, ApiError>
 
 impl KeyCodec for u64 {
     const ENCODING: KeyEncodingId = KeyEncodingId::BeU64;
-    fn encode(&self) -> Vec<u8> { buf_encode_key::<u64, BeU64>(self) }
-    fn decode(bytes: &[u8]) -> Result<Self, ApiError> { buf_decode_key::<u64, BeU64>(bytes) }
+    fn encode(&self) -> Vec<u8> {
+        buf_encode_key::<u64, BeU64>(self)
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, ApiError> {
+        buf_decode_key::<u64, BeU64>(bytes)
+    }
 }
 
 impl KeyCodec for i64 {
     const ENCODING: KeyEncodingId = KeyEncodingId::BeI64;
-    fn encode(&self) -> Vec<u8> { buf_encode_key::<i64, BeU64>(self) }
-    fn decode(bytes: &[u8]) -> Result<Self, ApiError> { buf_decode_key::<i64, BeU64>(bytes) }
+    fn encode(&self) -> Vec<u8> {
+        buf_encode_key::<i64, BeU64>(self)
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, ApiError> {
+        buf_decode_key::<i64, BeU64>(bytes)
+    }
 }
 
 impl KeyCodec for String {
     const ENCODING: KeyEncodingId = KeyEncodingId::Utf8;
-    fn encode(&self) -> Vec<u8> { buf_encode_key::<String, Utf8>(self) }
-    fn decode(bytes: &[u8]) -> Result<Self, ApiError> { buf_decode_key::<String, Utf8>(bytes) }
+    fn encode(&self) -> Vec<u8> {
+        buf_encode_key::<String, Utf8>(self)
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, ApiError> {
+        buf_decode_key::<String, Utf8>(bytes)
+    }
 }
 
 impl KeyCodec for Vec<u8> {
     const ENCODING: KeyEncodingId = KeyEncodingId::RawBytes;
-    fn encode(&self) -> Vec<u8> { buf_encode_key::<Vec<u8>, RawBuf>(self) }
-    fn decode(bytes: &[u8]) -> Result<Self, ApiError> { buf_decode_key::<Vec<u8>, RawBuf>(bytes) }
+    fn encode(&self) -> Vec<u8> {
+        buf_encode_key::<Vec<u8>, RawBuf>(self)
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, ApiError> {
+        buf_decode_key::<Vec<u8>, RawBuf>(bytes)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -92,16 +108,28 @@ impl KeyCodec for Vec<u8> {
 // ---------------------------------------------------------------------------
 
 impl ValueCodec for Vec<u8> {
-    fn encode(&self) -> Vec<u8> { buf_encode_value::<Vec<u8>, RawBuf>(self) }
-    fn decode(bytes: &[u8]) -> Result<Self, ApiError> { buf_decode_value::<Vec<u8>, RawBuf>(bytes) }
+    fn encode(&self) -> Vec<u8> {
+        buf_encode_value::<Vec<u8>, RawBuf>(self)
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, ApiError> {
+        buf_decode_value::<Vec<u8>, RawBuf>(bytes)
+    }
 }
 
 impl ValueCodec for String {
-    fn encode(&self) -> Vec<u8> { buf_encode_value::<String, Utf8>(self) }
-    fn decode(bytes: &[u8]) -> Result<Self, ApiError> { buf_decode_value::<String, Utf8>(bytes) }
+    fn encode(&self) -> Vec<u8> {
+        buf_encode_value::<String, Utf8>(self)
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, ApiError> {
+        buf_decode_value::<String, Utf8>(bytes)
+    }
 }
 
 impl ValueCodec for u64 {
-    fn encode(&self) -> Vec<u8> { buf_encode_value::<u64, BeU64>(self) }
-    fn decode(bytes: &[u8]) -> Result<Self, ApiError> { buf_decode_value::<u64, BeU64>(bytes) }
+    fn encode(&self) -> Vec<u8> {
+        buf_encode_value::<u64, BeU64>(self)
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, ApiError> {
+        buf_decode_value::<u64, BeU64>(bytes)
+    }
 }

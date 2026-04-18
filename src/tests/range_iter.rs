@@ -20,23 +20,39 @@ fn v_bytes(i: u64) -> Vec<u8> {
 }
 
 /// Helper: insert keys 0..n into the tree and commit.
-fn populate_and_commit(dir: &TempDir, order: u64, n: u64) -> crate::bplustree::tree::SharedBPlusTree<'static, crate::storage::paged_node_storage::PagedNodeStorage<crate::storage::file_page_storage::FilePageStorage>, crate::storage::file_page_storage::FilePageStorage> {
+fn populate_and_commit(
+    dir: &TempDir,
+    order: u64,
+    n: u64,
+) -> crate::bplustree::tree::SharedBPlusTree<
+    'static,
+    crate::storage::paged_node_storage::PagedNodeStorage<
+        crate::storage::file_page_storage::FilePageStorage,
+    >,
+    crate::storage::file_page_storage::FilePageStorage,
+> {
     let tree = make_tree(dir, order).expect("create tree");
     let mut root_id = tree.get_root_id();
 
     for i in 0..n {
-        let res = tree.insert_with_root(k(i), v_bytes(i), root_id).expect("insert");
+        let res = tree
+            .insert_with_root(k(i), v_bytes(i), root_id)
+            .expect("insert");
         root_id = res.new_root_id;
     }
 
     let base = BaseVersion {
         committed_ptr: tree.get_metadata(),
     };
-    tree.try_commit(&base, StagedMetadata {
-        root_id,
-        height: tree.get_height(),
-        size: n,
-    }).expect("commit");
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id,
+            height: tree.get_height(),
+            size: n,
+        },
+    )
+    .expect("commit");
 
     tree
 }
@@ -247,16 +263,24 @@ fn range_string_keys() {
     let vals: Vec<String> = (0..50).map(|i| format!("val_{}", i)).collect();
 
     for (key, val) in keys.iter().zip(vals.iter()) {
-        let res = tree.insert_with_root(key.as_bytes(), val.as_bytes(), root_id).expect("insert");
+        let res = tree
+            .insert_with_root(key.as_bytes(), val.as_bytes(), root_id)
+            .expect("insert");
         root_id = res.new_root_id;
     }
 
-    let base = BaseVersion { committed_ptr: tree.get_metadata() };
-    tree.try_commit(&base, StagedMetadata {
-        root_id,
-        height: tree.get_height(),
-        size: 50,
-    }).expect("commit");
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id,
+            height: tree.get_height(),
+            size: 50,
+        },
+    )
+    .expect("commit");
 
     // Scan [key_0010, key_0020)
     let start = "key_0010";
@@ -288,12 +312,18 @@ fn range_yields_correct_order_after_inserts_and_deletes() {
         root_id = res.new_root_id;
     }
 
-    let base = BaseVersion { committed_ptr: tree.get_metadata() };
-    tree.try_commit(&base, StagedMetadata {
-        root_id,
-        height: tree.get_height(),
-        size: 50,
-    }).expect("commit");
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id,
+            height: tree.get_height(),
+            size: 50,
+        },
+    )
+    .expect("commit");
 
     let results: Vec<_> = tree
         .search_range(&k(0), None)
@@ -304,7 +334,11 @@ fn range_yields_correct_order_after_inserts_and_deletes() {
     assert_eq!(results.len(), 50);
     for (offset, (key, _)) in results.iter().enumerate() {
         let expected = 1 + offset as u64 * 2; // odd keys: 1, 3, 5, ...
-        assert_eq!(key.as_slice(), &k(expected), "expected odd key at offset {offset}");
+        assert_eq!(
+            key.as_slice(),
+            &k(expected),
+            "expected odd key at offset {offset}"
+        );
     }
 }
 
@@ -323,19 +357,31 @@ fn range_iter_respects_snapshot_isolation() {
     // Insert more data and commit while the iterator is alive.
     let mut root_id = tree.get_root_id();
     for i in 50..60u64 {
-        let res = tree.insert_with_root(k(i), v_bytes(i), root_id).expect("insert");
+        let res = tree
+            .insert_with_root(k(i), v_bytes(i), root_id)
+            .expect("insert");
         root_id = res.new_root_id;
     }
-    let base = BaseVersion { committed_ptr: tree.get_metadata() };
-    tree.try_commit(&base, StagedMetadata {
-        root_id,
-        height: tree.get_height(),
-        size: 60,
-    }).expect("commit");
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id,
+            height: tree.get_height(),
+            size: 60,
+        },
+    )
+    .expect("commit");
 
     // Drain the rest of the iterator — it should still see the original 50 keys,
     // not the 10 new ones (snapshot isolation via epoch pinning).
     let rest: Vec<_> = iter.collect::<Result<Vec<_>, _>>().expect("iterate");
     // first + rest should be exactly 50.
-    assert_eq!(1 + rest.len(), 50, "iterator should see snapshot of 50 keys, not 60");
+    assert_eq!(
+        1 + rest.len(),
+        50,
+        "iterator should see snapshot of 50 keys, not 60"
+    );
 }

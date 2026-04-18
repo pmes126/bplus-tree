@@ -1,7 +1,7 @@
 //! Edge-case tests for BPlusTree / SharedBPlusTree operations:
 //! empty tree, non-existent keys, overwrites, boundary keys.
 
-use crate::bplustree::tree::{BaseVersion, StagedMetadata, TreeError, MAX_ENTRY_PAYLOAD};
+use crate::bplustree::tree::{BaseVersion, MAX_ENTRY_PAYLOAD, StagedMetadata, TreeError};
 use crate::tests::common::make_tree;
 use tempfile::TempDir;
 
@@ -55,14 +55,22 @@ fn insert_duplicate_key_overwrites_value() {
     let tree = make_tree(&dir, 16).expect("create tree");
 
     let r1 = tree.insert(k(1), b"first").unwrap();
-    let r2 = tree.insert_with_root(k(1), b"second", r1.new_root_id).unwrap();
+    let r2 = tree
+        .insert_with_root(k(1), b"second", r1.new_root_id)
+        .unwrap();
 
-    let base = BaseVersion { committed_ptr: tree.get_metadata() };
-    tree.try_commit(&base, StagedMetadata {
-        root_id: r2.new_root_id,
-        height: r2.new_height,
-        size: r2.new_size,
-    }).unwrap();
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id: r2.new_root_id,
+            height: r2.new_height,
+            size: r2.new_size,
+        },
+    )
+    .unwrap();
 
     assert_eq!(
         tree.search(k(1)).unwrap(),
@@ -79,7 +87,9 @@ fn overwrite_does_not_change_count() {
     let r1 = tree.insert(k(1), b"first").unwrap();
     let _size_after_first = r1.new_size;
 
-    let r2 = tree.insert_with_root(k(1), b"second", r1.new_root_id).unwrap();
+    let r2 = tree
+        .insert_with_root(k(1), b"second", r1.new_root_id)
+        .unwrap();
     // Size should still increment by 1 since the tree tracks staged size naively.
     // This test documents the current behavior.
     let _ = r2.new_size;
@@ -101,7 +111,10 @@ fn delete_nonexistent_key_returns_error() {
     // Insert key 1, then try to delete key 2.
     let r1 = tree.insert(k(1), v_bytes(1)).unwrap();
     let result = tree.delete_with_root(&k(2), r1.new_root_id);
-    assert!(result.is_err(), "deleting a missing key should return an error");
+    assert!(
+        result.is_err(),
+        "deleting a missing key should return an error"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -114,14 +127,22 @@ fn insert_and_search_min_max_u64_keys() {
     let tree = make_tree(&dir, 16).expect("create tree");
 
     let r1 = tree.insert(k(0), b"min").unwrap();
-    let r2 = tree.insert_with_root(k(u64::MAX), b"max", r1.new_root_id).unwrap();
+    let r2 = tree
+        .insert_with_root(k(u64::MAX), b"max", r1.new_root_id)
+        .unwrap();
 
-    let base = BaseVersion { committed_ptr: tree.get_metadata() };
-    tree.try_commit(&base, StagedMetadata {
-        root_id: r2.new_root_id,
-        height: r2.new_height,
-        size: r2.new_size,
-    }).unwrap();
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id: r2.new_root_id,
+            height: r2.new_height,
+            size: r2.new_size,
+        },
+    )
+    .unwrap();
 
     assert_eq!(tree.search(k(0)).unwrap(), Some(b"min".to_vec()));
     assert_eq!(tree.search(k(u64::MAX)).unwrap(), Some(b"max".to_vec()));
@@ -138,8 +159,18 @@ fn range_scan_includes_min_key_excludes_max_key() {
         root = r.new_root_id;
     }
 
-    let base = BaseVersion { committed_ptr: tree.get_metadata() };
-    tree.try_commit(&base, StagedMetadata { root_id: root, height: tree.get_height(), size: 10 }).unwrap();
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id: root,
+            height: tree.get_height(),
+            size: 10,
+        },
+    )
+    .unwrap();
 
     // [3, 7) should yield keys 3,4,5,6.
     let results: Vec<_> = tree
@@ -169,12 +200,18 @@ fn keys_remain_sorted_after_many_splits() {
         root = r.new_root_id;
     }
 
-    let base = BaseVersion { committed_ptr: tree.get_metadata() };
-    tree.try_commit(&base, StagedMetadata {
-        root_id: root,
-        height: tree.get_height(),
-        size: 100,
-    }).unwrap();
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id: root,
+            height: tree.get_height(),
+            size: 100,
+        },
+    )
+    .unwrap();
 
     // Full range scan should be strictly sorted.
     let results: Vec<_> = tree
@@ -210,12 +247,18 @@ fn keys_remain_sorted_after_inserts_and_deletes() {
         root = r.new_root_id;
     }
 
-    let base = BaseVersion { committed_ptr: tree.get_metadata() };
-    tree.try_commit(&base, StagedMetadata {
-        root_id: root,
-        height: tree.get_height(),
-        size: tree.get_size(),
-    }).unwrap();
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id: root,
+            height: tree.get_height(),
+            size: tree.get_size(),
+        },
+    )
+    .unwrap();
 
     let results: Vec<_> = tree
         .search_range(&k(0), None)
@@ -232,7 +275,10 @@ fn keys_remain_sorted_after_inserts_and_deletes() {
 
     // Verify deleted keys are absent.
     for i in (0..50u64).filter(|i| i % 3 == 0) {
-        assert!(tree.search(k(i)).unwrap().is_none(), "key {i} should be deleted");
+        assert!(
+            tree.search(k(i)).unwrap().is_none(),
+            "key {i} should be deleted"
+        );
     }
 }
 
@@ -246,22 +292,34 @@ fn single_key_insert_search_delete() {
     let tree = make_tree(&dir, 16).expect("create tree");
 
     let r = tree.insert(k(42), b"only").unwrap();
-    let base = BaseVersion { committed_ptr: tree.get_metadata() };
-    tree.try_commit(&base, StagedMetadata {
-        root_id: r.new_root_id,
-        height: r.new_height,
-        size: r.new_size,
-    }).unwrap();
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id: r.new_root_id,
+            height: r.new_height,
+            size: r.new_size,
+        },
+    )
+    .unwrap();
 
     assert_eq!(tree.search(k(42)).unwrap(), Some(b"only".to_vec()));
 
     let d = tree.delete_with_root(&k(42), tree.get_root_id()).unwrap();
-    let base2 = BaseVersion { committed_ptr: tree.get_metadata() };
-    tree.try_commit(&base2, StagedMetadata {
-        root_id: d.new_root_id,
-        height: d.new_height,
-        size: d.new_size,
-    }).unwrap();
+    let base2 = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base2,
+        StagedMetadata {
+            root_id: d.new_root_id,
+            height: d.new_height,
+            size: d.new_size,
+        },
+    )
+    .unwrap();
 
     assert!(tree.search(k(42)).unwrap().is_none());
 }
@@ -295,13 +353,21 @@ fn entry_at_max_payload_is_accepted() {
     // Value exactly at the limit.
     let value = vec![0xBB; MAX_ENTRY_PAYLOAD - 8];
 
-    let wr = tree.put(key.clone(), value.clone()).expect("insert should succeed");
-    let base = BaseVersion { committed_ptr: tree.get_metadata() };
-    tree.try_commit(&base, StagedMetadata {
-        root_id: wr.new_root_id,
-        height: wr.new_height,
-        size: wr.new_size,
-    }).unwrap();
+    let wr = tree
+        .put(key.clone(), value.clone())
+        .expect("insert should succeed");
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id: wr.new_root_id,
+            height: wr.new_height,
+            size: wr.new_size,
+        },
+    )
+    .unwrap();
 
     assert_eq!(tree.search(key).unwrap(), Some(value));
 }
@@ -325,22 +391,30 @@ fn large_values_trigger_physical_split_before_max_keys() {
         // Tag value so we can verify it later.
         value[0..8].copy_from_slice(&i.to_le_bytes());
 
-        let wr = tree.put_with_root(k(i), value, root)
+        let wr = tree
+            .put_with_root(k(i), value, root)
             .unwrap_or_else(|e| panic!("insert {i} failed: {e}"));
         root = wr.new_root_id;
     }
 
     // Commit the final state.
-    let base = BaseVersion { committed_ptr: tree.get_metadata() };
-    tree.try_commit(&base, StagedMetadata {
-        root_id: root,
-        height: tree.get_height(),
-        size: num_entries as u64,
-    }).unwrap();
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id: root,
+            height: tree.get_height(),
+            size: num_entries,
+        },
+    )
+    .unwrap();
 
     // Verify every entry is retrievable and correct.
     for i in 0u64..num_entries {
-        let found = tree.search(k(i))
+        let found = tree
+            .search(k(i))
             .unwrap_or_else(|e| panic!("search {i} failed: {e}"))
             .unwrap_or_else(|| panic!("key {i} not found"));
         let stored_tag = u64::from_le_bytes(found[0..8].try_into().unwrap());
@@ -360,14 +434,16 @@ fn large_values_with_deletes_maintain_tree_integrity() {
     let mut root = tree.get_root_id();
     for i in 0..num_entries {
         let value = vec![(i & 0xFF) as u8; val_size];
-        let wr = tree.put_with_root(k(i), value, root)
+        let wr = tree
+            .put_with_root(k(i), value, root)
             .unwrap_or_else(|e| panic!("insert {i} failed: {e}"));
         root = wr.new_root_id;
     }
 
     // Delete every other key.
     for i in (0..num_entries).step_by(2) {
-        let wr = tree.delete_with_root(&k(i), root)
+        let wr = tree
+            .delete_with_root(&k(i), root)
             .unwrap_or_else(|e| panic!("delete {i} failed: {e}"));
         root = wr.new_root_id;
     }
@@ -402,19 +478,29 @@ fn mixed_small_and_large_values_coexist() {
             // Small value otherwise.
             format!("v{i}").into_bytes()
         };
-        let wr = tree.put_with_root(k(i), value, root)
+        let wr = tree
+            .put_with_root(k(i), value, root)
             .unwrap_or_else(|e| panic!("insert {i} failed: {e}"));
         root = wr.new_root_id;
     }
 
     for i in 0..count {
-        let val = tree.search_with_root(&k(i), root)
+        let val = tree
+            .search_with_root(&k(i), root)
             .unwrap_or_else(|e| panic!("search {i} failed: {e}"))
             .unwrap_or_else(|| panic!("key {i} not found"));
         if i % 5 == 0 {
-            assert_eq!(val.len(), MAX_ENTRY_PAYLOAD - 8, "large value size mismatch at {i}");
+            assert_eq!(
+                val.len(),
+                MAX_ENTRY_PAYLOAD - 8,
+                "large value size mismatch at {i}"
+            );
         } else {
-            assert_eq!(val, format!("v{i}").into_bytes(), "small value mismatch at {i}");
+            assert_eq!(
+                val,
+                format!("v{i}").into_bytes(),
+                "small value mismatch at {i}"
+            );
         }
     }
 }
@@ -429,20 +515,23 @@ fn overwrite_small_value_with_large_triggers_split() {
     let mut root = tree.get_root_id();
     // Insert 10 small entries — all fit in one leaf.
     for i in 0u64..10 {
-        let wr = tree.put_with_root(k(i), b"tiny".to_vec(), root)
+        let wr = tree
+            .put_with_root(k(i), b"tiny", root)
             .unwrap_or_else(|e| panic!("insert {i} failed: {e}"));
         root = wr.new_root_id;
     }
 
     // Overwrite key 5 with a large value.
     let big = vec![0xDD; MAX_ENTRY_PAYLOAD - 8];
-    let wr = tree.put_with_root(k(5), big.clone(), root)
+    let wr = tree
+        .put_with_root(k(5), big.clone(), root)
         .expect("overwrite with large value should succeed");
     root = wr.new_root_id;
 
     // All keys still present and correct.
     for i in 0u64..10 {
-        let val = tree.search_with_root(&k(i), root)
+        let val = tree
+            .search_with_root(&k(i), root)
             .unwrap_or_else(|e| panic!("search {i} failed: {e}"))
             .unwrap_or_else(|| panic!("key {i} not found"));
         if i == 5 {
@@ -468,7 +557,8 @@ fn overwrite_on_nearly_full_page_triggers_split() {
     let mut root = tree.get_root_id();
     for i in 0u64..7 {
         let value = vec![(i & 0xFF) as u8; medium];
-        let wr = tree.put_with_root(k(i), value, root)
+        let wr = tree
+            .put_with_root(k(i), value, root)
             .unwrap_or_else(|e| panic!("insert {i} failed: {e}"));
         root = wr.new_root_id;
     }
@@ -477,13 +567,15 @@ fn overwrite_on_nearly_full_page_triggers_split() {
     // The old 500-byte value isn't reclaimed (arena is append-only),
     // so we need 1500 fresh bytes but only ~490 are free → PageFull.
     let big = vec![0xEE; 1500];
-    let wr = tree.put_with_root(k(3), big.clone(), root)
+    let wr = tree
+        .put_with_root(k(3), big.clone(), root)
         .expect("overwrite should succeed after split");
     root = wr.new_root_id;
 
     // All 7 keys still present with correct values.
     for i in 0u64..7 {
-        let val = tree.search_with_root(&k(i), root)
+        let val = tree
+            .search_with_root(&k(i), root)
             .unwrap_or_else(|e| panic!("search {i} failed: {e}"))
             .unwrap_or_else(|| panic!("key {i} not found"));
         if i == 3 {
@@ -506,14 +598,16 @@ fn delete_all_large_values_leaves_empty_tree() {
     let mut root = tree.get_root_id();
     for i in 0..count {
         let value = vec![(i & 0xFF) as u8; val_size];
-        let wr = tree.put_with_root(k(i), value, root)
+        let wr = tree
+            .put_with_root(k(i), value, root)
             .unwrap_or_else(|e| panic!("insert {i} failed: {e}"));
         root = wr.new_root_id;
     }
 
     // Delete all keys.
     for i in 0..count {
-        let wr = tree.delete_with_root(&k(i), root)
+        let wr = tree
+            .delete_with_root(&k(i), root)
             .unwrap_or_else(|e| panic!("delete {i} failed: {e}"));
         root = wr.new_root_id;
     }
@@ -540,14 +634,16 @@ fn reverse_delete_order_with_large_values() {
     let mut root = tree.get_root_id();
     for i in 0..count {
         let value = vec![(i & 0xFF) as u8; val_size];
-        let wr = tree.put_with_root(k(i), value, root)
+        let wr = tree
+            .put_with_root(k(i), value, root)
             .unwrap_or_else(|e| panic!("insert {i} failed: {e}"));
         root = wr.new_root_id;
     }
 
     // Delete in reverse order.
     for i in (0..count).rev() {
-        let wr = tree.delete_with_root(&k(i), root)
+        let wr = tree
+            .delete_with_root(&k(i), root)
             .unwrap_or_else(|e| panic!("delete {i} failed: {e}"));
         root = wr.new_root_id;
 
@@ -575,14 +671,16 @@ fn large_values_with_small_order_forces_deep_tree() {
     for i in 0..count {
         let mut value = vec![0u8; val_size];
         value[0..8].copy_from_slice(&i.to_le_bytes());
-        let wr = tree.put_with_root(k(i), value, root)
+        let wr = tree
+            .put_with_root(k(i), value, root)
             .unwrap_or_else(|e| panic!("insert {i} failed: {e}"));
         root = wr.new_root_id;
     }
 
     // All values retrievable.
     for i in 0..count {
-        let val = tree.search_with_root(&k(i), root)
+        let val = tree
+            .search_with_root(&k(i), root)
             .unwrap_or_else(|e| panic!("search {i} failed: {e}"))
             .unwrap_or_else(|| panic!("key {i} not found"));
         let tag = u64::from_le_bytes(val[0..8].try_into().unwrap());
@@ -591,7 +689,8 @@ fn large_values_with_small_order_forces_deep_tree() {
 
     // Delete half, verify the rest.
     for i in (0..count).step_by(3) {
-        let wr = tree.delete_with_root(&k(i), root)
+        let wr = tree
+            .delete_with_root(&k(i), root)
             .unwrap_or_else(|e| panic!("delete {i} failed: {e}"));
         root = wr.new_root_id;
     }

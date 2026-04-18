@@ -1,10 +1,10 @@
 //! Tests for the public embedded API: Db, Tree<K,V>, WriteTxn, RangeIter.
 
 use crate::api::Db;
-use crate::database::{self, DatabaseError};
 use crate::database::manifest::reader::ManifestReader;
 use crate::database::manifest::writer::ManifestWriter;
 use crate::database::manifest::{ManifestRec, TAG_DELETE_TREE};
+use crate::database::{self, DatabaseError};
 use crate::storage::file_page_storage::FilePageStorage;
 use tempfile::TempDir;
 
@@ -33,7 +33,10 @@ fn open_tree_after_create() {
     let db = Db::open(dir.path()).unwrap();
     db.create_tree::<u64, String>("my_tree", 32).unwrap();
     let reopened = db.open_tree::<u64, String>("my_tree");
-    assert!(reopened.is_ok(), "open_tree should find a previously created tree");
+    assert!(
+        reopened.is_ok(),
+        "open_tree should find a previously created tree"
+    );
 }
 
 #[test]
@@ -60,7 +63,10 @@ fn tree_open_or_create_opens_when_present() {
 
     // tree() should succeed (open existing), not create a duplicate.
     let t2 = db.tree::<u64, String>("reuse", 64);
-    assert!(t2.is_ok(), "tree() should open an existing tree without error");
+    assert!(
+        t2.is_ok(),
+        "tree() should open an existing tree without error"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +89,8 @@ fn put_and_get_string_string() {
     let db = Db::open(dir.path()).unwrap();
     let tree = db.create_tree::<String, String>("t", 64).unwrap();
 
-    tree.put(&"hello".to_string(), &"world".to_string()).unwrap();
+    tree.put(&"hello".to_string(), &"world".to_string())
+        .unwrap();
     assert_eq!(
         tree.get(&"hello".to_string()).unwrap().as_deref(),
         Some("world")
@@ -406,8 +413,7 @@ fn concurrent_open_returns_locked_error() {
     let dir = TempDir::new().unwrap();
 
     // First open succeeds.
-    let _db1 = database::open::<FilePageStorage, _>(dir.path())
-        .expect("first open should succeed");
+    let _db1 = database::open::<FilePageStorage, _>(dir.path()).expect("first open should succeed");
 
     // Second open on the same directory should fail with Locked.
     match database::open::<FilePageStorage, _>(dir.path()) {
@@ -422,8 +428,8 @@ fn lock_released_after_drop() {
     let dir = TempDir::new().unwrap();
 
     {
-        let _db = database::open::<FilePageStorage, _>(dir.path())
-            .expect("first open should succeed");
+        let _db =
+            database::open::<FilePageStorage, _>(dir.path()).expect("first open should succeed");
         // _db dropped here, releasing the lock.
     }
 
@@ -444,8 +450,10 @@ fn manifest_roundtrip_with_crc() {
     // Write two records.
     {
         let mut w = ManifestWriter::open(&path, 0).unwrap();
-        w.append(ManifestRec::DeleteTree { seq: 0, id: 42 }).unwrap();
-        w.append(ManifestRec::DeleteTree { seq: 0, id: 99 }).unwrap();
+        w.append(ManifestRec::DeleteTree { seq: 0, id: 42 })
+            .unwrap();
+        w.append(ManifestRec::DeleteTree { seq: 0, id: 99 })
+            .unwrap();
         w.fsync().unwrap();
     }
 
@@ -480,12 +488,19 @@ fn manifest_truncated_record_returns_none() {
     }
     // Append a few garbage bytes to simulate a crash mid-write.
     {
-        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
-        f.write_all(&[TAG_DELETE_TREE, 0x10, 0x00, 0x00, 0x00]).unwrap(); // tag + bogus length
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(&[TAG_DELETE_TREE, 0x10, 0x00, 0x00, 0x00])
+            .unwrap(); // tag + bogus length
     }
 
     let mut r = ManifestReader::open(&path).unwrap();
-    assert!(r.read_next().unwrap().is_some(), "first record should be valid");
+    assert!(
+        r.read_next().unwrap().is_some(),
+        "first record should be valid"
+    );
     // The truncated trailing record should be treated as end-of-valid-data.
     assert!(r.read_next().unwrap().is_none(), "truncated record → None");
 }

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::bplustree::{NodeView};
+use crate::bplustree::NodeView;
 use crate::database::metadata::MetadataPage;
 use crate::layout::PAGE_SIZE;
 use crate::storage::epoch::EpochManager;
@@ -152,11 +152,7 @@ impl PageStorage for TestStorage {
         Ok(())
     }
 
-    fn read_page(
-        &self,
-        _page_id: u64,
-        target: &mut [u8; PAGE_SIZE],
-    ) -> Result<(), std::io::Error> {
+    fn read_page(&self, _page_id: u64, target: &mut [u8; PAGE_SIZE]) -> Result<(), std::io::Error> {
         target.fill(0);
         Ok(())
     }
@@ -166,11 +162,7 @@ impl PageStorage for TestStorage {
     }
 
     /// Intercepts metadata page writes to record commit details for test assertions.
-    fn write_page_at_offset(
-        &self,
-        offset: u64,
-        data: &[u8],
-    ) -> Result<u64, std::io::Error> {
+    fn write_page_at_offset(&self, offset: u64, data: &[u8]) -> Result<u64, std::io::Error> {
         if self.fail_commit.load(Ordering::Relaxed) {
             return Err(std::io::Error::other("commit (injected failure)"));
         }

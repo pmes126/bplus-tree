@@ -80,8 +80,7 @@ fn contending_parallel_transactions() {
             s.spawn(move || {
                 let mut trx = WriteTransaction::new(t.clone());
                 for j in 0..100u64 {
-                    trx.insert(k(i * 100 + j), v_bytes(i * 100 + j))
-                        ;
+                    trx.insert(k(i * 100 + j), v_bytes(i * 100 + j));
                 }
                 trx.commit(&t).expect("commit");
             });
@@ -108,12 +107,10 @@ fn commit_with_conflicting_transactions() {
     // t2 will rebase on top of t1's commit and win.
     t2.commit(&tree).expect("commit t2");
 
-    tree.search(k(42))
-        .expect("get")
-        .map_or_else(
-            || panic!("Key 42 should exist after both commits"),
-            |value| assert_eq!(value, b"value_42_t2", "Last writer (t2) should win"),
-        );
+    tree.search(k(42)).expect("get").map_or_else(
+        || panic!("Key 42 should exist after both commits"),
+        |value| assert_eq!(value, b"value_42_t2", "Last writer (t2) should win"),
+    );
 }
 
 #[test]

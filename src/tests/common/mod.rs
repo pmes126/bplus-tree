@@ -6,18 +6,18 @@ pub mod test_epoch;
 pub mod test_storage;
 
 use crate::api::KeyEncodingId;
-use crate::bplustree::tree::{BPlusTree, SharedBPlusTree};
-use crate::bplustree::transaction::WriteTransaction;
 use crate::bplustree::NodeView;
+use crate::bplustree::transaction::WriteTransaction;
+use crate::bplustree::tree::{BPlusTree, SharedBPlusTree};
 use crate::database::metadata::Metadata;
-use crate::storage::metadata_manager::MetadataManager;
-use crate::keyfmt::raw::RawFormat;
 use crate::keyfmt::KeyFormat;
+use crate::keyfmt::raw::RawFormat;
+use crate::page::LeafPage;
 use crate::storage::epoch::EpochManager;
 use crate::storage::file_page_storage::FilePageStorage;
+use crate::storage::metadata_manager::MetadataManager;
 use crate::storage::paged_node_storage::PagedNodeStorage;
 use crate::storage::{HasEpoch, NodeStorage, PageStorage};
-use crate::page::LeafPage;
 
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -133,8 +133,7 @@ where
 pub fn make_tree(
     dir: &TempDir,
     order: u64,
-) -> anyhow::Result<SharedBPlusTree<'static, PagedNodeStorage<FilePageStorage>, FilePageStorage>>
-{
+) -> anyhow::Result<SharedBPlusTree<'static, PagedNodeStorage<FilePageStorage>, FilePageStorage>> {
     let data_path = dir.path().join("data.db");
     let manifest_path = dir.path().join("data.manifest");
     let meta_path = dir.path().join("meta.db");
@@ -165,8 +164,7 @@ pub fn make_tree(
     MetadataManager::commit_metadata_with_object(&page_storage, TEST_META_B, &init_meta)?;
 
     // Leak both storages to obtain 'static references.
-    let node_ref: &'static PagedNodeStorage<FilePageStorage> =
-        Box::leak(Box::new(node_storage));
+    let node_ref: &'static PagedNodeStorage<FilePageStorage> = Box::leak(Box::new(node_storage));
     let page_ref: &'static FilePageStorage = Box::leak(Box::new(page_storage));
 
     let epoch_mgr = node_ref.epoch_mgr().clone();
@@ -189,8 +187,7 @@ pub fn make_tree(
 #[cfg(any(test, feature = "testing"))]
 pub fn load_tree(
     dir: &TempDir,
-) -> anyhow::Result<SharedBPlusTree<'static, PagedNodeStorage<FilePageStorage>, FilePageStorage>>
-{
+) -> anyhow::Result<SharedBPlusTree<'static, PagedNodeStorage<FilePageStorage>, FilePageStorage>> {
     let data_path = dir.path().join("data.db");
     let manifest_path = dir.path().join("data.manifest");
     let meta_path = dir.path().join("meta.db");
@@ -201,8 +198,7 @@ pub fn load_tree(
     // Recover committed state from the double-buffered metadata slots.
     let meta = MetadataManager::read_active_meta(&page_storage, TEST_META_A, TEST_META_B)?;
 
-    let node_ref: &'static PagedNodeStorage<FilePageStorage> =
-        Box::leak(Box::new(node_storage));
+    let node_ref: &'static PagedNodeStorage<FilePageStorage> = Box::leak(Box::new(node_storage));
     let page_ref: &'static FilePageStorage = Box::leak(Box::new(page_storage));
 
     let epoch_mgr = node_ref.epoch_mgr().clone();

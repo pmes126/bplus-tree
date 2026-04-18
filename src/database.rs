@@ -20,8 +20,8 @@ use crate::database::manifest::reader::ManifestReader;
 use crate::database::manifest::writer::ManifestWriter;
 use crate::database::metadata::Metadata;
 use crate::database::superblock::{
-    Superblock, SUPERBLOCK_MAGIC, SUPERBLOCK_VERSION,
-    read_freepages_snapshot, write_freepages_snapshot, FREELIST_SNAPSHOT_VERSION,
+    FREELIST_SNAPSHOT_VERSION, SUPERBLOCK_MAGIC, SUPERBLOCK_VERSION, Superblock,
+    read_freepages_snapshot, write_freepages_snapshot,
 };
 use crate::keyfmt::KeyFormat;
 use crate::layout::PAGE_SIZE;
@@ -114,10 +114,18 @@ impl<S: PageStorage + Send + Sync + 'static> Database<S> {
             size: 0,
             checksum: 0,
         };
-        MetadataManager::commit_metadata_with_object(self.meta_storage.as_ref(), meta_a, &init_meta)
-            .map_err(|e| DatabaseError::Metadata(e.to_string()))?;
-        MetadataManager::commit_metadata_with_object(self.meta_storage.as_ref(), meta_b, &init_meta)
-            .map_err(|e| DatabaseError::Metadata(e.to_string()))?;
+        MetadataManager::commit_metadata_with_object(
+            self.meta_storage.as_ref(),
+            meta_a,
+            &init_meta,
+        )
+        .map_err(|e| DatabaseError::Metadata(e.to_string()))?;
+        MetadataManager::commit_metadata_with_object(
+            self.meta_storage.as_ref(),
+            meta_b,
+            &init_meta,
+        )
+        .map_err(|e| DatabaseError::Metadata(e.to_string()))?;
 
         // Append manifest record.
         let rec = ManifestRec::CreateTree {
@@ -214,12 +222,7 @@ impl<S: PageStorage + Send + Sync + 'static> Database<S> {
         let freelist_path = self.base_path.join("freelist.snapshot");
         let freed = self.meta_storage.as_ref().get_freelist();
         let next_pid = self.meta_storage.as_ref().get_next_page_id();
-        write_freepages_snapshot(
-            &freelist_path,
-            FREELIST_SNAPSHOT_VERSION,
-            next_pid,
-            &freed,
-        )?;
+        write_freepages_snapshot(&freelist_path, FREELIST_SNAPSHOT_VERSION, next_pid, &freed)?;
         Ok(())
     }
 

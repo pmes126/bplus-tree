@@ -35,8 +35,8 @@ impl MetadataManager {
         let mut buf = [0u8; PAGE_SIZE];
         storage.read_page(slot, &mut buf)?;
 
-        let metadata = MetadataPage::from_bytes(&buf)
-            .map_err(|e| MetadataError::Corrupt(e.to_string()))?;
+        let metadata =
+            MetadataPage::from_bytes(&buf).map_err(|e| MetadataError::Corrupt(e.to_string()))?;
 
         let checksum = metadata.data.checksum;
         let calculated_checksum = calculate_checksum(metadata);

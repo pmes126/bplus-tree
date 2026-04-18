@@ -1,4 +1,5 @@
 //! B+ Tree library crate
+#![allow(elided_lifetimes_in_paths)]
 
 pub mod api;
 pub mod bplustree;

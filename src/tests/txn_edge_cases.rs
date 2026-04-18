@@ -147,7 +147,10 @@ fn txn_interleaved_ops_on_disjoint_keys() {
 
     for i in 0..20u64 {
         if i % 2 == 0 {
-            assert!(tree.search(k(i)).unwrap().is_none(), "even key {i} should be deleted");
+            assert!(
+                tree.search(k(i)).unwrap().is_none(),
+                "even key {i} should be deleted"
+            );
         } else {
             assert_eq!(
                 tree.search(k(i)).unwrap(),
