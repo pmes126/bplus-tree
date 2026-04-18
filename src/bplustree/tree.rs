@@ -8,7 +8,7 @@ use crate::bplustree::NodeView;
 use crate::database::catalog::TreeMeta;
 use crate::database::metadata::Metadata;
 use crate::keyfmt::KeyFormat;
-use crate::page::LeafPage;
+use crate::page::{LeafPage, PageError};
 use crate::storage::epoch::COMMIT_COUNT;
 use crate::storage::epoch::EpochManager;
 use crate::storage::metadata_manager::{MetadataError, MetadataManager};
@@ -74,7 +74,33 @@ pub enum TreeError {
     /// A node-view operation failed (wrong kind or underlying page error).
     #[error(transparent)]
     NodeView(#[from] NodeViewError),
+    /// The key-value pair is too large to fit in a single page.
+    #[error("entry too large: key ({key_len} bytes) + value ({val_len} bytes) exceeds max {max_len} bytes")]
+    EntryTooLarge {
+        key_len: usize,
+        val_len: usize,
+        max_len: usize,
+    },
 }
+
+/// Per-entry overhead in a leaf page: u16 key-length prefix + LeafSlot (val_off + val_len).
+const LEAF_PER_ENTRY_OVERHEAD: usize =
+    std::mem::size_of::<u16>() + crate::page::leaf::SLOT_SIZE;
+
+/// Maximum combined key + value size (in bytes) that can be inserted into a
+/// leaf page.
+///
+/// Each leaf entry occupies:
+///   - key block: `size_of::<u16>()` (length prefix) + key bytes
+///   - slot directory: `SLOT_SIZE` bytes (u16 offset + u16 length)
+///   - value arena: value bytes
+///
+/// We require that at least **two** entries fit in a single page so that every
+/// split produces two valid pages.  Therefore:
+///
+///   `max_entry_payload = LEAF_BUFFER_SIZE / 2 - LEAF_PER_ENTRY_OVERHEAD`
+pub const MAX_ENTRY_PAYLOAD: usize =
+    crate::page::leaf::BUFFER_SIZE / 2 - LEAF_PER_ENTRY_OVERHEAD;
 
 /// Errors that can occur when committing a transaction.
 #[derive(Debug, Error)]
@@ -645,33 +671,72 @@ where
         root_id: NodeId,
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
-        let _guard = self.epoch_mgr.pin();
-        let (mut path, found) = self.get_insertion_path(&key, root_id)?;
-        let (leaf_node_id, idx) = path.pop().ok_or(
-            TreeError::Invariant("insertion path is empty")
-        )?;
-        let mut leaf_node = self.storage.read_node_view(leaf_node_id)?.ok_or_else(|| {
-            TreeError::NodeNotFound(format!("Leaf node with ID {} not found", leaf_node_id))
-        })?;
+        let key_bytes = key.as_ref();
+        let val_bytes = value.as_ref();
 
-        let NodeView::Leaf { .. } = &mut leaf_node else {
-            return Err(TreeError::Invariant("expected leaf node at insertion point"));
-        };
-
-        if found {
-            leaf_node.replace_at(idx, value.as_ref())?;
-        } else {
-            leaf_node.insert_at(idx, key.as_ref(), value.as_ref())?;
+        // Reject entries that can never fit — no amount of splitting helps.
+        let payload = key_bytes.len() + val_bytes.len();
+        if payload > MAX_ENTRY_PAYLOAD {
+            return Err(TreeError::EntryTooLarge {
+                key_len: key_bytes.len(),
+                val_len: val_bytes.len(),
+                max_len: MAX_ENTRY_PAYLOAD,
+            });
         }
 
-        track.record_staged_size(self.get_size() + 1);
-        // Height may be increased later if a root split occurs.
-        track.record_staged_height(self.get_height());
+        let _guard = self.epoch_mgr.pin();
+        let mut current_root = root_id;
 
-        if leaf_node.keys_len() > self.max_keys {
-            self.handle_leaf_split(path, leaf_node, track)
-        } else {
-            self.write_and_propagate(path, &leaf_node, track)
+        loop {
+            let (mut path, found) = self.get_insertion_path(key_bytes, current_root)?;
+            let (leaf_node_id, idx) = path.pop().ok_or(
+                TreeError::Invariant("insertion path is empty")
+            )?;
+            let mut leaf_node = self.storage.read_node_view(leaf_node_id)?.ok_or_else(|| {
+                TreeError::NodeNotFound(format!("Leaf node with ID {} not found", leaf_node_id))
+            })?;
+
+            let NodeView::Leaf { .. } = &mut leaf_node else {
+                return Err(TreeError::Invariant("expected leaf node at insertion point"));
+            };
+
+            if found {
+                match leaf_node.replace_at(idx, val_bytes) {
+                    Ok(()) => {}
+                    Err(NodeViewError::Page(PageError::PageFull {})) => {
+                        // Value arena full (new value larger than old).
+                        // Split the leaf, then retry — the loop will find the
+                        // key again in the correct half and overwrite there.
+                        current_root = self.handle_leaf_split(path, leaf_node, track)?;
+                        continue;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            } else {
+                match leaf_node.insert_at(idx, key_bytes, val_bytes) {
+                    Ok(()) => {}
+                    Err(NodeViewError::Page(PageError::PageFull {})) => {
+                        // Page is physically full before reaching max_keys.
+                        // Split the leaf (without the new entry), propagate the
+                        // split upward, then loop to retry the insert from the
+                        // new root.  This handles recursive physical splits
+                        // naturally — each iteration makes progress by reducing
+                        // entries per leaf.
+                        current_root = self.handle_leaf_split(path, leaf_node, track)?;
+                        continue;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+
+            track.record_staged_size(self.get_size() + 1);
+            track.record_staged_height(self.get_height());
+
+            if leaf_node.keys_len() > self.max_keys {
+                return self.handle_leaf_split(path, leaf_node, track);
+            } else {
+                return self.write_and_propagate(path, &leaf_node, track);
+            }
         }
     }
 
@@ -797,23 +862,59 @@ where
             };
             let left_child_prev = node.child_ptr_at(insert_pos)?;
             track.reclaim(left_child_prev);
-            node.insert_separator_at(insert_pos, &key, right)?;
+
+            // Replace the old child with the new left child (no size change).
             node.replace_child_at(insert_pos, left)?;
 
-            // No further overflow: write the updated parent and return.
-            if node.keys_len() <= self.max_keys {
-                return self.write_and_propagate(path, &node, track);
-            }
-            // Parent itself overflowed; split it and continue up.
-            let SplitResult::SplitNodes {
-                left_node,
-                right_node,
-                split_key,
-            } = self.split_internal_node(node)?;
+            match node.insert_separator_at(insert_pos, &key, right) {
+                Ok(()) => {
+                    // No further overflow: write the updated parent and return.
+                    if node.keys_len() <= self.max_keys {
+                        return self.write_and_propagate(path, &node, track);
+                    }
+                    // Parent itself overflowed (logical); split it and continue up.
+                    let SplitResult::SplitNodes {
+                        left_node,
+                        right_node,
+                        split_key,
+                    } = self.split_internal_node(node)?;
 
-            left = self.write_node_view(&left_node, track)?;
-            right = self.write_node_view(&right_node, track)?;
-            key = split_key;
+                    left = self.write_node_view(&left_node, track)?;
+                    right = self.write_node_view(&right_node, track)?;
+                    key = split_key;
+                }
+                Err(NodeViewError::Page(PageError::PageFull {})) => {
+                    // Internal page is physically full before reaching max_keys.
+                    // The old child at insert_pos has already been replaced with `left`.
+                    // Split the node first, then insert separator+right into the correct half.
+                    let SplitResult::SplitNodes {
+                        mut left_node,
+                        mut right_node,
+                        split_key,
+                    } = self.split_internal_node(node)?;
+
+                    if key.as_slice() < split_key.as_slice() {
+                        // Find insertion position in the left half.
+                        let idx = match left_node.lower_bound(&key) {
+                            Ok(i) => i + 1,
+                            Err(i) => i,
+                        };
+                        left_node.insert_separator_at(idx, &key, right)?;
+                    } else {
+                        // Find insertion position in the right half.
+                        let idx = match right_node.lower_bound(&key) {
+                            Ok(i) => i + 1,
+                            Err(i) => i,
+                        };
+                        right_node.insert_separator_at(idx, &key, right)?;
+                    }
+
+                    left = self.write_node_view(&left_node, track)?;
+                    right = self.write_node_view(&right_node, track)?;
+                    key = split_key;
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
 
         let mut new_root = NodeView::new_internal(self.key_format);
@@ -1012,6 +1113,16 @@ where
                         return self.write_and_propagate(path, &parent_node, track);
                     }
                 }
+                // Neither borrow nor merge succeeded.  With variable-size
+                // entries the combined physical size of two underfull nodes
+                // can exceed a page even when the key count is within bounds.
+                // Accept the underfull node as-is rather than violating an
+                // invariant — the tree remains correct, just slightly unbalanced.
+                let new_node_id = self.write_node_view(&node, track)?;
+                let current_child_id = parent_node.child_ptr_at(idx)?;
+                track.reclaim(current_child_id);
+                parent_node.replace_child_at(idx, new_node_id)?;
+                return self.write_and_propagate(path, &parent_node, track);
             }
         }
         Err(TreeError::Invariant("node underflow could not be resolved"))
@@ -1043,7 +1154,11 @@ where
                     let borrowed_key = left_sibling.key_bytes_at(left_sibling.keys_len() - 1)?;
                     let borrowed_value =
                         left_sibling.value_bytes_at(left_sibling.keys_len() - 1)?;
-                    node.insert_at(0, borrowed_key, borrowed_value)?;
+                    match node.insert_at(0, borrowed_key, borrowed_value) {
+                        Ok(()) => {}
+                        Err(NodeViewError::Page(PageError::PageFull {})) => return Ok(false),
+                        Err(e) => return Err(e.into()),
+                    }
 
                     // The separator must always equal the first key of the right child.
                     parent_node.replace_key_at(parent_key_idx, borrowed_key)?;
@@ -1058,7 +1173,11 @@ where
                     let borrowed_child =
                         left_sibling.child_ptr_at(left_sibling.children_len()? - 1)?;
                     let separator_key = parent_node.key_bytes_at(parent_key_idx)?;
-                    node.push_front(separator_key, borrowed_child)?;
+                    match node.push_front(separator_key, borrowed_child) {
+                        Ok(()) => {}
+                        Err(NodeViewError::Page(PageError::PageFull {})) => return Ok(false),
+                        Err(e) => return Err(e.into()),
+                    }
 
                     // Update the parent key with the borrowed key
                     parent_node.replace_key_at(parent_key_idx, borrowed_key)?;
@@ -1108,11 +1227,15 @@ where
                 if right_sibling.keys_len() > self.min_leaf_keys {
                     let borrowed_key = right_sibling.key_bytes_at(0)?;
                     let borrowed_value = right_sibling.value_bytes_at(0)?;
-                    node.insert_at(
+                    match node.insert_at(
                         node.keys_len(),
                         borrowed_key.as_bytes(),
                         borrowed_value.as_bytes(),
-                    )?;
+                    ) {
+                        Ok(()) => {}
+                        Err(NodeViewError::Page(PageError::PageFull {})) => return Ok(false),
+                        Err(e) => return Err(e.into()),
+                    }
                     right_sibling.delete_at(0)?;
 
                     // Separator must equal the new first key of the right sibling.
@@ -1173,7 +1296,9 @@ where
         };
         match (&mut left_sibling, &mut *node) {
             (NodeView::Leaf { .. }, NodeView::Leaf { .. }) => {
-                if left_sibling.keys_len() + node.keys_len() > self.max_keys {
+                if left_sibling.keys_len() + node.keys_len() > self.max_keys
+                    || !left_sibling.can_merge_physically(node)
+                {
                     return Ok(None);
                 }
                 let merged_node = self.merge_nodes_view(&mut left_sibling, node)?;
@@ -1189,7 +1314,9 @@ where
                 Ok(Some(merged_node_id))
             }
             (NodeView::Internal { .. }, NodeView::Internal { .. }) => {
-                if left_sibling.keys_len() + node.keys_len() > self.max_keys {
+                if left_sibling.keys_len() + node.keys_len() > self.max_keys
+                    || !left_sibling.can_merge_physically(node)
+                {
                     return Ok(None);
                 }
                 // Pull the separator key from the parent down into the left sibling.
@@ -1233,7 +1360,9 @@ where
         };
         match (&mut *node, &mut right_sibling) {
             (NodeView::Leaf { .. }, NodeView::Leaf { .. }) => {
-                if node.keys_len() + right_sibling.keys_len() > self.max_keys {
+                if node.keys_len() + right_sibling.keys_len() > self.max_keys
+                    || !node.can_merge_physically(&right_sibling)
+                {
                     return Ok(None);
                 }
                 let merged_node = self.merge_nodes_view(node, &mut right_sibling)?;
@@ -1248,7 +1377,9 @@ where
                 Ok(Some(merged_node_id))
             }
             (NodeView::Internal { .. }, NodeView::Internal { .. }) => {
-                if node.keys_len() + right_sibling.keys_len() > self.max_keys {
+                if node.keys_len() + right_sibling.keys_len() > self.max_keys
+                    || !node.can_merge_physically(&right_sibling)
+                {
                     return Ok(None);
                 }
 

@@ -43,7 +43,7 @@ struct LeafSlot {
     val_off: u16,
     val_len: u16,
 }
-const SLOT_SIZE: usize = core::mem::size_of::<LeafSlot>();
+pub(crate) const SLOT_SIZE: usize = core::mem::size_of::<LeafSlot>();
 const LEN_SIZE: usize = std::mem::size_of::<u16>();
 const OFF_SIZE: usize = std::mem::size_of::<u16>();
 
@@ -58,8 +58,8 @@ pub struct Header {
     values_hi: u16,
 }
 
-const HEADER_SIZE: usize = std::mem::size_of::<Header>();
-const BUFFER_SIZE: usize = PAGE_SIZE - HEADER_SIZE;
+pub(crate) const HEADER_SIZE: usize = std::mem::size_of::<Header>();
+pub(crate) const BUFFER_SIZE: usize = PAGE_SIZE - HEADER_SIZE;
 
 // Borrowed/mutable view over a leaf page buffer.
 #[repr(C)]
@@ -156,6 +156,14 @@ impl LeafPage {
     #[inline]
     fn slots_end(&self) -> usize {
         self.slots_base() + self.key_count() as usize * SLOT_SIZE
+    }
+
+    /// Returns the number of bytes consumed by keys, slots, and values (excludes header).
+    pub fn used_bytes(&self) -> usize {
+        let key_block = self.key_block_len() as usize;
+        let slots = self.key_count() as usize * SLOT_SIZE;
+        let values = BUFFER_SIZE - self.values_hi_usize();
+        key_block + slots + values
     }
 
     // --- derived regions ---

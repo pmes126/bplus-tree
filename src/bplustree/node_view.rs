@@ -245,6 +245,25 @@ impl NodeView {
         }
     }
 
+    /// Returns the number of data bytes used (keys + slots/children + values), excluding header.
+    #[inline]
+    pub fn used_bytes(&self) -> usize {
+        match self {
+            NodeView::Internal { page } => page.used_bytes(),
+            NodeView::Leaf { page } => page.used_bytes(),
+        }
+    }
+
+    /// Returns `true` if both nodes' data can fit within a single page buffer.
+    #[inline]
+    pub fn can_merge_physically(&self, other: &NodeView) -> bool {
+        let buffer_cap = match self {
+            NodeView::Internal { .. } => crate::page::internal::BUFFER_SIZE,
+            NodeView::Leaf { .. } => crate::page::leaf::BUFFER_SIZE,
+        };
+        self.used_bytes() + other.used_bytes() <= buffer_cap
+    }
+
     /// Splits the node at `idx`, returning the new right half.
     pub fn split_off(&mut self, idx: usize) -> Result<NodeView, NodeViewError> {
         match self {

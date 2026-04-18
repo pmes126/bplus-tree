@@ -46,8 +46,8 @@ pub struct Header {
 }
 
 const CHILD_ID_SIZE: usize = core::mem::size_of::<NodeId>();
-const HEADER_SIZE: usize = std::mem::size_of::<Header>();
-const BUFFER_SIZE: usize = PAGE_SIZE - HEADER_SIZE;
+pub(crate) const HEADER_SIZE: usize = std::mem::size_of::<Header>();
+pub(crate) const BUFFER_SIZE: usize = PAGE_SIZE - HEADER_SIZE;
 
 // Borrowed/mutable view over a leaf page buffer.
 #[repr(C)]
@@ -139,6 +139,11 @@ impl InternalPage {
     #[inline]
     fn children_end(&self) -> usize {
         self.children_base() + self.children_len()
+    }
+
+    /// Returns the number of bytes consumed by keys and child pointers (excludes header).
+    pub fn used_bytes(&self) -> usize {
+        self.key_block_len() as usize + self.children_len()
     }
 
     // --- derived regions ---
