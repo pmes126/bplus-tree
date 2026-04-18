@@ -73,6 +73,7 @@ dependencies = [
  "crc32fast",
  "criterion",
  "fail",
+ "libc",
  "rand 0.8.5",
  "reqwest",
  "serde",

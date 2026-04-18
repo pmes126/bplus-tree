@@ -31,6 +31,7 @@ use crate::storage::metadata_manager::MetadataManager;
 use crate::storage::paged_node_storage::PagedNodeStorage;
 use crate::storage::{NodeStorage, PageStorage};
 
+use std::fs::File;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -50,6 +51,8 @@ pub enum DatabaseError {
     NotFound(String),
     #[error("version mismatch: {0}")]
     VersionMismatch(String),
+    #[error("database is locked by another process")]
+    Locked,
 }
 
 /// Page 0 is reserved for the superblock.
@@ -68,6 +71,10 @@ pub struct Database<S: PageStorage + Send + Sync + 'static> {
     catalog: RwLock<Catalog>,
     format_version: u32,
     base_path: std::path::PathBuf,
+    /// Exclusive lock file handle. Held for the lifetime of the database to
+    /// prevent concurrent access from another process. The `flock` is released
+    /// automatically when this `File` is dropped.
+    _lock_file: File,
 }
 
 impl<S: PageStorage + Send + Sync + 'static> Database<S> {
@@ -318,6 +325,35 @@ fn write_superblock<S: PageStorage>(storage: &S) -> Result<(), DatabaseError> {
 }
 
 // ---------------------------------------------------------------------------
+// File locking
+// ---------------------------------------------------------------------------
+
+/// Attempts to acquire an exclusive `flock` on `path`, returning the open file
+/// handle on success. The lock is released automatically when the file is closed
+/// (i.e. when the returned `File` is dropped).
+fn try_lock_file(path: &Path) -> Result<File, DatabaseError> {
+    use std::fs::OpenOptions;
+    use std::os::unix::io::AsRawFd;
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::WouldBlock {
+            return Err(DatabaseError::Locked);
+        }
+        return Err(DatabaseError::Io(err));
+    }
+    Ok(file)
+}
+
+// ---------------------------------------------------------------------------
 // database::open — recovery entry point
 // ---------------------------------------------------------------------------
 
@@ -326,12 +362,19 @@ fn write_superblock<S: PageStorage>(storage: &S) -> Result<(), DatabaseError> {
 /// On a fresh directory: writes the superblock, creates an empty manifest.
 /// On an existing directory: validates the superblock version, replays the
 /// manifest, and reconciles catalog metadata against on-disk pages.
+///
+/// An exclusive file lock (`db.lock`) is held for the lifetime of the returned
+/// [`Database`]. If another process already holds the lock,
+/// [`DatabaseError::Locked`] is returned.
 pub fn open<S, P>(base_path: P) -> Result<Database<S>, DatabaseError>
 where
     S: PageStorage + Send + Sync + 'static,
     P: AsRef<Path>,
 {
     let base = base_path.as_ref();
+
+    // Acquire the exclusive lock before touching any other files.
+    let lock_file = try_lock_file(&base.join("db.lock"))?;
 
     let data_path = base.join("data.db");
     let manifest_path = base.join("manifest.log");
@@ -395,6 +438,7 @@ where
         catalog: RwLock::new(catalog),
         format_version,
         base_path: base.to_path_buf(),
+        _lock_file: lock_file,
     })
 }
 

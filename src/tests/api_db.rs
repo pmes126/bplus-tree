@@ -1,6 +1,8 @@
 //! Tests for the public embedded API: Db, Tree<K,V>, WriteTxn, RangeIter.
 
 use crate::api::Db;
+use crate::database::{self, DatabaseError};
+use crate::storage::file_page_storage::FilePageStorage;
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -390,4 +392,39 @@ fn freelist_persists_across_close_and_reopen() {
 
         unsafe { db.close() };
     }
+}
+
+// ---------------------------------------------------------------------------
+// File locking
+// ---------------------------------------------------------------------------
+
+#[test]
+fn concurrent_open_returns_locked_error() {
+    let dir = TempDir::new().unwrap();
+
+    // First open succeeds.
+    let _db1 = database::open::<FilePageStorage, _>(dir.path())
+        .expect("first open should succeed");
+
+    // Second open on the same directory should fail with Locked.
+    match database::open::<FilePageStorage, _>(dir.path()) {
+        Err(DatabaseError::Locked) => {} // expected
+        Err(e) => panic!("expected DatabaseError::Locked, got: {e:?}"),
+        Ok(_) => panic!("second open should have failed with Locked"),
+    }
+}
+
+#[test]
+fn lock_released_after_drop() {
+    let dir = TempDir::new().unwrap();
+
+    {
+        let _db = database::open::<FilePageStorage, _>(dir.path())
+            .expect("first open should succeed");
+        // _db dropped here, releasing the lock.
+    }
+
+    // Re-opening should succeed after the previous Database was dropped.
+    let _db2 = database::open::<FilePageStorage, _>(dir.path())
+        .expect("re-open after drop should succeed");
 }
