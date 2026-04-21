@@ -1,6 +1,6 @@
 //! End-to-end example: fetch a URL in a loop and store responses by request number.
 
-use bplustree::api::Db;
+use bplus_tree::api::Db;
 use reqwest::Error;
 use std::time::Duration;
 use tempfile::TempDir;

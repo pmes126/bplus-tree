@@ -57,7 +57,7 @@ cargo bench
 ### Bytes-level API
 
 ```rust
-use bplustree::api::Db;
+use bplus_tree::api::Db;
 
 let dir = tempfile::tempdir()?;
 let db = Db::open(dir.path())?;
@@ -75,7 +75,7 @@ tree.delete(&b"alpha".to_vec())?;
 ### Typed API
 
 ```rust
-use bplustree::api::Db;
+use bplus_tree::api::Db;
 
 let dir = tempfile::tempdir()?;
 let db = Db::open(dir.path())?;
