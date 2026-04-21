@@ -1,16 +1,17 @@
 [package]
-name = "bplustree"
+name = "bplus_tree"
 version = "0.1.0"
 edition = "2024"
+authors = ["Paris Mesidis <pmesidis@gmail.com>"]
 rust-version = "1.85"
 description = "Copy-on-write B+ tree with page-aligned storage, split/merge, and crash-safety primitives."
-license = "MIT"
-repository = "https://github.com/pmes126/bplus_tree"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pmes126/bplus-tree"
 readme = "README.md"
 keywords = ["bplus-tree", "b+tree", "datastructures", "storage", "database"]
 categories = ["data-structures", "algorithms"]
-homepage = "https://github.com/pmes126/bplus_tree"
-documentation = "https://docs.rs/cow-bptree"
+homepage = "https://github.com/pmes126/bplus-tree"
+documentation = "https://docs.rs/bplus_tree"
 
 [features]
 testing = ["dep:fail"]   # testing feature pulls in fail
@@ -31,7 +32,7 @@ opt-level = 3
 [profile.release]
 opt-level = 3
 
-[dev-dependencies.bplustree]
+[dev-dependencies.bplus_tree]
 path = "."
 features = ["testing", "failpoints" ]
 
@@ -44,7 +45,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 
 [lib]
-name = "bplustree"
+name = "bplus_tree"
 path = "src/lib.rs"
 
 [[bench]]
