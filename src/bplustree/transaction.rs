@@ -85,45 +85,56 @@ impl WriteTransaction {
         P: PageStorage + Send + Sync + 'static,
     {
         for _ in 0..MAX_COMMIT_RETRIES {
-            // Rebuild speculative state by replaying changes from the saved base root.
-            let mut staged_update: Option<StagedMetadata> = None;
+            // Pin the epoch *before* reading root_id so that the pages
+            // reachable from that root cannot be reclaimed while we walk them.
+            // The guard is dropped before try_commit so that the commit's
+            // epoch advance + reclamation pass is not blocked by our pin.
+            let staged_update;
             let mut staged_nodes: Vec<u64> = Vec::new();
             let mut reclaimed_nodes_local: Vec<u64> = Vec::new();
-            let mut current_root = self.initial_root_id;
 
-            for op in &self.changes {
-                match op {
-                    WriteOp::Insert(k, v) => {
-                        let wr = tree.put_with_root(k.clone(), v.clone(), current_root)?;
-                        reclaimed_nodes_local.extend(wr.reclaimed_nodes);
-                        staged_nodes.extend(wr.staged_nodes);
-                        current_root = wr.new_root_id;
-                        staged_update = Some(StagedMetadata {
-                            root_id: wr.new_root_id,
-                            height: wr.new_height,
-                            size: wr.new_size,
-                        });
-                    }
-                    WriteOp::Delete(k) => {
-                        let wr = tree.delete_with_root(k, current_root)?;
-                        reclaimed_nodes_local.extend(wr.reclaimed_nodes);
-                        staged_nodes.extend(wr.staged_nodes);
-                        current_root = wr.new_root_id;
-                        staged_update = Some(StagedMetadata {
-                            root_id: wr.new_root_id,
-                            height: wr.new_height,
-                            size: wr.new_size,
-                        });
+            {
+                let _guard = tree.epoch_mgr().pin();
+                let mut current_root = self.initial_root_id;
+                let mut staged: Option<StagedMetadata> = None;
+
+                for op in &self.changes {
+                    match op {
+                        WriteOp::Insert(k, v) => {
+                            let wr =
+                                tree.put_with_root(k.clone(), v.clone(), current_root)?;
+                            reclaimed_nodes_local.extend(wr.reclaimed_nodes);
+                            staged_nodes.extend(wr.staged_nodes);
+                            current_root = wr.new_root_id;
+                            staged = Some(StagedMetadata {
+                                root_id: wr.new_root_id,
+                                height: wr.new_height,
+                                size: wr.new_size,
+                            });
+                        }
+                        WriteOp::Delete(k) => {
+                            let wr = tree.delete_with_root(k, current_root)?;
+                            reclaimed_nodes_local.extend(wr.reclaimed_nodes);
+                            staged_nodes.extend(wr.staged_nodes);
+                            current_root = wr.new_root_id;
+                            staged = Some(StagedMetadata {
+                                root_id: wr.new_root_id,
+                                height: wr.new_height,
+                                size: wr.new_size,
+                            });
+                        }
                     }
                 }
-            }
+
+                staged_update = staged;
+            } // _guard dropped here — epoch unpinned before commit
 
             let staged_update = match staged_update {
                 Some(su) => su,
                 None => {
                     // No ops were applied; commit a no-op to keep the flow consistent.
                     StagedMetadata {
-                        root_id: current_root,
+                        root_id: self.initial_root_id,
                         height: tree.get_height(),
                         size: tree.get_size(),
                     }
