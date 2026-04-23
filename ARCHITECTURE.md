@@ -541,3 +541,132 @@ point. If the process crashes after the CAS but before the metadata fsync,
 the next open will see the previous transaction's metadata — the speculative
 pages become leaked (not in the freelist, not reachable from any root). A
 future consistency check could detect and reclaim these.
+
+---
+
+## Concurrency bugs and fixes
+
+This section documents four concurrency bugs discovered during stress testing
+with concurrent writers, their root causes, and the fixes applied.
+
+### 1. TOCTOU race in `EpochManager::pin()`
+
+**Symptom:** Under concurrent writes, the reclaimer could free pages that an
+active reader was about to traverse, causing stale reads or invariant violations.
+
+**Root cause:** The original `pin()` loaded the global epoch and then, in a
+separate step, inserted the thread into the `active_readers` map. Between these
+two operations, a writer could call `oldest_active()`, see zero readers, and
+reclaim pages at the epoch the reader was about to register for.
+
+```
+Reader thread                   Writer thread
+─────────────                   ─────────────
+epoch = global_epoch.load()     
+                                oldest_active() → no readers → reclaim epoch 5
+readers.insert(tid, epoch=5)    
+// too late — pages are freed
+```
+
+**Fix:** The epoch load and reader registration now happen under the same mutex
+lock. A writer calling `oldest_active()` will either see the reader already
+registered (if it acquired the lock after the reader) or the reader will see the
+post-advance epoch (if the writer advanced before the reader acquired the lock).
+
+### 2. Nested epoch pin removing outer guard's registration
+
+**Symptom:** No observed failure in practice — this is a defensive fix.
+
+**Root cause:** `EpochManager` uses `HashMap<ThreadId, Epoch>` — one entry per
+thread. `pin()` calls `readers.insert(tid, epoch)` and `ReaderGuard::Drop` calls
+`readers.remove(tid)`. If a public method (e.g. `SharedBPlusTree::put`) pins the
+epoch and then calls an inner method (e.g. `put_inner`) that also pins, the
+situation is:
+
+1. Outer `pin()` inserts `(thread_7, epoch=5)`.
+2. Inner `pin()` inserts `(thread_7, epoch=5)` — no-op, same key/value.
+3. Inner `ReaderGuard` drops → `readers.remove(thread_7)`. **Entry is gone.**
+4. Outer guard is still alive, but the thread is no longer in the readers map.
+
+A concurrent writer calling `oldest_active()` at this point would see no reader
+for this thread and could reclaim pages the thread still references.
+
+In the current code this window is effectively zero — the inner method returns
+and the outer guard drops immediately after, with no page accesses in between.
+The fix is defensive: inner methods (`put_inner`, `get_inner`, `delete_inner`)
+no longer pin, and document "caller must hold an epoch guard". Pins are placed
+only at the outermost public entry points.
+
+### 3. Missing epoch guard in `WriteTransaction::commit`
+
+**Symptom:** Under concurrent writes, the `commit` method's tree walk could read
+freed pages, causing invariant violations ("expected internal node while updating
+parents") or silently reading garbage data.
+
+**Root cause:** `WriteTransaction::commit` replays buffered operations by calling
+`put_with_root` / `delete_with_root`, which delegate to inner methods that
+expect the caller to hold an epoch guard. The transaction's `commit` did not pin
+an epoch, so the root and all pages reachable from it could be reclaimed by a
+concurrent commit's GC pass while the transaction was walking them.
+
+**Fix:** The tree walk section of `commit` is now wrapped in an epoch guard. The
+guard is pinned before reading `initial_root_id` and dropped before calling
+`try_commit`, so the commit's own epoch advance and reclamation pass are not
+blocked by the pin.
+
+### 4. ABA problem on `AtomicPtr<Metadata>`
+
+**Symptom:** Under concurrent writes, keys were silently lost. A stress test with
+4 threads × 500 keys × 50 rounds consistently showed 1-5 missing keys per round.
+
+**Root cause:** The CAS on `committed: AtomicPtr<Metadata>` compares raw pointer
+values (memory addresses), not the data they point to. After a successful CAS,
+the old metadata `Box` was freed immediately via `drop(Box::from_raw(old_ptr))`.
+This returned the heap address to the allocator, which could reuse it for a
+future `Box::new(Metadata)`, creating a classic ABA cycle:
+
+```
+Writer A                        Writer B                        Writer C
+────────                        ────────                        ────────
+reads committed → 0x7f00
+(saves as base_version)
+starts slow tree walk...
+                                reads committed → 0x7f00
+                                CAS(0x7f00 → 0x7f80) ✓
+                                drop(Box(0x7f00))
+                                // 0x7f00 is free
+
+                                                                reads committed → 0x7f80
+                                                                Box::new(Metadata)
+                                                                // allocator returns 0x7f00!
+                                                                CAS(0x7f80 → 0x7f00) ✓
+                                                                // committed = 0x7f00 again
+
+CAS(expected=0x7f00, new=0x7f90)
+// committed is 0x7f00 (from C)
+// addresses match → CAS succeeds!
+// Writer A overwrites C's tree
+// with a root from a stale snapshot.
+// All of B's and C's keys are lost.
+```
+
+The ABA problem occurs because the CAS cannot distinguish between the original
+`0x7f00` (which Writer A based its work on) and the recycled `0x7f00` (which now
+holds Writer C's metadata). The pointer value is the same, but it points to
+completely different data.
+
+**Fix:** Old metadata pointers are never freed after a successful CAS. Instead,
+they are pushed into a `retired_meta: Mutex<Vec<RetiredPtr>>` list. Since the
+address is never returned to the allocator, it can never be reused for a new
+`Box<Metadata>`, and a stale writer's CAS will always fail (the committed
+pointer has moved to a genuinely new address). All retired pointers are freed
+when the `BPlusTree` is dropped.
+
+The `RetiredPtr` newtype wraps the raw `*mut Metadata` and implements `Send`
+so it can be stored in a `Mutex<Vec<_>>` on a `Send + Sync` struct.
+
+**Trade-off:** Retired metadata boxes (40 bytes each) accumulate for the
+lifetime of the tree — one per successful commit. For typical workloads this
+is negligible (10,000 commits = 400 KB). A future improvement could use a
+tagged pointer or generation counter to eliminate the ABA problem without
+retaining old allocations, but the current approach is simple and correct.
