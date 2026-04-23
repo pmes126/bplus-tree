@@ -1,9 +1,18 @@
 use bplustree::api::Db;
 use criterion::{Criterion, criterion_group, criterion_main};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
+use tempfile::TempDir;
 
-const N: u64 = 10_000;
+const N: u64 = 5_000;
+
+/// Disk-backed temp dir to avoid RAM-backed tmpfs pressure.
+fn bench_tempdir() -> TempDir {
+    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/bench_tmp");
+    std::fs::create_dir_all(&base).unwrap();
+    tempfile::tempdir_in(base).unwrap()
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -11,7 +20,7 @@ const N: u64 = 10_000;
 
 /// Creates a pre-populated tree with `N` u64→String entries.
 fn populated_db() -> (tempfile::TempDir, Db) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = bench_tempdir();
     let db = Db::open(dir.path()).expect("open db");
     let tree = db.create_tree::<u64, String>("bench", 64).expect("create tree");
     let mut txn = tree.txn();
@@ -27,9 +36,9 @@ fn populated_db() -> (tempfile::TempDir, Db) {
 // ---------------------------------------------------------------------------
 
 fn benchmark_insert(c: &mut Criterion) {
-    c.bench_function("insert 10k keys", |b| {
+    c.bench_function("insert 5k keys", |b| {
         b.iter(|| {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = bench_tempdir();
             let db = Db::open(dir.path()).expect("open db");
             let tree = db.create_tree::<u64, String>("bench", 64).expect("create tree");
 
@@ -41,9 +50,9 @@ fn benchmark_insert(c: &mut Criterion) {
 }
 
 fn benchmark_insert_txn(c: &mut Criterion) {
-    c.bench_function("insert 10k keys (batched txn)", |b| {
+    c.bench_function("insert 5k keys (batched txn)", |b| {
         b.iter(|| {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = bench_tempdir();
             let db = Db::open(dir.path()).expect("open db");
             let tree = db.create_tree::<u64, String>("bench", 64).expect("create tree");
 
@@ -64,7 +73,7 @@ fn benchmark_get(c: &mut Criterion) {
     let (_dir, db) = populated_db();
     let tree = db.open_tree::<u64, String>("bench").unwrap();
 
-    c.bench_function("get 10k keys (sequential)", |b| {
+    c.bench_function("get 5k keys (sequential)", |b| {
         b.iter(|| {
             for i in 0..N {
                 tree.get(&i).unwrap();
@@ -81,7 +90,7 @@ fn benchmark_range_full(c: &mut Criterion) {
     let (_dir, db) = populated_db();
     let tree = db.open_tree::<u64, String>("bench").unwrap();
 
-    c.bench_function("range scan full (10k keys)", |b| {
+    c.bench_function("range scan full (5k keys)", |b| {
         b.iter(|| {
             let iter = tree.range(&0u64, &N).unwrap();
             for entry in iter {
@@ -110,7 +119,7 @@ fn benchmark_range_slice(c: &mut Criterion) {
 // ---------------------------------------------------------------------------
 
 fn benchmark_delete(c: &mut Criterion) {
-    c.bench_function("delete 10k keys", |b| {
+    c.bench_function("delete 5k keys", |b| {
         b.iter(|| {
             let (_dir, db) = populated_db();
             let tree = db.open_tree::<u64, String>("bench").unwrap();
@@ -123,7 +132,7 @@ fn benchmark_delete(c: &mut Criterion) {
 }
 
 fn benchmark_delete_txn(c: &mut Criterion) {
-    c.bench_function("delete 10k keys (batched txn)", |b| {
+    c.bench_function("delete 5k keys (batched txn)", |b| {
         b.iter(|| {
             let (_dir, db) = populated_db();
             let tree = db.open_tree::<u64, String>("bench").unwrap();
@@ -145,7 +154,7 @@ fn benchmark_mixed_read_write(c: &mut Criterion) {
     let (_dir, db) = populated_db();
     let tree = db.open_tree::<u64, String>("bench").unwrap();
 
-    c.bench_function("mixed read/write (50/50, 10k ops)", |b| {
+    c.bench_function("mixed read/write (50/50, 5k ops)", |b| {
         b.iter(|| {
             for i in 0..N {
                 if i % 2 == 0 {
@@ -168,7 +177,7 @@ fn benchmark_large_values(c: &mut Criterion) {
 
     c.bench_function("insert 1k keys with 1KB values", |b| {
         b.iter(|| {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = bench_tempdir();
             let db = Db::open(dir.path()).expect("open db");
             let tree = db.create_tree::<u64, String>("bench", 64).expect("create tree");
 
@@ -186,9 +195,9 @@ fn benchmark_large_values(c: &mut Criterion) {
 // ---------------------------------------------------------------------------
 
 fn benchmark_string_keys(c: &mut Criterion) {
-    c.bench_function("insert 10k string keys", |b| {
+    c.bench_function("insert 5k string keys", |b| {
         b.iter(|| {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = bench_tempdir();
             let db = Db::open(dir.path()).expect("open db");
             let tree = db.create_tree::<String, String>("bench", 64).expect("create tree");
 
@@ -202,7 +211,7 @@ fn benchmark_string_keys(c: &mut Criterion) {
 }
 
 fn benchmark_string_keys_get(c: &mut Criterion) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = bench_tempdir();
     let db = Db::open(dir.path()).expect("open db");
     let tree = db.create_tree::<String, String>("bench", 64).expect("create tree");
 
@@ -212,7 +221,7 @@ fn benchmark_string_keys_get(c: &mut Criterion) {
     }
     txn.commit().unwrap();
 
-    c.bench_function("get 10k string keys", |b| {
+    c.bench_function("get 5k string keys", |b| {
         b.iter(|| {
             for i in 0..N {
                 tree.get(&format!("key_{i:06}")).unwrap();
@@ -227,11 +236,11 @@ fn benchmark_string_keys_get(c: &mut Criterion) {
 
 fn benchmark_concurrent_writers(c: &mut Criterion) {
     let num_threads = 4;
-    let per_thread = 2_500u64;
+    let per_thread = 1_250u64;
 
-    c.bench_function("concurrent insert (4 threads, 10k total)", |b| {
+    c.bench_function("concurrent insert (4 threads, 5k total)", |b| {
         b.iter(|| {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = bench_tempdir();
             let db = Arc::new(Db::open(dir.path()).expect("open db"));
             let tree = Arc::new(
                 db.create_tree::<u64, String>("bench", 64).expect("create tree"),
@@ -261,7 +270,9 @@ fn benchmark_concurrent_writers(c: &mut Criterion) {
 // ---------------------------------------------------------------------------
 
 criterion_group!(
-    benches,
+    name = benches;
+    config = Criterion::default().sample_size(20);
+    targets =
     benchmark_insert,
     benchmark_insert_txn,
     benchmark_get,

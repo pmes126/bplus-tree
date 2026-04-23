@@ -6,6 +6,8 @@ pub mod api_db;
 pub mod codec_tests;
 pub mod common;
 #[cfg(test)]
+pub mod concurrent_stress;
+#[cfg(test)]
 pub mod epoch_tests;
 #[cfg(test)]
 pub mod range_iter;
