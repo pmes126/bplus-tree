@@ -72,12 +72,16 @@ impl EpochManager {
 
     /// Pins the current thread to the current epoch and returns a guard that unpins on drop.
     ///
-    /// Uses `Acquire` so that the reader sees all COW page writes that
-    /// happened before the writer advanced the epoch.
+    /// The epoch load and reader registration happen under the same lock to
+    /// prevent a TOCTOU race: without this, a writer could call
+    /// `oldest_active()` between our epoch load and our registration, see no
+    /// readers, and free pages we are about to walk.
     pub fn pin(self: &Arc<Self>) -> ReaderGuard {
+        let mut readers = self.active_readers.lock().unwrap();
         let epoch = self.global_epoch.load(Ordering::Acquire);
         let tid = std::thread::current().id();
-        self.active_readers.lock().unwrap().insert(tid, epoch);
+        readers.insert(tid, epoch);
+        drop(readers);
 
         ReaderGuard {
             epoch_mgr: Arc::clone(self),
