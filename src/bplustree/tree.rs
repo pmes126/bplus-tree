@@ -500,7 +500,7 @@ where
     }
 
     /// Returns a clone of the inner [`Arc`].
-    pub fn arc(&self) -> Arc<BPlusTree<S, P>> {
+    pub fn arc(&self) -> Arc<BPlusTree<'_, S, P>> {
         Arc::clone(&self.inner)
     }
 

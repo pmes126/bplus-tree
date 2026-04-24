@@ -406,7 +406,7 @@ fn large_values_trigger_physical_split_before_max_keys() {
         StagedMetadata {
             root_id: root,
             height: tree.get_height(),
-            size: num_entries as u64,
+            size: num_entries,
         },
     )
     .unwrap();
@@ -516,7 +516,7 @@ fn overwrite_small_value_with_large_triggers_split() {
     // Insert 10 small entries — all fit in one leaf.
     for i in 0u64..10 {
         let wr = tree
-            .put_with_root(k(i), b"tiny".to_vec(), root)
+            .put_with_root(k(i), b"tiny", root)
             .unwrap_or_else(|e| panic!("insert {i} failed: {e}"));
         root = wr.new_root_id;
     }
