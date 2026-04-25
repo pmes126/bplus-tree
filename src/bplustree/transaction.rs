@@ -1,12 +1,23 @@
 //! Write transaction for the B+ tree with optimistic concurrency control.
 
-use crate::bplustree::tree::{BaseVersion, SharedBPlusTree, StagedMetadata, TreeError};
+use crate::bplustree::tree::{
+    BaseVersion, SharedBPlusTree, StagedMetadata, TransactionTracker, TreeError,
+};
 use crate::storage::{HasEpoch, NodeStorage, PageStorage};
 
 /// A single buffered write operation.
 enum WriteOp<K, V> {
     Insert(K, V),
     Delete(K),
+}
+
+impl<K: AsRef<[u8]>, V> WriteOp<K, V> {
+    fn key(&self) -> &[u8] {
+        match self {
+            WriteOp::Insert(k, _) => k.as_ref(),
+            WriteOp::Delete(k) => k.as_ref(),
+        }
+    }
 }
 
 /// Indicates whether a transaction committed successfully or was aborted.
@@ -65,17 +76,19 @@ impl WriteTransaction {
             .map_or(self.initial_root_id, |res| res.root_id)
     }
 
-    /// Buffers an insert of the given key-value pair.
+    /// Buffers an insert of the given key-value pair, maintaining sorted key order.
     pub fn insert<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V) {
-        self.changes.push(WriteOp::Insert(
-            key.as_ref().to_vec(),
-            value.as_ref().to_vec(),
-        ));
+        let k = key.as_ref().to_vec();
+        let pos = self.changes.partition_point(|op| op.key() <= k.as_slice());
+        self.changes
+            .insert(pos, WriteOp::Insert(k, value.as_ref().to_vec()));
     }
 
-    /// Buffers a delete of the given key.
+    /// Buffers a delete of the given key, maintaining sorted key order.
     pub fn delete<K: AsRef<[u8]>>(&mut self, key: K) {
-        self.changes.push(WriteOp::Delete(key.as_ref().to_vec()));
+        let k = key.as_ref().to_vec();
+        let pos = self.changes.partition_point(|op| op.key() <= k.as_slice());
+        self.changes.insert(pos, WriteOp::Delete(k));
     }
 
     /// Replays buffered operations and attempts to commit via CAS, retrying on conflicts.
@@ -97,12 +110,17 @@ impl WriteTransaction {
                 let _guard = tree.epoch_mgr().pin();
                 let mut current_root = self.initial_root_id;
                 let mut staged: Option<StagedMetadata> = None;
+                let mut tracker = TransactionTracker::new();
 
                 for op in &self.changes {
                     match op {
                         WriteOp::Insert(k, v) => {
-                            let wr =
-                                tree.put_with_root(k.clone(), v.clone(), current_root)?;
+                            let wr = tree.put_with_root_tracked(
+                                k.clone(),
+                                v.clone(),
+                                current_root,
+                                &mut tracker,
+                            )?;
                             reclaimed_nodes_local.extend(wr.reclaimed_nodes);
                             staged_nodes.extend(wr.staged_nodes);
                             current_root = wr.new_root_id;
@@ -113,7 +131,8 @@ impl WriteTransaction {
                             });
                         }
                         WriteOp::Delete(k) => {
-                            let wr = tree.delete_with_root(k, current_root)?;
+                            let wr =
+                                tree.delete_with_root_tracked(k, current_root, &mut tracker)?;
                             reclaimed_nodes_local.extend(wr.reclaimed_nodes);
                             staged_nodes.extend(wr.staged_nodes);
                             current_root = wr.new_root_id;

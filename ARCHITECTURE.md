@@ -223,6 +223,77 @@ become garbage. A `compact_values()` pass reclaims the dead space when needed.
 
 **Constants**: `HEADER_SIZE = 8`, `BUFFER_SIZE = 4088`, `CHILD_ID_SIZE = 8`
 
+### Why not a simple sequential layout?
+
+A simpler page format would store entries as a flat sequence of
+`[key_len | key | val_len | val]` records packed one after another. This is
+how many tutorials and prototypes lay out B-tree nodes. The slotted-page
+layout used here is more complex but solves several concrete problems that
+the sequential approach cannot.
+
+**O(1) positional access.**
+Binary search on keys produces an index (e.g. "the 5th entry"). With the
+slot directory, jumping to entry 5's value is a single 4-byte read from
+`slots[5]` to get the offset and length — O(1). With sequential layout,
+finding the 5th entry requires scanning from the start, skipping 4
+variable-length records — O(n). Every binary search hit pays this scan
+cost, which defeats the purpose of binary search.
+
+**Key-only search without touching values.**
+The key block packs keys contiguously in memory: `[klen|key][klen|key]...`.
+During a tree traversal (search, insert point lookup, range seek), the CPU
+only needs to read and compare keys. Values are never loaded. With
+sequential layout, keys and values are interleaved —
+`[klen|key|vlen|val][klen|key|vlen|val]...` — so scanning keys requires
+reading (or at least skipping over) every value. For pages with large values
+this means touching most of the page's bytes just to find a key, polluting
+CPU cache lines with value data that won't be used.
+
+The slotted layout gives keys spatial locality: they sit in a contiguous
+region at the front of the page. A binary search over 30 keys in a
+~500-byte key block fits in a few cache lines. In the sequential layout,
+those same 30 keys might be scattered across 4 KB of interleaved key-value
+data, causing cache misses on every comparison.
+
+**In-place value replacement.**
+When a key's value is updated, the new value may be a different size. With
+sequential layout, replacing a 10-byte value with a 20-byte value requires
+shifting all subsequent entries forward by 10 bytes — O(n) memmove on
+every update. With the value arena, the new value is simply appended at
+the current `values_hi` watermark (growing downward), and the slot's offset
+and length are updated to point to it. The old value bytes become dead space,
+reclaimable by `compact_values()` when the page runs low on free space.
+This makes updates O(1) regardless of value size change.
+
+**Deletion without data movement.**
+Deleting an entry from a sequential layout requires shifting all subsequent
+entries backward to close the gap — O(n) memmove. With the slotted layout,
+deletion removes the key from the key block and the slot from the slot
+directory (both require shifting, but keys and slots are smaller than full
+entries), while the value bytes in the arena are simply abandoned as dead
+space. More importantly, the slot directory means entry indices remain
+stable during the operation — other slots don't need their offsets
+recalculated.
+
+**Decoupled key and value growth.**
+The key block grows forward from the header; the value arena grows backward
+from the end of the page. They share the free space in the middle. This
+means a page can accommodate either many small values or fewer large values
+without any layout change — the free space pool is unified. With sequential
+layout, there is no concept of shared free space; you just pack until you
+run out of room, and fragmentation from updates is harder to manage.
+
+**Trade-off:** The slotted layout costs 4 bytes per entry for the slot
+directory, and `compact_values()` adds implementation complexity. For a
+page with 40 entries, that's 160 bytes of overhead (~4% of the page). This
+is a small price for O(1) access and cache-friendly key search.
+
+**In summary:** the sequential layout works fine for read-once,
+write-once pages with fixed-size values. The slotted-page layout is
+designed for pages that are searched (binary search needs O(1) index
+access), updated (value replacement without shifting), and deleted from
+(no entry-shifting memmove) — which is exactly what B-tree leaf nodes do.
+
 ---
 
 ## Copy-on-write semantics
@@ -541,6 +612,221 @@ point. If the process crashes after the CAS but before the metadata fsync,
 the next open will see the previous transaction's metadata — the speculative
 pages become leaked (not in the freelist, not reachable from any root). A
 future consistency check could detect and reclaim these.
+
+---
+
+## Write amplification
+
+Write amplification (WA) is the ratio of bytes physically written to disk
+versus bytes of useful data the caller asked to store. A WA of 1.0x means
+every byte on disk is user data; anything above that is overhead.
+
+### Sources of write amplification in this engine
+
+**1. Page granularity.**
+Every write is a full 4096-byte page, even if you're only storing a 20-byte
+key-value pair. A single insert into a leaf that has room writes the entire
+4096-byte page.
+
+**2. Copy-on-write path cloning.**
+Every mutation clones every page on the root-to-leaf path. For a tree of
+height 3, a single insert writes 3 × 4096 = 12,288 bytes — the leaf plus
+every internal node above it. An in-place-mutation B-tree would write only the
+single leaf page (4096 bytes) plus a small WAL entry.
+
+**3. Unbatched commits.**
+Each individual `put()` is a full commit cycle: COW the path, write metadata,
+fsync. The batched `WriteTxn` amortizes metadata and fsync overhead across all
+operations in the batch, but each insert within the batch still COWs the full
+path independently.
+
+**4. COW debris accumulation.**
+Within a transaction, old pages from COW clones and splits are never reused —
+they pile up in `data.db`. The freelist only reclaims pages after commit, and
+even then only when no reader is pinned at an earlier epoch. This means
+`data.db` grows monotonically during a transaction, even though the logical
+tree size may be stable.
+
+**5. Metadata and manifest overhead.**
+The manifest log, superblock, per-tree metadata pages (A/B), and freelist
+snapshot all consume disk space that isn't user data. For small trees this
+overhead is proportionally large.
+
+### Measured write amplification
+
+The `bench_metrics` benchmark (`just bench-metrics`) measures WA directly:
+
+```
+write_amp = total_file_size(db_directory) / sum(key_len + value_len)
+```
+
+Typical results with u64 keys and short string values:
+
+| Entries | Height | Disk (KB) | Data (KB) | Write Amp | Bytes/Entry |
+|---------|--------|-----------|-----------|-----------|-------------|
+|     100 |      2 |     496   |       1.4 |   365x    |      5,080  |
+|   1,000 |      2 |   4,208   |      14.5 |   289x    |      4,309  |
+|   5,000 |      3 |  20,732   |      77.0 |   269x    |      4,246  |
+|  25,000 |      3 | 103,308   |     404.2 |   256x    |      4,232  |
+
+The ~4,200 bytes/entry figure means roughly one full 4096-byte page per entry
+on disk. This makes sense: with COW, every unbatched `put()` creates `height`
+new pages, and the old pages are never reclaimed during measurement.
+
+Write amplification *decreases* as entry count grows because:
+- The manifest, superblock, and metadata overhead is amortized over more entries.
+- Leaves fill more densely before splitting, so the ratio of useful data per
+  page improves.
+- Tree height grows logarithmically, so the per-insert COW overhead (height
+  pages) grows slower than the data volume.
+
+### How this compares
+
+| Engine type                          | Typical WA |
+|--------------------------------------|-----------|
+| LSM-tree (RocksDB, LevelDB)         |  10–30x   |
+| In-place B-tree + WAL (InnoDB, SQLite) |  2–5x  |
+| COW B-tree (LMDB, btrfs)            |   3–10x   |
+| **This engine (current)**            | **250–680x** |
+
+The gap is large. The primary reason is that old COW pages accumulate in the
+data file indefinitely — there is no compaction or page-reuse within a
+transaction, and `data.db` never shrinks.
+
+### Why batched txn WA is worse than unbatched
+
+Counter-intuitively, a batched transaction inserting 5,000 keys has *higher*
+write amplification (~677x) than 5,000 individual unbatched puts (~269x).
+
+This happens because the batched path replays all operations against a single
+root chain. Each `put_with_root` call COWs the full root-to-leaf path, and all
+the intermediate COW debris — pre-split pages, old internal nodes, superceded
+leaves — accumulates in `data.db` within a single transaction. Epoch-based
+reclamation can't free these pages until after commit, so the file keeps
+growing with every operation.
+
+The unbatched path, by contrast, commits after each put. Each commit advances
+the epoch, which may allow the reclaimer to free old pages (if no readers are
+pinned). Over 5,000 individual commits, some old pages get recycled and their
+disk slots reused, keeping the file smaller than the batched case where all
+debris persists until the single final commit.
+
+### Effect of key ordering on write amplification
+
+Sorting keys before a batched insert helps, though not for the most obvious
+reason. The per-insert COW cost is O(height) pages regardless of key order —
+every insert rewrites the root-to-leaf path. What changes is *which* pages are
+touched:
+
+**Random key order:**
+- Each insert may land in a different leaf, requiring COW of a different
+  root-to-leaf path. With N inserts touching M distinct leaves, you generate
+  up to M × height intermediate pages.
+- Splits happen at unpredictable leaves throughout the tree. Each split
+  produces two half-full pages plus a new separator propagated upward. Splits
+  scattered across many leaves create debris at every level of the tree.
+
+**Sorted key order:**
+- Consecutive inserts land in the *same* rightmost leaf until it fills and
+  splits. The COW path is the same rightmost path every time, so intermediate
+  internal-node copies rewrite the same logical path rather than scattering
+  across the tree.
+- Splits only happen at the rightmost leaf. This produces a clean, left-to-right
+  fill pattern: completed left-sibling pages are never touched again, so their
+  COW debris is minimal.
+- The tree grows in a single direction, which means fewer total unique pages
+  are allocated compared to random insertion.
+
+In practice, sorted inserts reduce WA modestly (by reducing the number of
+distinct internal-node copies created during splits). But the fundamental COW
+cost — O(height) pages per insert — remains.
+
+**The real win from sorted keys is enabling bulk loading.** If the engine knows
+keys arrive in order, it can build the tree bottom-up: fill each leaf to
+capacity, write it once, and construct internal nodes after the fact. This
+eliminates split-and-propagate overhead entirely and brings write amplification
+close to the theoretical minimum (total pages × 4096 / total data bytes).
+Bulk loading is not currently implemented.
+
+### Possible improvements
+
+Several approaches could reduce write amplification:
+
+1. **Intra-transaction page reuse.** When a COW clone supersedes a page within
+   the same uncommitted transaction, the old page could be immediately reused
+   (no reader can reference it since the transaction hasn't committed). This
+   would prevent debris accumulation during large batches.
+
+2. **Bulk loading / merge-rebuild for sorted inserts.** For an empty tree,
+   build leaves left-to-right, filling each to capacity, then construct
+   internal nodes in a single bottom-up pass. For a populated tree, this
+   becomes a merge-rebuild: scan the existing tree via `RangeIter` (already
+   sorted), merge the sorted incoming keys with the existing stream (like
+   merge sort's merge step), and build new leaves bottom-up from the merged
+   output. This is essentially a full tree rewrite, so it's most beneficial
+   when the incoming batch is large relative to the existing tree (roughly
+   >20-30% of existing entries). For smaller batches, the per-key insert
+   path is more efficient since it only touches affected pages. A fractional
+   variant — rebuilding only the leaf ranges touched by new keys — could
+   offer a middle ground but adds implementation complexity.
+
+   **Merge-rebuild design (not yet implemented):**
+
+   *Phase 1 — Merged stream.* Two sorted inputs: the existing tree (via
+   `RangeIter`, already in key order) and the incoming batch (sorted by key).
+   Merge them like merge sort's merge step: advance whichever has the smaller
+   key. On duplicate keys, the incoming value wins (upsert). Delete ops in
+   the batch cause the key to be skipped entirely. This is fully streaming —
+   only one entry from each side is held in memory at a time.
+
+   *Phase 2 — Build leaves left-to-right.* Walk the merged stream and pack
+   entries into leaf pages. Fill each leaf to ~85% capacity (leaving slack
+   for future individual inserts that don't warrant a full rebuild). When a
+   leaf is full, write it once via `storage.write_node_view()` and record
+   its first key and page ID as a separator for the parent level.
+
+   *Phase 3 — Build internal nodes bottom-up.* Take the separators from the
+   leaf level and pack them into internal pages the same way. The first
+   child pointer becomes `leftmost_child`; subsequent separators are packed
+   until the page is full. Repeat upward until a single root node remains.
+   Each internal page is written exactly once.
+
+   *Phase 4 — Commit.* CAS the metadata pointer with the new root page ID,
+   tree height (number of levels built), and entry count. The old tree's
+   entire page set becomes reclaimable via the epoch manager — no changes
+   to the concurrency model are needed.
+
+   Expected impact (5,000 entries, u64 keys, short values):
+
+   | Metric          | Per-key insert | Merge-rebuild |
+   |-----------------|---------------|---------------|
+   | Pages written   | ~15,000       | ~129          |
+   | Disk footprint  | ~20 MB        | ~516 KB       |
+   | Write amp       | ~269x         | ~6.7x         |
+
+   The improvement grows with batch size since per-key insert is
+   O(N × height) pages while merge-rebuild is O(N / fan-out) pages.
+
+   Crash safety: if the process crashes during the build, the old tree is
+   intact (metadata was never swapped). Orphaned new pages are leaked,
+   same as any failed COW transaction.
+
+   Key decision: when to use merge-rebuild vs per-key insert. A simple
+   heuristic is `batch_size > tree.len() * 0.2` — if the batch is more
+   than ~20% of the existing tree, rebuild; otherwise use the normal path.
+
+3. **Online compaction.** A background process that rewrites the data file,
+   discarding unreachable pages and packing live pages contiguously. This
+   reclaims space from accumulated debris without changing the write path.
+
+4. **Delta encoding / WAL hybrid.** Buffer small mutations in a write-ahead
+   log and apply them in bulk to pages periodically. This amortizes the
+   per-page overhead across many mutations, at the cost of more complex
+   recovery.
+
+5. **Page-level deduplication.** If two COW clones of the same page are
+   identical (e.g., an internal node rewritten with the same child pointers),
+   detect this and reuse the existing page. Requires content hashing.
 
 ---
 

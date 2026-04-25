@@ -28,3 +28,7 @@ bench-perf-io name:
 # Profile and generate a flamegraph (requires `cargo install flamegraph`)
 bench-flamegraph name:
     cargo flamegraph --bench bench_insert -- --bench --profile-time 5 "{{name}}"
+
+# Application-level metrics: tree height, write amp, disk usage, scaling curves
+bench-metrics:
+    cargo bench --bench bench_metrics

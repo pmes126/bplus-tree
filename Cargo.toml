@@ -52,6 +52,10 @@ path = "src/lib.rs"
 name = "bench_insert"
 harness = false
 
+[[bench]]
+name = "bench_metrics"
+harness = false
+
 [workspace.lints.clippy]
 pedantic = "warn"
 nursery = "warn"

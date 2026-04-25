@@ -130,6 +130,10 @@ pub trait TxnTracker {
     fn record_staged_height(&mut self, height: u64);
     /// Records the staged entry count for this transaction.
     fn record_staged_size(&mut self, size: u64);
+    /// Returns the staged entry count, or `None` if no size has been staged yet.
+    fn staged_size(&self) -> Option<u64>;
+    /// Returns the staged tree height, or `None` if no height has been staged yet.
+    fn staged_height(&self) -> Option<u64>;
 }
 
 /// A point-in-time snapshot of committed tree metadata.
@@ -295,6 +299,12 @@ impl TxnTracker for TransactionTracker {
     fn record_staged_size(&mut self, size: u64) {
         self.staged_size = Some(size);
     }
+    fn staged_size(&self) -> Option<u64> {
+        self.staged_size
+    }
+    fn staged_height(&self) -> Option<u64> {
+        self.staged_height
+    }
 }
 
 /// Result of a write operation (insert or delete).
@@ -358,7 +368,19 @@ where
         root_id: NodeId,
     ) -> Result<WriteResult, TreeError> {
         let mut collector = TransactionTracker::new();
-        let new_root_id = self.inner.put_inner(key, value, root_id, &mut collector)?;
+        self.put_with_root_tracked(key, value, root_id, &mut collector)
+    }
+
+    /// Inserts a key-value pair starting from `root_id`, using a caller-owned
+    /// tracker so that staged size/height accumulate across multiple calls.
+    pub fn put_with_root_tracked<K: AsRef<[u8]>, V: AsRef<[u8]>>(
+        &self,
+        key: K,
+        value: V,
+        root_id: NodeId,
+        collector: &mut TransactionTracker,
+    ) -> Result<WriteResult, TreeError> {
+        let new_root_id = self.inner.put_inner(key, value, root_id, collector)?;
         let write_res = WriteResult {
             new_root_id,
             reclaimed_nodes: std::mem::take(&mut collector.reclaimed),
@@ -387,7 +409,17 @@ where
         root_id: NodeId,
     ) -> Result<WriteResult, TreeError> {
         let mut collector = TransactionTracker::new();
-        let delete_res = self.inner.delete_inner(key, root_id, &mut collector)?;
+        self.delete_with_root_tracked(key, root_id, &mut collector)
+    }
+
+    /// Deletes a key starting from `root_id`, using a caller-owned tracker.
+    pub fn delete_with_root_tracked<K: AsRef<[u8]>>(
+        &self,
+        key: &K,
+        root_id: NodeId,
+        collector: &mut TransactionTracker,
+    ) -> Result<WriteResult, TreeError> {
+        let delete_res = self.inner.delete_inner(key, root_id, collector)?;
         let DeleteResult::Deleted(new_root_id) = delete_res else {
             return Err(TreeError::NodeNotFound(
                 "key not found for deletion".to_string(),
@@ -762,8 +794,12 @@ where
                 }
             }
 
-            track.record_staged_size(self.get_size() + 1);
-            track.record_staged_height(self.get_height());
+            let base_size = track.staged_size().unwrap_or_else(|| self.get_size());
+            if !found {
+                track.record_staged_size(base_size + 1);
+            }
+            let base_height = track.staged_height().unwrap_or_else(|| self.get_height());
+            track.record_staged_height(base_height);
 
             if leaf_node.keys_len() > self.max_keys {
                 return self.handle_leaf_split(path, leaf_node, track);
@@ -961,7 +997,8 @@ where
         new_root.insert_separator_at(0, &key, right)?;
 
         let new_root_id = self.write_node_view(&new_root, track)?;
-        track.record_staged_height(self.get_height() + 1);
+        let base_height = track.staged_height().unwrap_or_else(|| self.get_height());
+        track.record_staged_height(base_height + 1);
 
         Ok(new_root_id)
     }
@@ -1074,9 +1111,11 @@ where
 
         leaf_node.delete_at(idx)?;
 
-        track.record_staged_size(self.get_size().saturating_sub(1));
+        let base_size = track.staged_size().unwrap_or_else(|| self.get_size());
+        track.record_staged_size(base_size.saturating_sub(1));
         // Height may decrease later if the root collapses.
-        track.record_staged_height(self.get_height());
+        let base_height = track.staged_height().unwrap_or_else(|| self.get_height());
+        track.record_staged_height(base_height);
 
         // No underflow if the node has enough keys or it is the root.
         if leaf_node.entry_count() >= self.min_leaf_keys || path.is_empty() {
@@ -1136,7 +1175,8 @@ where
                         if path.is_empty() {
                             if parent_node.children_len()? == 1 {
                                 track.reclaim(parent_id);
-                                track.record_staged_height(self.get_height().saturating_sub(1));
+                                let bh = track.staged_height().unwrap_or_else(|| self.get_height());
+                                track.record_staged_height(bh.saturating_sub(1));
                                 return Ok(parent_node.child_ptr_at(0)?);
                             } else {
                                 return self.write_and_propagate(path, &parent_node, track);

@@ -39,7 +39,10 @@ fn single_thread_put_2000() {
                 Err(e) => missing.push(format!("{i}(err:{e})")),
             }
         }
-        assert!(missing.is_empty(), "round {round}: single-thread missing: {missing:?}");
+        assert!(
+            missing.is_empty(),
+            "round {round}: single-thread missing: {missing:?}"
+        );
     }
 }
 
@@ -73,7 +76,8 @@ fn concurrent_put_4_threads() {
             .collect();
 
         for (i, h) in handles.into_iter().enumerate() {
-            h.join().unwrap_or_else(|e| panic!("round {round} thread {i} panicked: {e:?}"));
+            h.join()
+                .unwrap_or_else(|e| panic!("round {round} thread {i} panicked: {e:?}"));
         }
 
         // Verify every key is present

@@ -211,6 +211,11 @@ where
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Returns the current height of the tree (1 = single leaf).
+    pub fn height(&self) -> u64 {
+        self.inner.get_height()
+    }
 }
 
 // ---------------------------------------------------------------------------
