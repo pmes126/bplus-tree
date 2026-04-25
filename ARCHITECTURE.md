@@ -615,13 +615,17 @@ future consistency check could detect and reclaim these.
 
 ---
 
-## Write amplification
+## Space amplification
 
-Write amplification (WA) is the ratio of bytes physically written to disk
-versus bytes of useful data the caller asked to store. A WA of 1.0x means
-every byte on disk is user data; anything above that is overhead.
+Space amplification (SA) is the ratio of the on-disk footprint to the logical
+data stored. An SA of 1.0x means every byte on disk is user data; anything
+above that is overhead. This is closely related to — but distinct from — *write
+amplification* (total bytes written vs logical data). This engine's benchmark
+measures SA via `dir_size() / data_bytes`. Because `data.db` never shrinks
+(freed pages are recycled in-memory but the file keeps its high-water mark),
+SA reflects peak disk usage rather than steady-state live data.
 
-### Sources of write amplification in this engine
+### Sources of amplification in this engine
 
 **1. Page granularity.**
 Every write is a full 4096-byte page, even if you're only storing a 20-byte
@@ -652,17 +656,17 @@ The manifest log, superblock, per-tree metadata pages (A/B), and freelist
 snapshot all consume disk space that isn't user data. For small trees this
 overhead is proportionally large.
 
-### Measured write amplification
+### Measured space amplification
 
-The `bench_metrics` benchmark (`just bench-metrics`) measures WA directly:
+The `bench_metrics` benchmark (`just bench-metrics`) measures SA directly:
 
 ```
-write_amp = total_file_size(db_directory) / sum(key_len + value_len)
+space_amp = total_file_size(db_directory) / sum(key_len + value_len)
 ```
 
 Typical results with u64 keys and short string values:
 
-| Entries | Height | Disk (KB) | Data (KB) | Write Amp | Bytes/Entry |
+| Entries | Height | Disk (KB) | Data (KB) | Space Amp | Bytes/Entry |
 |---------|--------|-----------|-----------|-----------|-------------|
 |     100 |      2 |     496   |       1.4 |   365x    |      5,080  |
 |   1,000 |      2 |   4,208   |      14.5 |   289x    |      4,309  |
@@ -673,7 +677,7 @@ The ~4,200 bytes/entry figure means roughly one full 4096-byte page per entry
 on disk. This makes sense: with COW, every unbatched `put()` creates `height`
 new pages, and the old pages are never reclaimed during measurement.
 
-Write amplification *decreases* as entry count grows because:
+Space amplification *decreases* as entry count grows because:
 - The manifest, superblock, and metadata overhead is amortized over more entries.
 - Leaves fill more densely before splitting, so the ratio of useful data per
   page improves.
@@ -682,7 +686,7 @@ Write amplification *decreases* as entry count grows because:
 
 ### How this compares
 
-| Engine type                          | Typical WA |
+| Engine type                          | Typical SA |
 |--------------------------------------|-----------|
 | LSM-tree (RocksDB, LevelDB)         |  10–30x   |
 | In-place B-tree + WAL (InnoDB, SQLite) |  2–5x  |
@@ -693,10 +697,10 @@ The gap is large. The primary reason is that old COW pages accumulate in the
 data file indefinitely — there is no compaction or page-reuse within a
 transaction, and `data.db` never shrinks.
 
-### Why batched txn WA is worse than unbatched
+### Why batched txn SA is worse than unbatched
 
 Counter-intuitively, a batched transaction inserting 5,000 keys has *higher*
-write amplification (~677x) than 5,000 individual unbatched puts (~269x).
+space amplification (~677x) than 5,000 individual unbatched puts (~269x).
 
 This happens because the batched path replays all operations against a single
 root chain. Each `put_with_root` call COWs the full root-to-leaf path, and all
@@ -711,7 +715,7 @@ pinned). Over 5,000 individual commits, some old pages get recycled and their
 disk slots reused, keeping the file smaller than the batched case where all
 debris persists until the single final commit.
 
-### Effect of key ordering on write amplification
+### Effect of key ordering on space amplification
 
 Sorting keys before a batched insert helps, though not for the most obvious
 reason. The per-insert COW cost is O(height) pages regardless of key order —
@@ -737,20 +741,20 @@ touched:
 - The tree grows in a single direction, which means fewer total unique pages
   are allocated compared to random insertion.
 
-In practice, sorted inserts reduce WA modestly (by reducing the number of
+In practice, sorted inserts reduce SA modestly (by reducing the number of
 distinct internal-node copies created during splits). But the fundamental COW
 cost — O(height) pages per insert — remains.
 
 **The real win from sorted keys is enabling bulk loading.** If the engine knows
 keys arrive in order, it can build the tree bottom-up: fill each leaf to
 capacity, write it once, and construct internal nodes after the fact. This
-eliminates split-and-propagate overhead entirely and brings write amplification
+eliminates split-and-propagate overhead entirely and brings space amplification
 close to the theoretical minimum (total pages × 4096 / total data bytes).
 Bulk loading is not currently implemented.
 
 ### Possible improvements
 
-Several approaches could reduce write amplification:
+Several approaches could reduce space amplification:
 
 1. **Intra-transaction page reuse.** When a COW clone supersedes a page within
    the same uncommitted transaction, the old page could be immediately reused
@@ -802,7 +806,7 @@ Several approaches could reduce write amplification:
    |-----------------|---------------|---------------|
    | Pages written   | ~15,000       | ~129          |
    | Disk footprint  | ~20 MB        | ~516 KB       |
-   | Write amp       | ~269x         | ~6.7x         |
+   | Space amp       | ~269x         | ~6.7x         |
 
    The improvement grows with batch size since per-key insert is
    O(N × height) pages while merge-rebuild is O(N / fan-out) pages.

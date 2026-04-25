@@ -558,6 +558,17 @@ where
     pub fn reclaim_node(&self, node_id: NodeId) -> Result<(), TreeError> {
         self.inner.reclaim_node(node_id)
     }
+
+    /// Runs a reclamation pass, freeing any deferred pages that are safe to
+    /// reclaim (no reader is pinned at or before their epoch).
+    pub fn reclaim_deferred(&self) -> Result<(), TreeError> {
+        let safe_epoch = self.inner.epoch_mgr.oldest_active();
+        let reclaimed = self.inner.epoch_mgr.reclaim(safe_epoch);
+        for pid in reclaimed {
+            self.inner.storage.free_node(pid)?;
+        }
+        Ok(())
+    }
 }
 
 impl<'s, S, P> BPlusTree<'s, S, P>

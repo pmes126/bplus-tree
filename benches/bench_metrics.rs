@@ -1,8 +1,15 @@
 //! Application-level performance metrics for the B+ tree.
 //!
-//! Unlike Criterion (wall-clock only), this reports tree height, write
+//! Unlike Criterion (wall-clock only), this reports tree height, space
 //! amplification, disk overhead, ops/sec, and scaling curves — the numbers
 //! that actually matter for a storage engine.
+//!
+//! **Note on `dir_size()`**: this measures the file's high-water mark on disk.
+//! Freed pages are recycled via the in-memory freelist but the data file never
+//! shrinks, so `dir_size() / data_bytes` is **space amplification** (peak disk
+//! footprint vs logical data), *not* write amplification (total bytes written
+//! vs logical data).  True write amplification would require an IO counter in
+//! the storage layer.
 //!
 //! Run via: `just bench-metrics` or `cargo bench --bench bench_metrics`
 
@@ -56,7 +63,7 @@ struct WriteMetrics {
 
 impl WriteMetrics {
     fn print(&self) {
-        let write_amp = self.disk_bytes as f64 / self.data_bytes.max(1) as f64;
+        let space_amp = self.disk_bytes as f64 / self.data_bytes.max(1) as f64;
         let bpe = self.disk_bytes as f64 / self.ops.max(1) as f64;
         println!();
         println!("=== {} ===", self.label);
@@ -70,9 +77,9 @@ impl WriteMetrics {
             "  raw data:         {:.1} KB",
             self.data_bytes as f64 / 1024.0
         );
-        println!("  write amp:        {:.2}x", write_amp);
+        println!("  space amp:        {:.2}x", space_amp);
         println!("  bytes/entry:      {:.1}", bpe);
-        println!("  space overhead:   {:.1}%", (write_amp - 1.0) * 100.0);
+        println!("  space overhead:   {:.1}%", (space_amp - 1.0) * 100.0);
         println!(
             "  throughput:       {:.0} ops/sec",
             self.ops as f64 / self.elapsed.as_secs_f64()
@@ -400,10 +407,10 @@ fn measure_concurrent_insert() {
 
 fn measure_scaling() {
     println!();
-    println!("=== scaling: height & write amplification vs entry count ===");
+    println!("=== scaling: height & space amplification vs entry count ===");
     println!(
         "  {:>10}  {:>6}  {:>12}  {:>12}  {:>10}  {:>12}",
-        "entries", "height", "disk (KB)", "data (KB)", "write amp", "bytes/entry"
+        "entries", "height", "disk (KB)", "data (KB)", "space amp", "bytes/entry"
     );
 
     for &count in &[100u64, 500, 1_000, 2_500, 5_000, 10_000, 25_000] {

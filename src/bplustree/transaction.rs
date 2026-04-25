@@ -163,13 +163,16 @@ impl WriteTransaction {
             let res = tree.try_commit(&self.tree_base_version, staged_update);
             if res.is_ok() {
                 // Register reclaimed (old) pages for deferred freeing at the
-                // current epoch.  Readers pinned at an earlier epoch may still
-                // be walking the old tree, so these pages must not be freed
-                // until all such readers have unpinned.
+                // current epoch, then run a second reclamation pass so they
+                // can be freed immediately (instead of waiting for the next
+                // commit).  This eliminates the one-commit reclamation lag
+                // that causes space amplification to grow during sequential
+                // writes.
                 let epoch = tree.epoch_mgr().current();
                 for id in reclaimed_nodes_local.drain(..) {
                     tree.epoch_mgr().add_reclaim_candidate(epoch, id);
                 }
+                tree.reclaim_deferred()?;
                 self.reclaimed_nodes.clear();
                 self.changes.clear();
                 return Ok(TxnStatus::Committed);
