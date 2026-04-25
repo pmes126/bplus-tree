@@ -37,6 +37,7 @@ pub struct WriteTransaction {
     staged_update: Option<StagedMetadata>,
     /// Committed metadata pointer captured at transaction start.
     tree_base_version: BaseVersion,
+    /// Buffered write operations, sorted by key for efficient replay during commit.
     changes: Vec<WriteOp<Vec<u8>, Vec<u8>>>,
     /// Node IDs pending reclamation after a successful commit.
     reclaimed_nodes: Vec<u64>,
