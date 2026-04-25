@@ -2,15 +2,13 @@
 #![allow(elided_lifetimes_in_paths)]
 
 pub mod api;
-pub mod bplustree;
 pub mod codec;
-pub mod database;
-pub mod storage;
 
+pub(crate) mod bplustree;
+pub(crate) mod database;
 pub(crate) mod keyfmt;
 pub(crate) mod layout;
 pub(crate) mod page;
+pub(crate) mod storage;
 #[cfg(test)]
 pub(crate) mod tests;
-
-//pub use api::{DbBytes, TypedDb};

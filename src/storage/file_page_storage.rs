@@ -9,8 +9,6 @@ use std::sync::{Arc, Mutex};
 use crate::layout::PAGE_SIZE;
 use crate::storage::PageStorage;
 
-pub use crate::database::superblock::FreeListSnaphotHeader;
-pub use crate::storage::file_page_storage;
 
 /// Page IDs 0–15 are reserved for internal metadata; user allocations start here.
 const INITIAL_PAGE_ID: u32 = 16;
