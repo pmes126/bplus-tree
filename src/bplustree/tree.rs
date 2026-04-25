@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -134,6 +135,11 @@ pub trait TxnTracker {
     fn staged_size(&self) -> Option<u64>;
     /// Returns the staged tree height, or `None` if no height has been staged yet.
     fn staged_height(&self) -> Option<u64>;
+    /// Returns `true` if `node_id` was allocated during this transaction
+    /// (i.e. it is dirty and can be mutated in place).
+    fn is_dirty(&self, node_id: NodeId) -> bool;
+    /// Marks `node_id` as dirty (allocated in this transaction).
+    fn mark_dirty(&mut self, node_id: NodeId);
 }
 
 /// A point-in-time snapshot of committed tree metadata.
@@ -272,6 +278,10 @@ pub struct TransactionTracker {
     pub staged_height: Option<u64>,
     /// Staged entry count, if updated.
     pub staged_size: Option<u64>,
+    /// Pages allocated during this transaction (dirty set). Lookups are the
+    /// hot path — every traversed node checks "is this dirty?" to decide
+    /// COW-clone vs mutate-in-place — so a HashSet gives O(1) checks.
+    pub dirty_pages: HashSet<NodeId>,
 }
 
 impl TransactionTracker {
@@ -282,7 +292,18 @@ impl TransactionTracker {
             added: Vec::new(),
             staged_height: None,
             staged_size: None,
+            dirty_pages: HashSet::new(),
         }
+    }
+
+    /// Returns `true` if `node_id` was allocated during this transaction.
+    pub fn is_dirty(&self, node_id: NodeId) -> bool {
+        self.dirty_pages.contains(&node_id)
+    }
+
+    /// Marks `node_id` as dirty (allocated in this transaction).
+    pub fn mark_dirty(&mut self, node_id: NodeId) {
+        self.dirty_pages.insert(node_id);
     }
 }
 
@@ -304,6 +325,12 @@ impl TxnTracker for TransactionTracker {
     }
     fn staged_height(&self) -> Option<u64> {
         self.staged_height
+    }
+    fn is_dirty(&self, node_id: NodeId) -> bool {
+        self.dirty_pages.contains(&node_id)
+    }
+    fn mark_dirty(&mut self, node_id: NodeId) {
+        self.dirty_pages.insert(node_id);
     }
 }
 
@@ -588,6 +615,7 @@ where
         let keyfmt = meta.keyfmt_id;
         let root_node = NodeView::Leaf {
             page: LeafPage::new(keyfmt),
+            page_id: None,
         };
         let init_id = storage.write_node_view(&root_node)?;
         storage.write_node_view_at_offset(&root_node, meta.root_id)?;
@@ -679,6 +707,7 @@ where
     ) -> Result<u64, TreeError> {
         let new_id = self.storage.write_node_view(node)?;
         tracker.add_new(new_id);
+        tracker.mark_dirty(new_id);
         Ok(new_id)
     }
 
@@ -880,12 +909,26 @@ where
     }
 
     /// Writes a node and propagates the new ID up the parent path.
+    ///
+    /// If the node's `page_id` is in the dirty set, it is rewritten in place
+    /// (no new page allocation) and propagation is skipped entirely since
+    /// the page ID is unchanged.
     fn write_and_propagate(
         &self,
         path: Vec<(u64, usize)>,
         node: &NodeView,
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
+        if let Some(pid) = node.page_id() {
+            if track.is_dirty(pid) {
+                // Node was allocated in this transaction — rewrite in place.
+                // Page ID is unchanged so no parent update is needed.
+                self.storage.write_node_view_at_offset(node, pid)?;
+                // Return the root (first element of path), or this node's ID if it is the root.
+                let root_id = path.first().map(|(id, _)| *id).unwrap_or(pid);
+                return Ok(root_id);
+            }
+        }
         let new_node_id = self.write_node_view(node, track)?;
         if path.is_empty() {
             Ok(new_node_id)
@@ -896,12 +939,19 @@ where
     }
 
     /// Propagates a node update up the parent path, rewriting each ancestor.
+    ///
+    /// When a parent is in the dirty set (allocated during this transaction),
+    /// it is rewritten in place — the page ID doesn't change, so no further
+    /// propagation is needed and the loop breaks early.
     fn propagate_node_update(
         &self,
         mut path: Vec<(NodeId, usize)>,
         mut updated_child_id: NodeId,
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
+        // Remember the root so we can return it even if we break early.
+        let root_id = path.first().map(|(id, _)| *id).unwrap_or(updated_child_id);
+
         while let Some((parent_id, insert_pos)) = path.pop() {
             let mut parent_node = self.storage.read_node_view(parent_id)?.ok_or_else(|| {
                 TreeError::NodeNotFound(format!("Parent node {} not found", parent_id).to_string())
@@ -920,6 +970,14 @@ where
             // Reclaim the original child and replace its pointer.
             track.reclaim(parent_node.child_ptr_at(insert_pos)?);
             parent_node.replace_child_at(insert_pos, updated_child_id)?;
+
+            if track.is_dirty(parent_id) {
+                // Parent was allocated in this transaction — mutate in place.
+                // Page ID is unchanged so no ancestors need updating.
+                self.storage.write_node_view_at_offset(&parent_node, parent_id)?;
+                return Ok(root_id);
+            }
+
             updated_child_id = self.write_node_view(&parent_node, track)?;
         }
         Ok(updated_child_id)

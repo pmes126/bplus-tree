@@ -145,6 +145,7 @@ pub fn make_tree(
     let key_format = KeyFormat::Raw(RawFormat);
     let root_view = NodeView::Leaf {
         page: LeafPage::new(key_format),
+        page_id: None,
     };
     let root_id = node_storage
         .write_node_view(&root_view)
