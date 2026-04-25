@@ -367,13 +367,13 @@ impl NoopNodeViewCodec {
                 // Leaf node
                 let page = LeafPage::from_bytes(buf)
                     .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;
-                Ok(NodeView::Leaf { page: *page })
+                Ok(NodeView::Leaf { page: *page, page_id: None })
             }
             INTERNAL_NODE_TAG => {
                 // Internal node
                 let page = InternalPage::from_bytes(buf)
                     .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;
-                Ok(NodeView::Internal { page: *page })
+                Ok(NodeView::Internal { page: *page, page_id: None })
             }
             _ => Err(CodecError::DecodeFailure {
                 msg: "Invalid node type tag in page".to_string(),
@@ -383,10 +383,10 @@ impl NoopNodeViewCodec {
 
     pub fn encode(node: &NodeView) -> Result<&[u8; PAGE_SIZE], CodecError> {
         match node {
-            NodeView::Leaf { page } => page
+            NodeView::Leaf { page, .. } => page
                 .to_bytes()
                 .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() }),
-            NodeView::Internal { page } => page
+            NodeView::Internal { page, .. } => page
                 .to_bytes()
                 .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() }),
         }
