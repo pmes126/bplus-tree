@@ -33,8 +33,6 @@ pub const MAX_COMMIT_RETRIES: usize = 10;
 
 /// Buffers a set of writes and commits them atomically via optimistic CAS.
 pub struct WriteTransaction {
-    /// Speculative metadata staged during this transaction.
-    staged_update: Option<StagedMetadata>,
     /// Committed metadata pointer captured at transaction start.
     tree_base_version: BaseVersion,
     /// Buffered write operations, sorted by key for efficient replay during commit.
@@ -53,15 +51,6 @@ impl WriteTransaction {
         P: PageStorage + Send + Sync + 'static,
     {
         Self {
-            staged_update: {
-                // No staged update initially
-                let res = tree.get_snapshot();
-                Some(StagedMetadata {
-                    root_id: res.root_id,
-                    height: res.height,
-                    size: res.size,
-                })
-            },
             tree_base_version: BaseVersion {
                 committed_ptr: tree.get_metadata_ptr(),
             },
@@ -70,13 +59,6 @@ impl WriteTransaction {
             reclaimed_nodes: Vec::new(),
         }
     }
-    /// Returns the root ID of the staged tree, or the initial root if no writes have been staged.
-    pub fn get_root_id(&self) -> u64 {
-        self.staged_update
-            .as_ref()
-            .map_or(self.initial_root_id, |res| res.root_id)
-    }
-
     /// Buffers an insert of the given key-value pair, maintaining sorted key order.
     pub fn insert<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V) {
         let k = key.as_ref().to_vec();
