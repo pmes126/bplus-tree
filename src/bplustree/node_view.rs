@@ -1,4 +1,4 @@
-use crate::codec::{KeyCodec, ValueCodec};
+use crate::codec::KeyCodec;
 use crate::keyfmt::KeyFormat;
 use crate::page::{InternalPage, LeafPage, PageError};
 
@@ -302,14 +302,20 @@ impl NodeView {
                     .ok_or(NodeViewError::UnknownKeyFormat(page.keyfmt_id()))?;
                 let mut new_page = InternalPage::new(keyfmt_id);
                 page.split_off_into(idx, &mut new_page)?;
-                Ok(NodeView::Internal { page: new_page, page_id: None })
+                Ok(NodeView::Internal {
+                    page: new_page,
+                    page_id: None,
+                })
             }
             NodeView::Leaf { page, .. } => {
                 let keyfmt_id = KeyFormat::from_id(page.keyfmt_id())
                     .ok_or(NodeViewError::UnknownKeyFormat(page.keyfmt_id()))?;
                 let mut new_page = LeafPage::new(keyfmt_id);
                 page.split_off_into(idx, &mut new_page)?;
-                Ok(NodeView::Leaf { page: new_page, page_id: None })
+                Ok(NodeView::Leaf {
+                    page: new_page,
+                    page_id: None,
+                })
             }
         }
     }
@@ -396,7 +402,14 @@ impl NodeView {
     /// Merges `other` into `self`. Both nodes must be the same kind.
     pub fn merge_into(&mut self, other: &mut NodeView) -> Result<(), NodeViewError> {
         match (self, other) {
-            (NodeView::Internal { page: self_page, .. }, NodeView::Internal { page: other_page, .. }) => {
+            (
+                NodeView::Internal {
+                    page: self_page, ..
+                },
+                NodeView::Internal {
+                    page: other_page, ..
+                },
+            ) => {
                 let other_key_count = other_page.key_count();
                 let mut scratch = Vec::new();
                 for i in 0..other_key_count {
@@ -406,7 +419,14 @@ impl NodeView {
                 }
                 Ok(())
             }
-            (NodeView::Leaf { page: self_page, .. }, NodeView::Leaf { page: other_page, .. }) => {
+            (
+                NodeView::Leaf {
+                    page: self_page, ..
+                },
+                NodeView::Leaf {
+                    page: other_page, ..
+                },
+            ) => {
                 let other_key_count = other_page.key_count();
                 let mut scratch = Vec::new();
                 for i in 0..other_key_count {
@@ -420,12 +440,10 @@ impl NodeView {
     }
 
     /// Prints the contents of the node for debugging.
-    pub fn view_content<KC, VC, K, V>(&self) -> Result<(), NodeViewError>
+    pub fn view_content<KC, K>(&self) -> Result<(), NodeViewError>
     where
         K: std::fmt::Debug,
-        V: std::fmt::Debug,
         KC: KeyCodec<K>,
-        VC: ValueCodec<V>,
     {
         match self {
             NodeView::Internal { page, .. } => {

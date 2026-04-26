@@ -869,7 +869,8 @@ where
             if track.is_dirty(parent_id) {
                 // Parent was allocated in this transaction — mutate in place.
                 // Page ID is unchanged so no ancestors need updating.
-                self.storage.write_node_view_at_offset(&parent_node, parent_id)?;
+                self.storage
+                    .write_node_view_at_offset(&parent_node, parent_id)?;
                 return Ok(root_id);
             }
 

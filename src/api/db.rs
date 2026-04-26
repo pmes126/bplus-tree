@@ -114,7 +114,9 @@ impl Db {
     /// this `Db` **must** be dropped before calling `close`. Using a handle
     /// after the `Db` is closed is undefined behaviour.
     pub unsafe fn close(self) -> Result<(), ApiError> {
-        let result = self.database.checkpoint_freelist()
+        let result = self
+            .database
+            .checkpoint_freelist()
             .map_err(|e| ApiError::Internal(e.to_string()));
         let ptr =
             self.database as *const Database<FilePageStorage> as *mut Database<FilePageStorage>;
