@@ -761,7 +761,10 @@ fn cache_returns_fresh_data_after_reclaim_and_reuse() -> Result<()> {
 
     // Verify all keys are present via committed root.
     for i in 0..n {
-        assert!(tree.search(k(i))?.is_some(), "key {i} should exist after insert");
+        assert!(
+            tree.search(k(i))?.is_some(),
+            "key {i} should exist after insert"
+        );
     }
 
     // Phase 2: delete all keys. This generates retired pages.
@@ -825,8 +828,8 @@ fn cache_returns_fresh_data_after_reclaim_and_reuse() -> Result<()> {
 /// mixed with a node from a new epoch).
 #[test]
 fn cache_concurrent_read_write() -> Result<()> {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
 
     let dir = TempDir::new().unwrap();
