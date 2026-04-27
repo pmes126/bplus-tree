@@ -14,6 +14,7 @@
 use crate::bplustree::node::NodeId;
 use crate::keyfmt::KeyBlockFormat; // use the trait and resolve by id
 use crate::keyfmt::KeyFormat; // use the trait and resolve by id
+use crate::keyfmt::ScratchBuf;
 use crate::keyfmt::raw;
 use crate::keyfmt::resolve_key_format; // you implement: u8 -> &'static dyn KeyBlockFormat
 use crate::layout::PAGE_SIZE;
@@ -174,7 +175,7 @@ impl InternalPage {
 
     // ---- search ----
     /// Lower bound on encoded key bytes; returns insertion index.
-    pub fn lower_bound(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
+    pub fn lower_bound(&self, key_enc: &[u8], scratch: &mut ScratchBuf) -> Result<usize, usize> {
         self.key_run().seek(key_enc, scratch)
     }
 
@@ -182,7 +183,7 @@ impl InternalPage {
     pub fn lower_bound_cmp(
         &self,
         key_enc: &[u8],
-        scratch: &mut Vec<u8>,
+        scratch: &mut ScratchBuf,
         cmp: fn(&[u8], &[u8]) -> core::cmp::Ordering,
     ) -> Result<usize, usize> {
         self.key_fmt()
@@ -190,7 +191,7 @@ impl InternalPage {
     }
 
     /// Find slot for encoded key bytes; returns Result(idx existing, idx insertion).
-    pub fn find_slot(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
+    pub fn find_slot(&self, key_enc: &[u8], scratch: &mut ScratchBuf) -> Result<usize, usize> {
         self.key_run().seek(key_enc, scratch)
     }
 
@@ -207,7 +208,7 @@ impl InternalPage {
         if idx > self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
         }
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
 
         // Plan splice in key block
         let (range, repl) = self
@@ -267,7 +268,7 @@ impl InternalPage {
         if idx > self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
         }
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
 
         // Plan splice in key block
         let (range, repl) = self
@@ -339,7 +340,7 @@ impl InternalPage {
         if idx >= self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
         }
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
 
         // PLAN for key-block deletion
         let (range, repl) = self
@@ -383,7 +384,7 @@ impl InternalPage {
         if idx >= self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
         }
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
 
         // Plan and get delta_k
         let kb = self.key_block(); // &[u8]
@@ -439,7 +440,7 @@ impl InternalPage {
     pub fn delete_key_at(
         &mut self,
         idx: usize,
-        scratch: &mut Vec<u8>,
+        scratch: &mut ScratchBuf,
     ) -> Result<Vec<u8>, PageError> {
         let key = self
             .key_fmt()
@@ -473,14 +474,14 @@ impl InternalPage {
 
     /// Deletes the key at index `key_count() -1 `  without changing the child - used as a part of
     /// a split to fix the left page invariants.
-    pub fn pop_last_key(&mut self, scratch: &mut Vec<u8>) -> Result<Vec<u8>, PageError> {
+    pub fn pop_last_key(&mut self, scratch: &mut ScratchBuf) -> Result<Vec<u8>, PageError> {
         let idx = self.key_count() as usize - 1;
         self.delete_key_at(idx, scratch)
     }
 
     /// Insert a new separator key (encoded bytes) and child pointer, finding the correct slot.
     pub fn insert_encoded(&mut self, key: &[u8], child: u64) -> Result<(), PageError> {
-        let idx = match self.find_slot(key, &mut Vec::new()) {
+        let idx = match self.find_slot(key, &mut ScratchBuf::new()) {
             Ok(i) => i,  // key exists; insert after it
             Err(i) => i, // key not found; insert at i
         };
@@ -577,7 +578,7 @@ impl InternalPage {
     // --------- key accessors ---------
     /// Return the *encoded key bytes* at index `idx`.
     #[inline]
-    pub fn get_key_at(&self, idx: usize, scratch: &mut Vec<u8>) -> Result<&[u8], PageError> {
+    pub fn get_key_at(&self, idx: usize, scratch: &mut ScratchBuf) -> Result<&[u8], PageError> {
         if idx >= self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
         }
@@ -636,7 +637,7 @@ impl InternalPage {
         }
 
         // 8) Separator = first key of right page (encoded key bytes)
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
         let sep = self
             .key_fmt()
             .decode_at(right.key_block(), 0, &mut scratch)
@@ -659,7 +660,7 @@ struct PageKeyRun<'a> {
 }
 
 impl<'a> PageKeyRun<'a> {
-    fn seek(&self, needle: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
+    fn seek(&self, needle: &[u8], scratch: &mut ScratchBuf) -> Result<usize, usize> {
         self.fmt.seek(self.body, needle, scratch)
     }
 }
@@ -683,7 +684,7 @@ impl fmt::Debug for InternalPage {
             .field("used_bytes", &children_end);
 
         let fmt_impl = self.key_fmt();
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
 
         // key previews
         let mut previews: Vec<String> = Vec::new();
@@ -718,7 +719,7 @@ mod tests {
         // Insert an entry
         assert!(page.insert_encoded(key, child).is_ok());
 
-        let scratch = &mut Vec::new();
+        let scratch = &mut ScratchBuf::new();
         // Retrieve the entry
         let retrieved_key = page.get_key_at(0, scratch).unwrap();
         let retrieved_child = page.read_child_at(1).unwrap();
@@ -735,7 +736,7 @@ mod tests {
         let mut keys: Vec<String> = Vec::new();
         let mut children: Vec<u64> = Vec::new();
         let iterations = 10;
-        let scratch = &mut Vec::new();
+        let scratch = &mut ScratchBuf::new();
 
         page.write_leftmost_child(0).unwrap(); // first child
 
@@ -757,7 +758,7 @@ mod tests {
         }
         // Retrieve the entries
         for (i, key) in keys.iter().enumerate().take(iterations) {
-            let scratch = &mut Vec::new();
+            let scratch = &mut ScratchBuf::new();
             let retrieved_key = page.get_key_at(i, scratch).unwrap();
             assert_eq!(retrieved_key, key.as_bytes());
         }
@@ -770,7 +771,7 @@ mod tests {
 
         let mut page = InternalPage::new(KeyFormat::Raw(raw::RawFormat));
         let iterations = 10;
-        let scratch = &mut Vec::new();
+        let scratch = &mut ScratchBuf::new();
 
         page.write_leftmost_child(0).unwrap(); // first child
         for i in 0..iterations {
@@ -801,7 +802,7 @@ mod tests {
     fn test_internal_page_replaces() {
         let mut page = InternalPage::new(KeyFormat::Raw(raw::RawFormat));
         let iterations = 10;
-        let scratch = &mut Vec::new();
+        let scratch = &mut ScratchBuf::new();
 
         page.write_leftmost_child(0).unwrap(); // first child
         for i in 0..iterations {
@@ -831,7 +832,7 @@ mod tests {
     fn test_internal_page_pop_last() {
         let mut page = InternalPage::new(KeyFormat::Raw(raw::RawFormat));
         let iterations = 10;
-        let scratch = &mut Vec::new();
+        let scratch = &mut ScratchBuf::new();
 
         page.write_leftmost_child(0).unwrap(); // first child
         for i in 0..iterations {
@@ -866,7 +867,7 @@ mod tests {
         let mut rng = rand::thread_rng();
 
         let mut page = InternalPage::new(KeyFormat::Raw(raw::RawFormat));
-        let scratch = &mut Vec::new();
+        let scratch = &mut ScratchBuf::new();
         let iterations = 10;
         let mut keys: Vec<String> = Vec::new();
         let mut children: Vec<u64> = Vec::new();
@@ -909,7 +910,7 @@ mod tests {
     #[test]
     fn test_delete_key_at() {
         let mut page = InternalPage::new(KeyFormat::Raw(raw::RawFormat));
-        let scratch = &mut Vec::new();
+        let scratch = &mut ScratchBuf::new();
         let iterations = 10;
         let mut keys: Vec<String> = Vec::new();
         let mut children: Vec<u64> = Vec::new();
@@ -956,7 +957,7 @@ mod tests {
         let mut rng = rand::thread_rng();
 
         let mut page = InternalPage::new(KeyFormat::Raw(raw::RawFormat));
-        let scratch = &mut Vec::new();
+        let scratch = &mut ScratchBuf::new();
         let iterations = 10;
         let mut keys: Vec<String> = Vec::new();
         let mut children: Vec<u64> = Vec::new();
@@ -986,7 +987,7 @@ mod tests {
         let sep = page.split_off_into(split_idx, &mut right).unwrap();
         let separator = right.get_key_at(0, scratch).unwrap();
 
-        let scratch = &mut Vec::new();
+        let scratch = &mut ScratchBuf::new();
         for i in 0..split_idx {
             let retrieved_key = page.get_key_at(i, scratch).unwrap();
             assert_eq!(retrieved_key, keys[i].as_bytes());
@@ -994,7 +995,7 @@ mod tests {
             assert_eq!(retrieved_child, children[i]);
         }
 
-        let scratch = &mut Vec::new();
+        let scratch = &mut ScratchBuf::new();
         for i in 0..(right.key_count() as usize) {
             let retrieved_key = right.get_key_at(i, scratch).unwrap();
             assert_eq!(retrieved_key, keys[split_idx + i].as_bytes());

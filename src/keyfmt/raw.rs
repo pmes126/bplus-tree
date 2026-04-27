@@ -1,6 +1,6 @@
 //! [ u16_le klen | k bytes ] repeated
 
-use super::KeyBlockFormat;
+use super::{KeyBlockFormat, ScratchBuf};
 
 #[derive(Debug, Copy, Clone)]
 pub struct RawFormat;
@@ -59,7 +59,7 @@ impl KeyBlockFormat for RawFormat {
 
     /// Seek for `needle` in the `block`, returning `Ok(idx)` if found, or `Err(insert_idx)` if not
     /// found with the insertion index. Bytewise comparison by default.
-    fn seek(&self, block: &[u8], needle: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
+    fn seek(&self, block: &[u8], needle: &[u8], scratch: &mut ScratchBuf) -> Result<usize, usize> {
         // classic binary search over entries
         let mut lo = 0usize;
         let mut hi = count_entries(block);
@@ -81,7 +81,7 @@ impl KeyBlockFormat for RawFormat {
         &self,
         block: &[u8],
         needle: &[u8],
-        scratch: &mut Vec<u8>,
+        scratch: &mut ScratchBuf,
         cmp: fn(&[u8], &[u8]) -> core::cmp::Ordering,
     ) -> Result<usize, usize> {
         // classic binary search over entries
@@ -100,7 +100,13 @@ impl KeyBlockFormat for RawFormat {
     }
 
     #[inline]
-    fn get_insert_delta(&self, blk: &[u8], idx: usize, new_key: &[u8], _sc: &mut Vec<u8>) -> isize {
+    fn get_insert_delta(
+        &self,
+        blk: &[u8],
+        idx: usize,
+        new_key: &[u8],
+        _sc: &mut ScratchBuf,
+    ) -> isize {
         let new_len = LEN_SIZE + new_key.len();
         let old_len = if idx < self.count(blk) {
             let r = self.entry_range(blk, idx);
@@ -112,7 +118,7 @@ impl KeyBlockFormat for RawFormat {
     }
 
     #[inline]
-    fn get_delete_delta(&self, blk: &[u8], idx: usize, _sc: &mut Vec<u8>) -> isize {
+    fn get_delete_delta(&self, blk: &[u8], idx: usize, _sc: &mut ScratchBuf) -> isize {
         let r = self.entry_range(blk, idx);
         -(r.end as isize - r.start as isize)
     }
@@ -122,7 +128,7 @@ impl KeyBlockFormat for RawFormat {
         block: &[u8],
         idx: usize,
         new_key: &[u8],
-        _scratch: &mut Vec<u8>,
+        _scratch: &mut ScratchBuf,
     ) -> (std::ops::Range<usize>, Vec<u8>) {
         // insert BETWEEN entries: zero-length replace range at the insertion point
         let n = Self.count(block);
@@ -138,7 +144,7 @@ impl KeyBlockFormat for RawFormat {
         &self,
         block: &[u8],
         idx: usize,
-        _scratch: &mut Vec<u8>,
+        _scratch: &mut ScratchBuf,
     ) -> (std::ops::Range<usize>, Vec<u8>) {
         // Just remove this entry’s bytes; no replacement.
         (self.entry_range(block, idx), Vec::new())
@@ -150,7 +156,7 @@ impl KeyBlockFormat for RawFormat {
         block: &[u8],
         idx: usize,
         new_key: &[u8],
-        _scratch: &mut Vec<u8>,
+        _scratch: &mut ScratchBuf,
     ) -> (std::ops::Range<usize>, Vec<u8>) {
         let r = self.entry_range(block, idx);
         let mut bytes = Vec::with_capacity(2 + new_key.len());
@@ -170,8 +176,8 @@ impl KeyBlockFormat for RawFormat {
     }
 
     #[inline]
-    fn decode_at<'s>(&self, blk: &'s [u8], i: usize, _scratch: &mut Vec<u8>) -> &'s [u8] {
-        //fn decode_at(&self, blk: &[u8], i: usize, _scratch: &mut Vec<u8>) -> &[u8] {
+    fn decode_at<'s>(&self, blk: &'s [u8], i: usize, _scratch: &mut ScratchBuf) -> &'s [u8] {
+        //fn decode_at(&self, blk: &[u8], i: usize, _scratch: &mut ScratchBuf) -> &[u8] {
         let r = self.entry_range(blk, i);
         // SAFETY: caller holds block; we return a subslice into it
         unsafe { &*(&blk[r.start + LEN_SIZE..r.end] as *const [u8]) }

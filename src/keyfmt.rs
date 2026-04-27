@@ -1,6 +1,16 @@
 pub mod prefix;
 pub mod raw;
 
+use smallvec::SmallVec;
+
+/// Inline capacity for scratch buffers used during key decoding and search.
+/// 256 bytes covers virtually all practical key sizes without heap allocation.
+pub const SCRATCH_CAP: usize = 256;
+
+/// Stack-allocated scratch buffer for key operations. Spills to heap only if a
+/// key exceeds [`SCRATCH_CAP`] bytes.
+pub type ScratchBuf = SmallVec<[u8; SCRATCH_CAP]>;
+
 #[derive(Debug, thiserror::Error)]
 #[allow(dead_code)]
 pub enum KeyFmtError {
@@ -17,18 +27,18 @@ pub trait KeyBlockFormat: Send + Sync + 'static {
     // -----------layout / capacity--------
     // -----------lookups / scans (read-only)--------
     /// Binary search in the key block; returns (insertion idx, found).
-    fn seek(&self, block: &[u8], needle: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize>;
+    fn seek(&self, block: &[u8], needle: &[u8], scratch: &mut ScratchBuf) -> Result<usize, usize>;
     /// Binary search in the key block with a provided comparator; returns (insertion idx, found).
     fn seek_with_cmp(
         &self,
         block: &[u8],
         needle: &[u8],
-        scratch: &mut Vec<u8>,
+        scratch: &mut ScratchBuf,
         cmp: fn(&[u8], &[u8]) -> core::cmp::Ordering,
     ) -> Result<usize, usize>;
     /// Decode the i-th *encoded key bytes* into `scratch` and return a view.
-    //fn decode_at(&self, block: &[u8], i: usize, scratch: &mut Vec<u8>) -> &[u8];
-    fn decode_at<'s>(&self, blk: &'s [u8], i: usize, _scratch: &mut Vec<u8>) -> &'s [u8];
+    //fn decode_at(&self, block: &[u8], i: usize, scratch: &mut ScratchBuf) -> &[u8];
+    fn decode_at<'s>(&self, blk: &'s [u8], i: usize, _scratch: &mut ScratchBuf) -> &'s [u8];
     /// Decodes the length of an entry and returns the Range of bytes for the entry.
     fn entry_range(&self, block: &[u8], idx: usize) -> std::ops::Range<usize>;
     /// Count the number of entries in the block.
@@ -41,10 +51,10 @@ pub trait KeyBlockFormat: Send + Sync + 'static {
         block: &[u8],
         idx: usize,
         new_key: &[u8],
-        scratch: &mut Vec<u8>,
+        scratch: &mut ScratchBuf,
     ) -> isize;
     /// Byte delta if we delete the key at `idx`.
-    fn get_delete_delta(&self, block: &[u8], idx: usize, scratch: &mut Vec<u8>) -> isize;
+    fn get_delete_delta(&self, block: &[u8], idx: usize, scratch: &mut ScratchBuf) -> isize;
     /// Re-encode the entire block from a sorted list of encoded keys.
     /// (Start with this; optimize to window rebuild later.)
     fn encode_all(&self, keys: &[&[u8]], out: &mut Vec<u8>);
@@ -57,14 +67,14 @@ pub trait KeyBlockFormat: Send + Sync + 'static {
         block: &[u8],
         idx: usize,
         new_key: &[u8],
-        scratch: &mut Vec<u8>,
+        scratch: &mut ScratchBuf,
     ) -> (std::ops::Range<usize>, Vec<u8>);
     /// PLAN: return the byte range in the `block` to remove, and the exact bytes to insert there.
     fn delete_plan(
         &self,
         block: &[u8],
         idx: usize,
-        scratch: &mut Vec<u8>,
+        scratch: &mut ScratchBuf,
     ) -> (std::ops::Range<usize>, Vec<u8>);
     /// PLAN: return the byte range in the `block` to replace, and the exact bytes to insert there.
     fn replace_plan(
@@ -72,7 +82,7 @@ pub trait KeyBlockFormat: Send + Sync + 'static {
         block: &[u8],
         idx: usize,
         new_key: &[u8],
-        scratch: &mut Vec<u8>,
+        scratch: &mut ScratchBuf,
     ) -> (std::ops::Range<usize>, Vec<u8>);
     /// After the splice was applied to the page buffer, adjust any **format metadata**
     /// inside the final key-block (e.g., restart offsets) affected by the splice.

@@ -16,6 +16,7 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 // Hook these to your actual crate paths:
 use crate::keyfmt::KeyBlockFormat; // use the trait and resolve by id
 use crate::keyfmt::KeyFormat; // use the trait and resolve by id
+use crate::keyfmt::ScratchBuf;
 use crate::keyfmt::resolve_key_format; // you implement: u8 -> &'static dyn KeyBlockFormat
 use crate::layout::PAGE_SIZE; // const PAGE_SIZE: usize
 use crate::page::LEAF_NODE_TAG;
@@ -189,7 +190,7 @@ impl LeafPage {
 
     // ---- search ----
     /// Lower bound on encoded key bytes; returns insertion index.
-    pub fn lower_bound(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
+    pub fn lower_bound(&self, key_enc: &[u8], scratch: &mut ScratchBuf) -> Result<usize, usize> {
         self.key_fmt().seek(self.key_block(), key_enc, scratch)
     }
 
@@ -197,7 +198,7 @@ impl LeafPage {
     pub fn lower_bound_cmp(
         &self,
         key_enc: &[u8],
-        scratch: &mut Vec<u8>,
+        scratch: &mut ScratchBuf,
         cmp: fn(&[u8], &[u8]) -> core::cmp::Ordering,
     ) -> Result<usize, usize> {
         self.key_fmt()
@@ -205,7 +206,7 @@ impl LeafPage {
     }
 
     /// Find slot for encoded key bytes; returns Result(idx existing, idx insertion).
-    pub fn find_slot(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
+    pub fn find_slot(&self, key_enc: &[u8], scratch: &mut ScratchBuf) -> Result<usize, usize> {
         self.key_run().seek(key_enc, scratch)
     }
 
@@ -251,7 +252,7 @@ impl LeafPage {
         if idx > self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
         }
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
 
         // scratch
         // Plan and get delta_k
@@ -309,7 +310,7 @@ impl LeafPage {
     /// insert or overwrite by encoded key bytes and  value bytes
     pub fn insert_encoded(&mut self, key_enc: &[u8], val_bytes: &[u8]) -> Result<(), PageError> {
         // 1) find position
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
 
         let idx = match self.find_slot(key_enc, &mut scratch) {
             Ok(idx) => {
@@ -328,7 +329,7 @@ impl LeafPage {
         if idx >= self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
         }
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
 
         // Plan and get delta_k
         let kb = self.key_block(); // &[u8]
@@ -383,7 +384,7 @@ impl LeafPage {
         if idx > self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
         }
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
 
         // scratch
         // Plan and get delta_k
@@ -436,7 +437,7 @@ impl LeafPage {
         if idx >= self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
         }
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
         let key = self
             .key_fmt()
             .decode_at(self.key_block(), idx, &mut scratch)
@@ -485,9 +486,12 @@ impl LeafPage {
     pub fn append(&mut self, key_enc: &[u8], val: &[u8]) -> Result<(), PageError> {
         // plan as an append
         let kb = self.key_block();
-        let (range, repl) =
-            self.key_fmt()
-                .insert_plan(kb, self.key_count() as usize, key_enc, &mut Vec::new());
+        let (range, repl) = self.key_fmt().insert_plan(
+            kb,
+            self.key_count() as usize,
+            key_enc,
+            &mut ScratchBuf::new(),
+        );
         debug_assert_eq!(range.start, kb.len());
         debug_assert_eq!(range.end, kb.len());
         let delta_k = repl.len() as isize;
@@ -530,7 +534,7 @@ impl LeafPage {
     pub fn get_key_at<'s>(
         &'s self,
         idx: usize,
-        scratch: &mut Vec<u8>,
+        scratch: &mut ScratchBuf,
     ) -> Result<&'s [u8], PageError> {
         if idx >= self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
@@ -542,7 +546,7 @@ impl LeafPage {
     pub fn get_kv_at<'s>(
         &'s self,
         idx: usize,
-        scratch: &'s mut Vec<u8>,
+        scratch: &'s mut ScratchBuf,
     ) -> Result<(&'s [u8], &'s [u8]), PageError> {
         if idx >= self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
@@ -555,7 +559,7 @@ impl LeafPage {
     pub fn find_value(
         &self,
         key_enc: &[u8],
-        scratch: &mut Vec<u8>,
+        scratch: &mut ScratchBuf,
     ) -> Result<Option<&[u8]>, PageError> {
         if let Ok(idx) = self.find_slot(key_enc, scratch) {
             let v = self.read_value_at(idx)?;
@@ -570,7 +574,7 @@ impl LeafPage {
     /// delete key and value by encoded key bytes
     pub fn delete(&mut self, key_enc: &[u8]) -> Result<(), PageError> {
         // 1) find position
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
 
         let idx = match self.find_slot(key_enc, &mut scratch) {
             Ok(idx) => idx,
@@ -584,7 +588,7 @@ impl LeafPage {
         if idx >= self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
         }
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
 
         // Plan and get delta_k
         let kb = self.key_block(); // &[u8]
@@ -820,7 +824,7 @@ impl LeafPage {
         }
 
         // 8) Separator = first key of right page (encoded key bytes)
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
         let sep = self
             .key_fmt()
             .decode_at(right.key_block(), 0, &mut scratch)
@@ -837,7 +841,7 @@ struct PageKeyRun<'a> {
 }
 
 impl<'a> PageKeyRun<'a> {
-    fn seek(&self, needle: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
+    fn seek(&self, needle: &[u8], scratch: &mut ScratchBuf) -> Result<usize, usize> {
         self.fmt.seek(self.body, needle, scratch)
     }
 }
@@ -866,7 +870,7 @@ impl fmt::Debug for LeafPage {
         if alternate {
             // first few keys (encoded previews)
             let fmt_impl = self.key_fmt();
-            let mut scratch = Vec::new();
+            let mut scratch = ScratchBuf::new();
             let mut previews: Vec<String> = Vec::new();
             let sample = key_count.min(4);
             for i in 0..sample {
@@ -911,7 +915,7 @@ mod tests {
             page.insert_encoded(k.as_bytes(), v.as_bytes()).unwrap();
         }
 
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
 
         for i in 0..kv_len {
             let idx = page
@@ -932,7 +936,7 @@ mod tests {
         for (k, v) in keys.iter().zip(values.iter()) {
             page.insert_encoded(k.as_bytes(), v.as_bytes()).unwrap();
         }
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
 
         for k in &keys {
             let idx = page.lower_bound(k.as_bytes(), &mut scratch);
@@ -961,7 +965,7 @@ mod tests {
             page.insert_encoded(k.as_bytes(), v.as_bytes()).unwrap();
         }
 
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
 
         for i in 0..kv_len {
             let key = page
@@ -988,7 +992,7 @@ mod tests {
 
         page.delete_at(1).unwrap();
 
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
         assert_eq!(page.key_count(), 2);
         let (ke0, ve0) = page.get_kv_at(0, &mut scratch).unwrap();
 
@@ -1020,7 +1024,7 @@ mod tests {
         }
         page.split_off_into(2, &mut new_page).unwrap();
         assert_eq!(page.kind(), LEAF_NODE_TAG);
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
         assert_eq!(page.key_count(), 2);
         assert_eq!(new_page.key_count(), 3);
 
@@ -1057,7 +1061,7 @@ mod tests {
         // Replace "banana" with "blueberry"
         page.replace_key_at(1, "blueberry".as_bytes()).unwrap();
 
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
         for (i, k) in ["apple", "blueberry", "cherry"].iter().enumerate() {
             let (ke, ve) = page.get_kv_at(i, &mut scratch).unwrap();
             assert_eq!(ke, k.as_bytes());
@@ -1075,7 +1079,7 @@ mod tests {
             page.append(k.as_bytes(), v.as_bytes()).unwrap();
         }
 
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
         for (i, k) in keys.iter().enumerate() {
             let (ke, ve) = page.get_kv_at(i, &mut scratch).unwrap();
             assert_eq!(ke, k.as_bytes());
@@ -1100,7 +1104,7 @@ mod tests {
     //    // Compact values
     //    page.compact_values();
 
-    //    let mut scratch = Vec::new();
+    //    let mut scratch = ScratchBuf::new();
     //    for (i, k) in keys.iter().enumerate() {
     //        let (ke, ve) = page.get_kv_at(i, &mut scratch).unwrap();
     //        assert_eq!(ke, *k);

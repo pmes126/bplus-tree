@@ -1,5 +1,5 @@
 use crate::codec::KeyCodec;
-use crate::keyfmt::KeyFormat;
+use crate::keyfmt::{KeyFormat, ScratchBuf};
 use crate::page::{InternalPage, LeafPage, PageError};
 
 use std::fmt;
@@ -151,7 +151,7 @@ impl NodeView {
     /// Returns the key at index `i` as an owned vector.
     #[inline]
     pub fn key_at(&self, i: usize) -> Result<Vec<u8>, NodeViewError> {
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
         match self {
             NodeView::Internal { page, .. } => Ok(page.get_key_at(i, &mut scratch)?.to_vec()),
             NodeView::Leaf { page, .. } => Ok(page.get_key_at(i, &mut scratch)?.to_vec()),
@@ -161,7 +161,7 @@ impl NodeView {
     /// Returns the key bytes at index `i` without copying.
     #[inline]
     pub fn key_bytes_at(&self, i: usize) -> Result<&[u8], NodeViewError> {
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
         match self {
             NodeView::Internal { page, .. } => Ok(page.get_key_at(i, &mut scratch)?),
             NodeView::Leaf { page, .. } => Ok(page.get_key_at(i, &mut scratch)?),
@@ -178,11 +178,11 @@ impl NodeView {
     pub fn lower_bound(&self, probe: &[u8]) -> Result<usize, usize> {
         match self {
             NodeView::Internal { page, .. } => {
-                let mut scratch = Vec::new();
+                let mut scratch = ScratchBuf::new();
                 page.lower_bound(probe, &mut scratch)
             }
             NodeView::Leaf { page, .. } => {
-                let mut scratch = Vec::new();
+                let mut scratch = ScratchBuf::new();
                 page.lower_bound(probe, &mut scratch)
             }
         }
@@ -196,11 +196,11 @@ impl NodeView {
     ) -> Result<usize, usize> {
         match self {
             NodeView::Internal { page, .. } => {
-                let mut scratch = Vec::new();
+                let mut scratch = ScratchBuf::new();
                 page.lower_bound_cmp(probe, &mut scratch, cmp)
             }
             NodeView::Leaf { page, .. } => {
-                let mut scratch = Vec::new();
+                let mut scratch = ScratchBuf::new();
                 page.lower_bound_cmp(probe, &mut scratch, cmp)
             }
         }
@@ -335,7 +335,7 @@ impl NodeView {
                 if page.key_count() == 0 {
                     return Ok(None);
                 }
-                let mut scratch = Vec::new();
+                let mut scratch = ScratchBuf::new();
                 Ok(Some(page.pop_last_key(&mut scratch)?))
             }
             NodeView::Leaf { .. } => Err(NodeViewError::WrongKind),
@@ -376,7 +376,7 @@ impl NodeView {
 
     /// Removes and returns the key at `idx`.
     pub fn delete_key_at(&mut self, idx: usize) -> Result<Vec<u8>, NodeViewError> {
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
         match self {
             NodeView::Internal { page, .. } => Ok(page.delete_key_at(idx, &mut scratch)?),
             NodeView::Leaf { page, .. } => Ok(page.delete_key_at(idx, &mut scratch)?),
@@ -411,7 +411,7 @@ impl NodeView {
                 },
             ) => {
                 let other_key_count = other_page.key_count();
-                let mut scratch = Vec::new();
+                let mut scratch = ScratchBuf::new();
                 for i in 0..other_key_count {
                     let key = other_page.get_key_at(i as usize, &mut scratch)?;
                     let child_ptr = other_page.read_child_at(i as usize + 1)?;
@@ -428,7 +428,7 @@ impl NodeView {
                 },
             ) => {
                 let other_key_count = other_page.key_count();
-                let mut scratch = Vec::new();
+                let mut scratch = ScratchBuf::new();
                 for i in 0..other_key_count {
                     let (k, v) = other_page.get_kv_at(i as usize, &mut scratch)?;
                     self_page.append(k, v)?;
@@ -448,7 +448,7 @@ impl NodeView {
         match self {
             NodeView::Internal { page, .. } => {
                 let key_count = page.key_count();
-                let mut scratch = Vec::new();
+                let mut scratch = ScratchBuf::new();
                 for i in 0..key_count as usize {
                     let key = page.get_key_at(i, &mut scratch)?;
                     let key = KC::decode_key(key);
@@ -459,7 +459,7 @@ impl NodeView {
             }
             NodeView::Leaf { page, .. } => {
                 let key_count = page.key_count();
-                let mut scratch = Vec::new();
+                let mut scratch = ScratchBuf::new();
                 for i in 0..key_count as usize {
                     let (k, v) = page.get_kv_at(i, &mut scratch)?;
                     println!("Key {}: {:?}, Value: {:?}", i, k, v);
