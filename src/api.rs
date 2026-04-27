@@ -17,9 +17,6 @@ pub use db::{Db, RangeIter, Tree, WriteTxn};
 use std::{fmt, str::FromStr};
 use thiserror::Error;
 
-use crate::bplustree::tree::{CommitError, TreeError};
-use crate::storage::StorageError;
-
 /// Wire encoding used to compare and serialize keys in a B+ tree.
 #[repr(u64)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,15 +86,15 @@ pub enum ApiError {
     /// I/O error from the storage backend.
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    /// Error from the tree core (invariant, not-found, etc.).
-    #[error(transparent)]
-    Tree(#[from] TreeError),
-    /// Error during commit (CAS retry exhausted, metadata write failed, etc.).
-    #[error(transparent)]
-    Commit(#[from] CommitError),
-    /// Storage-layer error surfaced through the API.
-    #[error(transparent)]
-    Storage(#[from] StorageError),
+    /// Error from the B+ tree core (invariant violation, key not found, etc.).
+    #[error("tree: {0}")]
+    Tree(String),
+    /// Error during commit (CAS conflict, metadata write failure, etc.).
+    #[error("commit: {0}")]
+    Commit(String),
+    /// Error from the storage layer (page I/O, codec, etc.).
+    #[error("storage: {0}")]
+    Storage(String),
     /// The provided key type is incompatible with the tree's pinned encoding.
     #[error("key type incompatible with tree encoding {expected}")]
     IncompatibleKeyType {
@@ -116,4 +113,22 @@ pub enum ApiError {
     /// Write transaction exceeded its retry budget.
     #[error("transaction aborted after exhausting retries")]
     TxnAborted,
+}
+
+impl From<crate::bplustree::tree::TreeError> for ApiError {
+    fn from(e: crate::bplustree::tree::TreeError) -> Self {
+        ApiError::Tree(e.to_string())
+    }
+}
+
+impl From<crate::bplustree::tree::CommitError> for ApiError {
+    fn from(e: crate::bplustree::tree::CommitError) -> Self {
+        ApiError::Commit(e.to_string())
+    }
+}
+
+impl From<crate::storage::StorageError> for ApiError {
+    fn from(e: crate::storage::StorageError) -> Self {
+        ApiError::Storage(e.to_string())
+    }
 }
