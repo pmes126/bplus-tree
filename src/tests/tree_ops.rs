@@ -633,3 +633,278 @@ fn concurrent_writers_retry_until_success() {
         "txn_id should equal total successful commits + initial 1"
     );
 }
+
+// ---------------------------------------------------------------------------
+// contains_key (tree layer)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contains_key_hit_and_miss() -> Result<()> {
+    let dir = TempDir::new().unwrap();
+    let tree = make_tree(&dir, 16).expect("create tree");
+
+    // Insert keys and commit.
+    let mut root_id = tree.get_root_id();
+    for i in 0..20 {
+        let res = tree.insert_with_root(k(i), v_bytes(i), root_id)?;
+        root_id = res.new_root_id;
+    }
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id,
+            height: tree.get_height(),
+            size: tree.get_size(),
+        },
+    )?;
+
+    // Hits.
+    for i in 0..20 {
+        assert!(tree.contains_key(k(i))?, "key {i} should exist");
+    }
+
+    // Misses.
+    for i in 20..30 {
+        assert!(!tree.contains_key(k(i))?, "key {i} should not exist");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn contains_key_after_delete() -> Result<()> {
+    let dir = TempDir::new().unwrap();
+    let tree = make_tree(&dir, 8).expect("create tree");
+
+    // Insert keys and commit.
+    let mut root_id = tree.get_root_id();
+    for i in 0..10 {
+        let res = tree.insert_with_root(k(i), v_bytes(i), root_id)?;
+        root_id = res.new_root_id;
+    }
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id,
+            height: tree.get_height(),
+            size: tree.get_size(),
+        },
+    )?;
+
+    // Delete every other key.
+    root_id = tree.get_root_id();
+    for i in (0..10).step_by(2) {
+        let res = tree.delete_with_root(&k(i), root_id)?;
+        root_id = res.new_root_id;
+    }
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id,
+            height: tree.get_height(),
+            size: tree.get_size(),
+        },
+    )?;
+
+    for i in 0..10 {
+        let expected = i % 2 != 0;
+        assert_eq!(
+            tree.contains_key(k(i))?,
+            expected,
+            "key {i} existence mismatch"
+        );
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Page cache correctness
+// ---------------------------------------------------------------------------
+
+/// After inserting and then deleting enough keys to trigger epoch reclamation,
+/// reads must return fresh data — not stale cached nodes from before the GC
+/// freed and potentially reallocated those page IDs.
+#[test]
+fn cache_returns_fresh_data_after_reclaim_and_reuse() -> Result<()> {
+    let dir = TempDir::new().unwrap();
+    let order = 4; // small order → more splits → more page churn
+    let tree = make_tree(&dir, order).expect("create tree");
+
+    // Phase 1: populate the tree so the cache fills up.
+    let n = order * 8;
+    let mut root_id = tree.get_root_id();
+    for i in 0..n {
+        let res = tree.insert_with_root(k(i), v_bytes(i), root_id)?;
+        root_id = res.new_root_id;
+    }
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id,
+            height: tree.get_height(),
+            size: tree.get_size(),
+        },
+    )?;
+
+    // Verify all keys are present via committed root.
+    for i in 0..n {
+        assert!(
+            tree.search(k(i))?.is_some(),
+            "key {i} should exist after insert"
+        );
+    }
+
+    // Phase 2: delete all keys. This generates retired pages.
+    root_id = tree.get_root_id();
+    for i in 0..n {
+        let res = tree.delete_with_root(&k(i), root_id)?;
+        root_id = res.new_root_id;
+    }
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id,
+            height: tree.get_height(),
+            size: tree.get_size(),
+        },
+    )?;
+
+    // Run reclamation to free old pages (and evict them from cache).
+    tree.reclaim_deferred()?;
+
+    // Phase 3: re-insert with different values. If page IDs from phase 1 are
+    // reallocated, the cache must NOT return the old phase-1 node views.
+    root_id = tree.get_root_id();
+    for i in 0..n {
+        let res = tree.insert_with_root(k(i), format!("new_{i}").into_bytes(), root_id)?;
+        root_id = res.new_root_id;
+    }
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id,
+            height: tree.get_height(),
+            size: tree.get_size(),
+        },
+    )?;
+
+    // Verify we get the new values, not stale cached ones.
+    for i in 0..n {
+        let val = tree.search(k(i))?;
+        assert!(val.is_some(), "key {i} should exist after re-insert");
+        let expected = format!("new_{i}").into_bytes();
+        assert_eq!(
+            val.unwrap(),
+            expected,
+            "key {i} should have the new value, not a stale cached one"
+        );
+    }
+
+    Ok(())
+}
+
+/// Concurrent readers and a writer should not see stale cached data.
+/// One thread writes keys while others read — readers should never get
+/// values that are internally inconsistent (e.g. a node from an old epoch
+/// mixed with a node from a new epoch).
+#[test]
+fn cache_concurrent_read_write() -> Result<()> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
+
+    let dir = TempDir::new().unwrap();
+    let tree = make_tree(&dir, 16).expect("create tree");
+
+    // Seed some initial data and commit.
+    let mut root_id = tree.get_root_id();
+    for i in 0..50 {
+        let res = tree.insert_with_root(k(i), v_bytes(i), root_id)?;
+        root_id = res.new_root_id;
+    }
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id,
+            height: tree.get_height(),
+            size: tree.get_size(),
+        },
+    )?;
+
+    let done = Arc::new(AtomicBool::new(false));
+
+    // Spawn readers that continuously check existing keys via committed root.
+    let readers: Vec<_> = (0..3)
+        .map(|_| {
+            let t = tree.clone();
+            let d = Arc::clone(&done);
+            thread::spawn(move || {
+                let mut reads = 0u64;
+                while !d.load(Ordering::Relaxed) {
+                    // Read a key that was inserted before readers started.
+                    // Since writers commit each update, the reader may see
+                    // either the original or the updated value.
+                    for i in 0..50 {
+                        if let Ok(Some(val)) = t.search(k(i)) {
+                            assert!(
+                                val == v_bytes(i) || val == format!("upd_{i}").into_bytes(),
+                                "unexpected value for key {i}: {:?}",
+                                val
+                            );
+                            reads += 1;
+                        }
+                    }
+                }
+                reads
+            })
+        })
+        .collect();
+
+    // Writer updates existing keys, committing each one.
+    root_id = tree.get_root_id();
+    for i in 0..50 {
+        let res = tree.insert_with_root(k(i), format!("upd_{i}").into_bytes(), root_id)?;
+        root_id = res.new_root_id;
+        let base = BaseVersion {
+            committed_ptr: tree.get_metadata(),
+        };
+        tree.try_commit(
+            &base,
+            StagedMetadata {
+                root_id,
+                height: tree.get_height(),
+                size: tree.get_size(),
+            },
+        )?;
+    }
+
+    done.store(true, Ordering::Relaxed);
+    for h in readers {
+        let reads = h.join().expect("reader thread panicked");
+        assert!(reads > 0, "reader should have completed at least one read");
+    }
+
+    Ok(())
+}

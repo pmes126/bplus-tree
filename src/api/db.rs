@@ -1,8 +1,8 @@
 //! Embedded database façade.
 //!
-//! `Db::open` initialises a [`Database`] and exposes `create_tree` / `open_tree`
+//! `Db::open` initialises a `Database` and exposes `create_tree` / `open_tree`
 //! to obtain typed [`Tree`] handles. All storage details are encapsulated inside
-//! the [`Database`] layer — this module never touches storage types directly.
+//! the `Database` layer — this module never touches storage types directly.
 
 use std::marker::PhantomData;
 use std::path::Path;
@@ -22,7 +22,7 @@ type InnerTree = SharedBPlusTree<'static, PagedNodeStorage<FilePageStorage>, Fil
 
 /// Embedded database handle.
 ///
-/// The inner [`Database`] is intentionally leaked (`Box::leak`) so that trees
+/// The inner `Database` is intentionally leaked (`Box::leak`) so that trees
 /// can hold `&'static` references to storage. Call [`Db::close`] to reclaim
 /// the allocation when the database is no longer needed.
 pub struct Db {
@@ -102,7 +102,7 @@ impl Db {
         }
     }
 
-    /// Persists the freelist snapshot and reclaims the leaked [`Database`]
+    /// Persists the freelist snapshot and reclaims the leaked `Database`
     /// allocation, returning any I/O error from the checkpoint step.
     ///
     /// Prefer this over simply dropping the `Db` when you need to verify
@@ -295,7 +295,7 @@ type InnerNodeStorage = PagedNodeStorage<FilePageStorage>;
 
 /// Typed forward-range iterator over `(K, V)` pairs.
 ///
-/// Wraps a bytes-level [`BPlusTreeIter`] and decodes keys and values via
+/// Wraps a bytes-level `BPlusTreeIter` and decodes keys and values via
 /// [`KeyCodec`] / [`ValueCodec`].
 pub struct RangeIter<'t, K, V>
 where

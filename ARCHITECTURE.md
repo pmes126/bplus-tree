@@ -104,7 +104,7 @@ The cost is two pages per tree — negligible for typical tree counts.
 
 ### What the catalog is
 
-A `Store` can host multiple independent B+-trees, each identified by a logical
+A `Database` can host multiple independent B+-trees, each identified by a logical
 name (e.g. `"users"`, `"sessions"`). The **catalog** is the in-memory routing
 table that maps those names to the information needed to open each tree:
 
@@ -541,7 +541,7 @@ PageStorage              Low-level page I/O (read, write, allocate, free)
     │
 NodeStorage              Higher-level: NodeView encode/decode
     │
-    ├── PagedNodeStorage  Wraps PageStorage + codec + EpochManager
+    ├── PagedNodeStorage  Wraps PageStorage + codec + read cache + EpochManager
     │
 HasEpoch                 Access to shared EpochManager
 ```
@@ -549,6 +549,34 @@ HasEpoch                 Access to shared EpochManager
 `PageStorage` is the extension point for alternative backends (in-memory,
 memory-mapped, distributed). The tree core and transaction layer are generic
 over `S: PageStorage`.
+
+### Page cache (`PagedNodeStorage`)
+
+`PagedNodeStorage` maintains an in-memory read cache of decoded `NodeView`s
+keyed by page ID (`RwLock<HashMap<u64, NodeView>>`). Cache correctness relies
+on COW semantics: a page ID's content is immutable once written, so cache
+entries never go stale while the page is live.
+
+- **Read path**: shared read-lock check → hit returns immediately; miss falls
+  through to `pread` + decode → write-lock insert.
+- **Write path**: after writing to disk, the encoded node is inserted into the
+  cache under a write lock so subsequent reads avoid the syscall.
+- **Eviction**: entries are evicted only when `free_node` is called (the page
+  is reclaimed by epoch-based GC and may be reallocated to different content).
+
+The cache is unbounded. Because COW produces a bounded number of live pages
+(reachable from the current root plus pages pinned by active readers), the
+cache size is implicitly bounded by the live page set.
+
+`NodeView` is `Copy + Clone`, so cache hits return by value with no
+reference-counting or lifetime entanglement.
+
+**Trade-off:** An LRU cache would bound memory more explicitly, but the
+standard `lru` crate's `LruCache::get` requires `&mut self` (it updates
+recency on every access), which would degrade `RwLock<LruCache>` to
+effectively a `Mutex` — every read takes an exclusive lock. The unbounded
+`HashMap` under `RwLock` keeps reads truly concurrent at the cost of relying
+on epoch GC for implicit bounding.
 
 ---
 
@@ -559,12 +587,27 @@ that controls how keys are packed, searched, and split within a page.
 
 Currently implemented:
 - **`RawFormat`** (id 0): length-prefixed keys `[u16_le klen | key bytes]`.
-  Simple and general-purpose. O(n) entry lookup by index, O(log n) binary
-  search by key.
+  Simple and general-purpose. O(n) entry lookup by index. Binary search
+  (`seek`) builds an ephemeral offset table in a single linear scan, then
+  uses O(1) random access for each probe — total cost is O(n + log n) per
+  search, dominated by the single scan. The offset table is a stack-allocated
+  `SmallVec<[u16; 512]>` (`OffsetTable`), avoiding heap allocation for
+  typical page densities.
 
-Planned:
-- **`PrefixRestarts`**: prefix-compressed keys with restart points for faster
-  seeking in pages with many similar keys.
+Experimental (dead code, not wired into `KeyFormat`):
+- `prefix.rs` — prefix-compressed keys.
+
+This exists as a prototype but is not enabled. For typical key sizes (8-byte
+u64, short strings) the overhead of prefix compression does not pay off —
+the key block is already small enough to fit in a few cache lines.
+
+### Scratch buffers
+
+Hot-path key operations (seek, decode, insert planning) accept a `&mut
+ScratchBuf` parameter — a stack-allocated `SmallVec<[u8; 256]>` that avoids
+heap allocation for keys up to 256 bytes. Keys exceeding this threshold
+transparently spill to the heap. The type and capacity constant are defined
+in `src/keyfmt.rs`.
 
 **Key codecs** (`KeyCodec` trait) encode typed keys into bytes:
 - `BeU64` — big-endian u64 (preserves numeric order)

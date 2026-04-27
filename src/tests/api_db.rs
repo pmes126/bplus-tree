@@ -534,3 +534,69 @@ fn manifest_corrupted_crc_returns_error() {
         "error message should mention CRC: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// contains_key
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contains_key_returns_true_for_existing_key() {
+    let dir = TempDir::new().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    let tree = db.create_tree::<u64, String>("t", 64).unwrap();
+
+    tree.put(&1, &"val".to_string()).unwrap();
+    assert!(tree.contains_key(&1).unwrap());
+}
+
+#[test]
+fn contains_key_returns_false_for_missing_key() {
+    let dir = TempDir::new().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    let tree = db.create_tree::<u64, String>("t", 64).unwrap();
+
+    assert!(!tree.contains_key(&999).unwrap());
+}
+
+#[test]
+fn contains_key_returns_false_after_delete() {
+    let dir = TempDir::new().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    let tree = db.create_tree::<u64, String>("t", 64).unwrap();
+
+    tree.put(&1, &"val".to_string()).unwrap();
+    assert!(tree.contains_key(&1).unwrap());
+
+    tree.delete(&1).unwrap();
+    assert!(!tree.contains_key(&1).unwrap());
+}
+
+#[test]
+fn contains_key_on_empty_tree() {
+    let dir = TempDir::new().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    let tree = db.create_tree::<u64, String>("t", 64).unwrap();
+
+    assert!(!tree.contains_key(&0).unwrap());
+}
+
+#[test]
+fn contains_key_with_many_entries() {
+    let dir = TempDir::new().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    let tree = db.create_tree::<u64, String>("t", 16).unwrap();
+
+    for i in 0..200 {
+        tree.put(&i, &format!("v{i}")).unwrap();
+    }
+
+    // All inserted keys should be found.
+    for i in 0..200 {
+        assert!(tree.contains_key(&i).unwrap(), "key {i} should exist");
+    }
+
+    // Keys outside the range should not be found.
+    for i in 200..210 {
+        assert!(!tree.contains_key(&i).unwrap(), "key {i} should not exist");
+    }
+}

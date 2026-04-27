@@ -1,5 +1,3 @@
-#[allow(unexpected_cfgs)]
-pub mod api_basic;
 #[cfg(test)]
 pub mod api_db;
 #[cfg(test)]
