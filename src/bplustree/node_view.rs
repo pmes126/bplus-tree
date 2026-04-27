@@ -26,6 +26,7 @@ pub enum NodeViewError {
 /// `page_id` tracks the on-disk page ID this node was read from (or written
 /// to). It is `None` for freshly constructed nodes that have not yet been
 /// persisted.
+#[derive(Clone, Copy)]
 pub enum NodeView {
     Internal {
         page: InternalPage,
