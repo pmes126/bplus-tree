@@ -66,7 +66,7 @@ pub trait PageStorage {
     /// Frees a page ID for future reuse
     fn free_page(&self, page_id: u64) -> Result<(), std::io::Error>;
 
-    /// Closes the storage, flushing any pending writes
+    /// Closes the storage, flushing any pending writes.
     fn close(&self) -> Result<(), std::io::Error>;
 
     /// Sets the next page ID to use for allocation.
