@@ -829,8 +829,8 @@ fn cache_returns_fresh_data_after_reclaim_and_reuse() -> Result<()> {
 #[test]
 fn cache_concurrent_read_write() -> Result<()> {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Barrier;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
 
     let dir = TempDir::new().unwrap();
