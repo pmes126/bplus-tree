@@ -830,6 +830,7 @@ fn cache_returns_fresh_data_after_reclaim_and_reuse() -> Result<()> {
 fn cache_concurrent_read_write() -> Result<()> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Barrier;
     use std::thread;
 
     let dir = TempDir::new().unwrap();
@@ -854,14 +855,18 @@ fn cache_concurrent_read_write() -> Result<()> {
     )?;
 
     let done = Arc::new(AtomicBool::new(false));
+    // Barrier ensures all 3 readers + the writer are running before writes begin.
+    let barrier = Arc::new(Barrier::new(4));
 
     // Spawn readers that continuously check existing keys via committed root.
     let readers: Vec<_> = (0..3)
         .map(|_| {
             let t = tree.clone();
             let d = Arc::clone(&done);
+            let b = Arc::clone(&barrier);
             thread::spawn(move || {
                 let mut reads = 0u64;
+                b.wait(); // synchronise with writer
                 while !d.load(Ordering::Relaxed) {
                     // Read a key that was inserted before readers started.
                     // Since writers commit each update, the reader may see
@@ -882,7 +887,8 @@ fn cache_concurrent_read_write() -> Result<()> {
         })
         .collect();
 
-    // Writer updates existing keys, committing each one.
+    // Wait until all readers are ready before starting writes.
+    barrier.wait();
     root_id = tree.get_root_id();
     for i in 0..50 {
         let res = tree.insert_with_root(k(i), format!("upd_{i}").into_bytes(), root_id)?;
