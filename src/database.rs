@@ -399,7 +399,6 @@ where
         Arc::clone(&epoch_mgr),
     ));
 
-
     let format_version = if is_fresh {
         write_superblock(storage.as_ref())?;
         SUPERBLOCK_VERSION

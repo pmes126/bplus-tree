@@ -134,7 +134,10 @@ pub fn make_tree(
     let manifest_path = dir.path().join("data.manifest");
     let meta_path = dir.path().join("meta.db");
 
-    let node_storage = Arc::new(PagedNodeStorage::<FilePageStorage>::new(&data_path, &manifest_path)?);
+    let node_storage = Arc::new(PagedNodeStorage::<FilePageStorage>::new(
+        &data_path,
+        &manifest_path,
+    )?);
     let page_storage = Arc::new(FilePageStorage::open(&meta_path)?);
 
     // Write an initial blank root leaf node.
@@ -185,7 +188,10 @@ pub fn load_tree(
     let manifest_path = dir.path().join("data.manifest");
     let meta_path = dir.path().join("meta.db");
 
-    let node_storage = Arc::new(PagedNodeStorage::<FilePageStorage>::new(&data_path, &manifest_path)?);
+    let node_storage = Arc::new(PagedNodeStorage::<FilePageStorage>::new(
+        &data_path,
+        &manifest_path,
+    )?);
     let page_storage = Arc::new(FilePageStorage::open(&meta_path)?);
 
     // Recover committed state from the double-buffered metadata slots.
