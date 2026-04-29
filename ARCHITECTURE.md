@@ -4,6 +4,80 @@ This document describes the internal architecture of the embedded copy-on-write
 B+-tree key-value store, its on-disk format, concurrency model, and the design
 trade-offs behind each layer.
 
+## Design motivation
+
+bplus_store exists to solve a specific problem: **concurrent readers with
+predictable, bounded resource usage in memory-constrained environments.**
+
+The standard approach for concurrent read access in embedded storage engines
+is memory-mapped I/O (mmap). LMDB, the most prominent COW B-tree
+implementation, relies on mmap for zero-copy reads — readers access pages
+directly through mapped memory, and COW semantics ensure they never see
+torn writes. This works well on systems with generous virtual address space
+and predictable memory pressure, but breaks down in constrained environments:
+
+- **Virtual address space limits.** mmap requires address space proportional
+  to the database size. On 32-bit systems, containers with cgroup memory
+  limits, or WASM runtimes, this is a hard constraint.
+- **Unpredictable I/O latency.** Mapped page accesses can trigger page faults
+  that are invisible to the application. The kernel decides when to evict
+  pages and when to fault them back in. Under memory pressure, this causes
+  latency spikes that the application cannot anticipate or control.
+- **No memory budgeting.** The application cannot bound how much physical
+  memory the engine consumes. The OS manages the resident set, which means
+  one database can starve co-located processes — a problem in multi-tenant
+  or edge deployments.
+
+bplus_store takes a different approach: **COW semantics for concurrency,
+explicit I/O (pread/pwrite) for control, and a bounded page cache for
+performance.**
+
+- **COW** gives readers the same guarantee as LMDB: no locks, no blocking,
+  snapshot isolation via immutable page references. Writers never disturb
+  active readers.
+- **Epoch-based reclamation** (borrowed from concurrent data structure
+  literature — crossbeam-epoch, RCU) replaces reference counting or
+  free-space bitmaps for tracking which pages are still in use. Readers
+  pin a lightweight epoch guard, not a lock or a mapped region.
+- **pread-based I/O with a page cache** means the application decides
+  exactly how much memory the engine uses. Hot pages (root nodes,
+  frequently accessed internal nodes) stay in cache; cold pages are read
+  on demand. No kernel surprises, no uncontrolled resident set growth.
+- **No mmap dependency** makes the engine portable to environments where
+  mmap is unavailable or problematic: WASM runtimes, sandboxed processes,
+  embedded devices, and IoT platforms.
+
+The trade-off is explicit: bplus_store pays syscall overhead per cache miss
+(one pread per uncached page access), while mmap-based engines access cached
+pages at memory speed. For read-heavy workloads with good cache hit rates —
+which describes most B-tree access patterns, since upper tree levels are
+accessed on every operation — the overhead is small. For workloads that
+scan the entire database with poor locality, mmap will be faster.
+
+### How this compares
+
+| Engine | Concurrent readers | I/O model | Memory control | WAL required |
+|--------|-------------------|-----------|----------------|-------------|
+| SQLite | Readers block writers (WAL mode: concurrent) | pread/pwrite | Application-controlled | Yes |
+| LMDB | Lock-free (COW + mmap) | mmap | OS-controlled | No |
+| RocksDB | Lock-free (MVCC + LSM) | pread/pwrite + mmap | Mixed | Yes (WAL) |
+| **bplus_store** | **Lock-free (COW + epoch)** | **pread/pwrite** | **Application-controlled** | **No** |
+
+bplus_store combines LMDB's lock-free reader model with SQLite's explicit
+I/O control. The architecture is: **LMDB's COW concurrency model +
+RocksDB-style manifest-based catalog + crossbeam-style epoch-based
+reclamation + regular file I/O instead of mmap.**
+
+### Target environments
+
+- Containers and microservices with hard memory limits (cgroups)
+- Edge nodes and IoT devices with limited RAM
+- Multi-tenant systems where one database must not starve another
+- WASM and sandboxed runtimes where mmap is unavailable
+- Embedded applications that need concurrent reads with predictable latency
+
+---
+
 ## Layer overview
 
 ```
@@ -1003,3 +1077,63 @@ lifetime of the tree — one per successful commit. For typical workloads this
 is negligible (10,000 commits = 400 KB). A future improvement could use a
 tagged pointer or generation counter to eliminate the ABA problem without
 retaining old allocations, but the current approach is simple and correct.
+
+---
+
+## Future improvements
+
+### Write-ahead log (WAL)
+
+The current design relies entirely on COW for crash safety — old pages are
+never modified, and the metadata pointer swap is the atomic commit point.
+This works but has a gap: if the process crashes after the CAS but before the
+metadata fsync, speculative pages are leaked (allocated but unreachable from
+any root).
+
+A WAL would close this gap by recording intended mutations before they are
+applied. On recovery, the WAL is replayed to redo or undo incomplete
+operations, ensuring no pages are leaked and every committed transaction is
+fully durable. The WAL also enables:
+
+- **Group commit:** multiple concurrent transactions can batch their WAL
+  entries into a single fsync, amortizing the cost of durable writes.
+- **Undo/redo recovery:** a crash at any point in the write path can be
+  cleanly resolved without a full tree scan.
+- **Hybrid COW+WAL:** small mutations could be logged to the WAL and applied
+  to pages lazily, reducing write amplification for single-key updates while
+  preserving COW's snapshot isolation for readers.
+
+### Compaction and space reclamation
+
+The data file (`data.db`) never shrinks — freed pages are recycled via the
+in-memory freelist, but the file retains its high-water mark. Over time,
+especially with delete-heavy workloads, the file accumulates unreachable
+pages that consume disk space.
+
+A background compaction process could rewrite the data file, discarding
+unreachable pages and packing live pages contiguously. This would require:
+
+- A page-level reachability scan from the current root.
+- A remapping pass that assigns new page IDs to live pages.
+- An atomic swap of the compacted file for the original.
+
+Alternatively, an incremental approach could compact individual regions of
+the file without a full rewrite, similar to LSM-tree compaction levels.
+
+### Replication
+
+Adding a replication layer would turn bplus_store from an embedded storage
+engine into a distributed database primitive. A minimal single-leader
+log-shipping design:
+
+- The leader appends committed metadata changes (root, height, size) and
+  their associated page writes to a replication log.
+- Followers consume the log and apply page writes to their local data file,
+  then update their metadata pointer to match.
+- Followers serve read-only queries from their local snapshot, providing
+  read scaling and fault tolerance.
+
+This pairs naturally with the existing epoch-based concurrency model —
+followers pin their local epoch while serving reads, and the replication
+log provides the ordering guarantee that a follower's snapshot is always
+a consistent prefix of the leader's history.
