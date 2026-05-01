@@ -723,6 +723,100 @@ fn drop_tree_persists_across_reopen() {
     }
 }
 
+#[test]
+fn drop_tree_frees_pages() {
+    let dir = TempDir::new().unwrap();
+
+    // Create a tree using a batch transaction so COW debris is minimal.
+    let db = Db::open(dir.path()).unwrap();
+    let tree = db.create_tree::<u64, String>("big", 8).unwrap();
+    {
+        let mut txn = tree.txn();
+        for i in 0u64..100 {
+            txn.insert(&i, &format!("val-{i}"));
+        }
+        txn.commit().unwrap();
+    }
+    drop(tree);
+
+    // Record file size before drop.
+    let size_before = std::fs::metadata(dir.path().join("data.db"))
+        .unwrap()
+        .len();
+
+    db.drop_tree("big").unwrap();
+
+    // Create a new tree and insert the same data via a batch.
+    let tree2 = db.create_tree::<u64, String>("big2", 8).unwrap();
+    {
+        let mut txn = tree2.txn();
+        for i in 0u64..100 {
+            txn.insert(&i, &format!("val-{i}"));
+        }
+        txn.commit().unwrap();
+    }
+
+    let size_after = std::fs::metadata(dir.path().join("data.db"))
+        .unwrap()
+        .len();
+
+    // With page freeing, the second tree reuses freed pages. The file
+    // should not grow significantly beyond the pre-drop size.
+    assert!(
+        size_after <= size_before + 4096 * 3,
+        "file should barely grow after drop+recreate \
+         (before={size_before}, after={size_after})"
+    );
+}
+
+#[test]
+fn drop_tree_pages_are_reused() {
+    let dir = TempDir::new().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+
+    // Create and drop a tree twice using batch transactions.
+    for round in 0..2 {
+        let tree = db
+            .create_tree::<u64, String>(&format!("tree_{round}"), 8)
+            .unwrap();
+        {
+            let mut txn = tree.txn();
+            for i in 0u64..50 {
+                txn.insert(&i, &format!("v{i}"));
+            }
+            txn.commit().unwrap();
+        }
+        drop(tree);
+        db.drop_tree(&format!("tree_{round}")).unwrap();
+    }
+
+    let size_after_two_rounds = std::fs::metadata(dir.path().join("data.db"))
+        .unwrap()
+        .len();
+
+    // Create a third tree with the same data. Should reuse freed pages.
+    let tree = db.create_tree::<u64, String>("final", 8).unwrap();
+    {
+        let mut txn = tree.txn();
+        for i in 0u64..50 {
+            txn.insert(&i, &format!("v{i}"));
+        }
+        txn.commit().unwrap();
+    }
+
+    let size_with_one_live = std::fs::metadata(dir.path().join("data.db"))
+        .unwrap()
+        .len();
+
+    // File should not grow much — the third tree reuses pages from the
+    // second dropped tree.
+    assert!(
+        size_with_one_live <= size_after_two_rounds + 4096 * 3,
+        "pages should be reused after drop \
+         (after_drops={size_after_two_rounds}, with_live={size_with_one_live})"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // list_trees
 // ---------------------------------------------------------------------------

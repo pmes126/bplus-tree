@@ -257,14 +257,21 @@ impl<S: PageStorage + Send + Sync + 'static> Database<S> {
         Ok(())
     }
 
-    /// Removes a tree from the catalog and records the deletion in the manifest.
+    /// Removes a tree from the catalog, records the deletion in the manifest,
+    /// and frees all of the tree's pages (nodes + metadata slots).
+    ///
+    /// Any existing [`SharedBPlusTree`] handles to this tree become invalid
+    /// after this call — using them is a caller bug.
     pub fn drop_tree(&self, id: &TreeId) -> Result<(), DatabaseError> {
-        {
+        // Capture tree metadata before removing from catalog.
+        let tree_meta = {
             let cat = self.catalog.read().unwrap();
-            if !cat.metas.contains_key(id) {
-                return Err(DatabaseError::NotFound("tree not found".into()));
-            }
-        }
+            cat.metas
+                .get(id)
+                .cloned()
+                .ok_or_else(|| DatabaseError::NotFound("tree not found".into()))?
+        };
+
         let mut w = self.manifest.lock().unwrap();
         let seq = w.append(ManifestRec::DeleteTree { seq: 0, id: *id })?;
         w.fsync()?;
@@ -272,6 +279,29 @@ impl<S: PageStorage + Send + Sync + 'static> Database<S> {
 
         let mut cat = self.catalog.write().unwrap();
         cat.replay_record(&ManifestRec::DeleteTree { seq, id: *id });
+        drop(cat);
+
+        // Read the committed root from the metadata page (the catalog's
+        // root_id may be stale — it's only reconciled on database open).
+        let committed_root = MetadataManager::read_active_meta(
+            self.meta_storage.as_ref(),
+            tree_meta.meta_a,
+            tree_meta.meta_b,
+        )
+        .map(|m| m.root_node_id)
+        .unwrap_or(tree_meta.root_id);
+
+        // Free all node pages via the node storage (also evicts from cache).
+        let node_pages = collect_tree_pages(self.node_storage.as_ref(), committed_root)?;
+        for page_id in node_pages {
+            // Ignore errors from individual frees — best effort.
+            let _ = self.node_storage.free_node(page_id);
+        }
+
+        // Free the two metadata slot pages (not in the node cache).
+        let _ = self.meta_storage.free_page(tree_meta.meta_a);
+        let _ = self.meta_storage.free_page(tree_meta.meta_b);
+
         Ok(())
     }
 
@@ -473,4 +503,34 @@ fn seq_of(rec: &ManifestRec) -> u64 {
         ManifestRec::RenameTree { seq, .. } => *seq,
         ManifestRec::DeleteTree { seq, .. } => *seq,
     }
+}
+
+/// Iterative DFS that collects all page IDs reachable from `root_id`.
+fn collect_tree_pages<S: PageStorage + Send + Sync + 'static>(
+    node_storage: &PagedNodeStorage<S>,
+    root_id: u64,
+) -> Result<Vec<u64>, DatabaseError> {
+    let mut pages = Vec::new();
+    let mut stack = vec![root_id];
+
+    while let Some(node_id) = stack.pop() {
+        let node = node_storage
+            .read_node_view(node_id)?
+            .ok_or_else(|| DatabaseError::NotFound(format!("node {node_id} not found")))?;
+        pages.push(node_id);
+
+        if node.is_internal() {
+            let n_children = node.children_len().map_err(|e| {
+                DatabaseError::Metadata(format!("failed to read children count: {e}"))
+            })?;
+            for i in 0..n_children {
+                let child_id = node.child_ptr_at(i).map_err(|e| {
+                    DatabaseError::Metadata(format!("failed to read child pointer: {e}"))
+                })?;
+                stack.push(child_id);
+            }
+        }
+    }
+
+    Ok(pages)
 }
