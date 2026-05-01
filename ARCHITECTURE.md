@@ -264,7 +264,7 @@ reads and writes are naturally aligned with no read-modify-write amplification.
  0       10         keys_end    slots_end    values_hi           4096
 ```
 
-**Header** (10 bytes): `kind(u8) | keyfmt_id(u8) | key_count(u16) | key_block_len(u16) | values_hi(u16)`
+**Header** (8 bytes): `kind(u8) | keyfmt_id(u8) | key_count(u16) | key_block_len(u16) | values_hi(u16)`
 
 **Key block**: Length-prefixed keys packed sequentially: `[u16_le klen | key bytes]...`
 
@@ -278,7 +278,7 @@ become garbage. A `compact_values()` pass reclaims the dead space when needed.
 **Invariant**: `slots_end <= values_hi` — when this would be violated,
 `insert_at` / `replace_at` returns `PageFull`.
 
-**Constants**: `HEADER_SIZE = 10`, `BUFFER_SIZE = 4086`, `SLOT_SIZE = 4`
+**Constants**: `HEADER_SIZE = 8`, `BUFFER_SIZE = 4088`, `SLOT_SIZE = 4`
 
 ### Internal page
 
@@ -290,13 +290,13 @@ become garbage. A `compact_values()` pass reclaims the dead space when needed.
  0        8        keys_end          children_end    4096
 ```
 
-**Header** (8 bytes): `kind(u8) | keyfmt_id(u8) | key_count(u16) | key_block_len(u16)`
+**Header** (6 bytes): `kind(u8) | keyfmt_id(u8) | key_count(u16) | key_block_len(u16)`
 
 **Key block**: Same format as leaf pages.
 
 **Children array**: `key_count + 1` child pointers, each a `u64` node ID (8 bytes).
 
-**Constants**: `HEADER_SIZE = 8`, `BUFFER_SIZE = 4088`, `CHILD_ID_SIZE = 8`
+**Constants**: `HEADER_SIZE = 6`, `BUFFER_SIZE = 4090`, `CHILD_ID_SIZE = 8`
 
 ### Why not a simple sequential layout?
 
@@ -1133,20 +1133,19 @@ two other reasons:
 
 ### Compaction and space reclamation
 
-The data file (`data.db`) never shrinks — freed pages are recycled via the
-in-memory freelist, but the file retains its high-water mark. Over time,
-especially with delete-heavy workloads, the file accumulates unreachable
-pages that consume disk space.
+The data file (`data.db`) never shrinks — freed pages are returned to the
+in-memory freelist and reused by future allocations, but the file retains
+its high-water mark. After a delete-heavy workload the file may be much
+larger than the live data, even though most of the excess pages are on the
+freelist and will be recycled. The disk space is reclaimable only by
+rewriting the file.
 
-A background compaction process could rewrite the data file, discarding
-unreachable pages and packing live pages contiguously. This would require:
+A compaction process could rewrite `data.db`, copying only live pages into
+a new file and truncating the result. This would require:
 
-- A page-level reachability scan from the current root.
-- A remapping pass that assigns new page IDs to live pages.
+- A page-level reachability walk from the current root.
+- A remapping pass that assigns new contiguous page IDs to live pages.
 - An atomic swap of the compacted file for the original.
-
-Alternatively, an incremental approach could compact individual regions of
-the file without a full rewrite, similar to LSM-tree compaction levels.
 
 ### Replication
 
