@@ -1,6 +1,6 @@
 # bplus_store
 
-> Status: **alpha** — APIs may change.
+> Status: **beta** — core APIs are stable; internal storage traits may still change.
 > License: **MIT OR Apache-2.0**
 
 Embedded, copy-on-write **B+-tree** key-value store in Rust.
@@ -11,12 +11,29 @@ Synchronous, zero-network. **Multi-writer** with optimistic commits (CAS).
 
 ## Why
 
-- **Multi-writer:** concurrent writers proceed in parallel; losers retry via OCC.
-- **Crash-safe:** COW + atomic metadata publish; no WAL, no fsck.
-- **Predictable perf:** slotted pages, bounded fanout, no heap storms.
-- **Epoch snapshots:** readers pin an epoch and never block writers.
-- **Embedded-first:** link as a library, call `put`/`get`/`delete`.
-- **Pluggable encoding:** `NodeStorage` is a swappable node encoding strategy on top of raw `PageStorage`.
+An embedded key-value store in the same design space as
+[LMDB](https://www.symas.com/lmdb),
+[BoltDB](https://github.com/etcd-io/bbolt), and
+[redb](https://github.com/cberner/redb) — crash-safe COW B+ trees with
+snapshot isolation. Where it differs:
+
+- **Multi-writer OCC:** LMDB and BoltDB serialise all writes behind a single
+  writer lock. `bplus_store` lets multiple writers proceed in parallel and
+  resolves conflicts at commit time via CAS on the metadata pointer. Under
+  low-to-moderate contention this gives near-linear write throughput scaling.
+- **No WAL:** crash safety comes from COW page immutability + A/B metadata
+  slot alternation with CRC validation. No write-ahead log to tune, compact,
+  or replay.
+- **In-memory page cache:** `PagedNodeStorage` keeps decoded `NodeView`s in a
+  COW-coherent read cache. Pages are immutable while live (COW guarantee), so
+  cached entries never go stale — eviction is driven by epoch-based GC rather
+  than invalidation.
+- **Epoch-based snapshot readers:** readers pin an epoch and walk a consistent
+  snapshot without holding any locks. Writers retire old pages; a reclaimer
+  frees them only after all pinned readers have advanced.
+- **Layered storage traits:** `PageStorage` (raw page I/O) and `NodeStorage`
+  (encoded node I/O) are separate traits, making the node encoding strategy
+  pluggable without touching the page layer.
 
 ---
 
@@ -25,7 +42,7 @@ Synchronous, zero-network. **Multi-writer** with optimistic commits (CAS).
 - Copy-on-write page mutation via `NodeView` over `[u8; 4096]` pages
 - Multiple concurrent writers (optimistic concurrency; CAS on metadata)
 - Batched write transactions (stage &rarr; commit &rarr; reclaim)
-- In-memory page cache in `PagedNodeStorage` (COW-coherent, eviction via epoch GC)
+- In-memory page cache with COW-coherent eviction via epoch GC
 - Cursor-based range iteration (parent-stack traversal, no sibling pointers)
 - Physical fullness handling: large values trigger page splits before reaching max keys
 - Pluggable node encoding via `NodeStorage` trait; raw page I/O via `PageStorage` trait
@@ -154,8 +171,8 @@ retries (up to a configurable limit). Readers never block writers.
 
 Each commit follows a strict sequence:
 
-. **CAS publish** — the new metadata pointer becomes visible to in-process readers
-mmediately (atomic swap, no disk I/O).
+1. **CAS publish** — the new metadata pointer becomes visible to in-process readers
+   immediately (atomic swap, no disk I/O).
 2. **Write metadata page** — the new `(root_id, height, size, txn_id)` is written to the
    inactive A/B metadata slot via positional `write_all_at()` (kernel page cache, not yet
    durable).
