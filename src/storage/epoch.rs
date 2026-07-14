@@ -153,7 +153,7 @@ impl EpochManager {
     /// Overrides all active reader epochs to `epoch`; for testing only.
     pub fn set_oldest_active(&self, epoch: Epoch) {
         let mut readers = self.active_readers.lock().unwrap();
-        for (_, e) in readers.iter_mut() {
+        for e in readers.values_mut() {
             *e = epoch;
         }
     }
