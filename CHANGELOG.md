@@ -15,6 +15,10 @@ path to a stable 1.0.0.
   `CASPtrPlusGeneration`, not yet in `main`).
 - `ROADMAP.md` documenting known limitations and the path to 1.0.
 
+## [0.7.1] - 2026-07-14
+### Changed
+- Tightened README and relevant documentation.
+
 ## [0.7.0] - 2026-07-04
 ### Changed
 - Commit path now publishes `(metadata pointer, height, txn_id)` via a single

@@ -399,7 +399,7 @@ COW eliminates both problems at the source:
    needed.
 
 2. **No WAL.** Because old pages are untouched, there is nothing to undo or
-   redo. Crash safety comes from the atomicity of the metadata pointer swap:
+   redo. Crash safety comes from the atomicity of the metadata word swap:
    the tree either points to the old root (pre-commit state) or the new root
    (post-commit state), never to an intermediate state.
 
@@ -420,7 +420,7 @@ COW B+-trees are well-suited for:
   If 95% of operations are reads, COW lets them proceed at full speed with no
   synchronization overhead.
 - **Embedded databases.** No WAL means fewer files, simpler recovery, and less
-  code surface. The entire commit fits in a single metadata pointer swap.
+  code surface. The entire commit fits in a single 128-bit metadata word swap.
 - **Short-lived write transactions.** Each commit clones `O(height)` pages.
   For a tree of height 3–4 (typical for millions of keys), that's 3–4 page
   allocations per commit — negligible for individual puts.
@@ -504,7 +504,7 @@ transaction is added to a `dirty_pages: HashSet<NodeId>` in the
    point to this parent's (unchanged) page ID.
 
 This is safe because dirty pages belong to the current uncommitted
-transaction — no reader can reference them (the metadata pointer still
+transaction — no reader can reference them (the committed metadata word still
 points to the previous root). The result is that a batch of N inserts into
 the same leaf region produces far fewer page allocations than N × height,
 and the COW debris that would otherwise accumulate within the transaction is
@@ -567,16 +567,16 @@ this.
 
 ## Commit protocol
 
-Commits use compare-and-swap (CAS) on an atomic metadata pointer for
+Commits use compare-and-swap (CAS) on a 128-bit atomic metadata word for
 optimistic concurrency control.
 
 ```
 Writer                              Shared state
 ──────                              ────────────
-1. Load committed ptr (Acquire)     ← committed: AtomicPtr<Metadata>
+1. Load committed word (Acquire)    ← committed: AtomicU128 {root_id,height,txn_id}
 2. Apply writes on COW tree
 3. Build new Metadata
-4. CAS committed ptr (SeqCst)       → committed (if unchanged)
+4. CAS committed word (SeqCst)      → committed (if unchanged)
    ├─ Success: write to meta slot,
    │           advance epoch, GC
    └─ Failure: free speculative
@@ -585,12 +585,12 @@ Writer                              Shared state
 
 ### Memory ordering
 
-- `committed` pointer: writers use `SeqCst` for the CAS, readers use `Acquire`
+- `committed` word (`AtomicU128`): writers use `SeqCst` for the compare-exchange, readers use `Acquire`
 - Epoch counter (`global_epoch`): `SeqCst` for advances, `Acquire` for loads
 - Reader pin/unpin: protected by mutex (implicit Release/Acquire)
 
 **Trade-off:** `SeqCst` on the CAS is stronger than strictly necessary (a
-release-acquire pair would suffice for the pointer swap) but makes the
+release-acquire pair would suffice for the word swap) but makes the
 ordering intent unambiguous and the CAS is not on the hot path.
 
 ### Transactions (`WriteTransaction`)
@@ -810,36 +810,18 @@ measures SA via `dir_size() / data_bytes`. Because `data.db` never shrinks
 (freed pages are recycled in-memory but the file keeps its high-water mark),
 SA reflects peak disk usage rather than steady-state live data.
 
-### Sources of amplification in this engine
+### Sources of amplification
 
-**1. Page granularity.**
-Every write is a full 4096-byte page, even if you're only storing a 20-byte
-key-value pair. A single insert into a leaf that has room writes the entire
-4096-byte page.
-
-**2. Copy-on-write path cloning.**
-Every mutation clones every page on the root-to-leaf path. For a tree of
-height 3, a single insert writes 3 × 4096 = 12,288 bytes — the leaf plus
-every internal node above it. An in-place-mutation B-tree would write only the
-single leaf page (4096 bytes) plus a small WAL entry.
-
-**3. Unbatched commits.**
-Each individual `put()` is a full commit cycle: COW the path, write metadata,
-fsync. The batched `WriteTxn` amortizes metadata and fsync overhead across all
-operations in the batch, but each insert within the batch still COWs the full
-path independently.
-
-**4. COW debris accumulation.**
-Within a transaction, old pages from COW clones and splits are never reused —
-they pile up in `data.db`. The freelist only reclaims pages after commit, and
-even then only when no reader is pinned at an earlier epoch. This means
-`data.db` grows monotonically during a transaction, even though the logical
-tree size may be stable.
-
-**5. Metadata and manifest overhead.**
-The manifest log, superblock, per-tree metadata pages (A/B), and freelist
-snapshot all consume disk space that isn't user data. For small trees this
-overhead is proportionally large.
+1. **Page granularity** — every write is a full 4096-byte page, even for a 20-byte entry.
+2. **COW path cloning** — each mutation clones the whole root-to-leaf path (height × 4 KB per
+   insert), where an in-place B-tree would rewrite one leaf + a small WAL entry.
+3. **Unbatched commits** — each `put()` is a full COW-path + metadata + fsync cycle; `WriteTxn`
+   amortises metadata/fsync but still COWs the full path per insert.
+4. **COW debris** — old clones/splits pile up in `data.db` within a transaction; the freelist
+   reclaims only after commit *and* only once no earlier-epoch reader is pinned, so the file
+   grows monotonically mid-transaction.
+5. **Metadata/manifest overhead** — manifest, superblock, A/B metadata, freelist snapshot;
+   proportionally large for small trees.
 
 ### Measured space amplification
 
@@ -862,12 +844,8 @@ The ~4,200 bytes/entry figure means roughly one full 4096-byte page per entry
 on disk. This makes sense: with COW, every unbatched `put()` creates `height`
 new pages, and the old pages are never reclaimed during measurement.
 
-Space amplification *decreases* as entry count grows because:
-- The manifest, superblock, and metadata overhead is amortized over more entries.
-- Leaves fill more densely before splitting, so the ratio of useful data per
-  page improves.
-- Tree height grows logarithmically, so the per-insert COW overhead (height
-  pages) grows slower than the data volume.
+SA *decreases* as entries grow: fixed metadata/superblock overhead amortises, leaves fill more
+densely before splitting, and height grows only logarithmically while data grows linearly.
 
 ### How this compares
 
@@ -882,264 +860,117 @@ The gap is large. The primary reason is that old COW pages accumulate in the
 data file indefinitely — there is no compaction or page-reuse within a
 transaction, and `data.db` never shrinks.
 
-### Why batched txn SA is worse than unbatched
+### Why a batched txn's SA is worse than unbatched
 
-Counter-intuitively, a batched transaction inserting 5,000 keys has *higher*
-space amplification (~677x) than 5,000 individual unbatched puts (~269x).
+Counter-intuitively, batch-inserting 5,000 keys amplifies *more* (~677x) than 5,000 individual
+puts (~269x). A batch replays every op against one root chain, and all intermediate COW debris
+(pre-split pages, superseded internals/leaves) accumulates until the *single* final commit —
+epoch reclamation can't free any of it until then. Unbatched puts commit after each op, so the
+epoch advances and the reclaimer can recycle old pages along the way, keeping the file smaller.
 
-This happens because the batched path replays all operations against a single
-root chain. Each `put_with_root` call COWs the full root-to-leaf path, and all
-the intermediate COW debris — pre-split pages, old internal nodes, superceded
-leaves — accumulates in `data.db` within a single transaction. Epoch-based
-reclamation can't free these pages until after commit, so the file keeps
-growing with every operation.
+### Effect of key ordering
 
-The unbatched path, by contrast, commits after each put. Each commit advances
-the epoch, which may allow the reclaimer to free old pages (if no readers are
-pinned). Over 5,000 individual commits, some old pages get recycled and their
-disk slots reused, keeping the file smaller than the batched case where all
-debris persists until the single final commit.
-
-### Effect of key ordering on space amplification
-
-Sorting keys before a batched insert helps, though not for the most obvious
-reason. The per-insert COW cost is O(height) pages regardless of key order —
-every insert rewrites the root-to-leaf path. What changes is *which* pages are
-touched:
-
-**Random key order:**
-- Each insert may land in a different leaf, requiring COW of a different
-  root-to-leaf path. With N inserts touching M distinct leaves, you generate
-  up to M × height intermediate pages.
-- Splits happen at unpredictable leaves throughout the tree. Each split
-  produces two half-full pages plus a new separator propagated upward. Splits
-  scattered across many leaves create debris at every level of the tree.
-
-**Sorted key order:**
-- Consecutive inserts land in the *same* rightmost leaf until it fills and
-  splits. The COW path is the same rightmost path every time, so intermediate
-  internal-node copies rewrite the same logical path rather than scattering
-  across the tree.
-- Splits only happen at the rightmost leaf. This produces a clean, left-to-right
-  fill pattern: completed left-sibling pages are never touched again, so their
-  COW debris is minimal.
-- The tree grows in a single direction, which means fewer total unique pages
-  are allocated compared to random insertion.
-
-In practice, sorted inserts reduce SA modestly (by reducing the number of
-distinct internal-node copies created during splits). But the fundamental COW
-cost — O(height) pages per insert — remains.
-
-**The real win from sorted keys is enabling bulk loading.** If the engine knows
-keys arrive in order, it can build the tree bottom-up: fill each leaf to
-capacity, write it once, and construct internal nodes after the fact. This
-eliminates split-and-propagate overhead entirely and brings space amplification
-close to the theoretical minimum (total pages × 4096 / total data bytes).
-Bulk loading is not currently implemented.
+Per-insert COW cost is O(height) pages regardless of order — what changes is *which* pages.
+**Random** inserts scatter splits across many leaves, creating debris at every level; **sorted**
+inserts land in the same rightmost leaf until it splits, so completed left pages are never
+touched again (clean left-to-right fill, fewer distinct internal-node copies). The effect is
+modest — the O(height)-per-insert cost remains. **The real win from sorted keys is enabling bulk
+loading** (build bottom-up, write each page once), which removes split-and-propagate overhead
+entirely. Not currently implemented.
 
 ### Possible improvements
 
 Several approaches could reduce space amplification:
 
-1. **Bulk loading / merge-rebuild for sorted inserts.** For an empty tree,
-   build leaves left-to-right, filling each to capacity, then construct
-   internal nodes in a single bottom-up pass. For a populated tree, this
-   becomes a merge-rebuild: scan the existing tree via `RangeIter` (already
-   sorted), merge the sorted incoming keys with the existing stream (like
-   merge sort's merge step), and build new leaves bottom-up from the merged
-   output. This is essentially a full tree rewrite, so it's most beneficial
-   when the incoming batch is large relative to the existing tree (roughly
-   >20-30% of existing entries). For smaller batches, the per-key insert
-   path is more efficient since it only touches affected pages. A fractional
-   variant — rebuilding only the leaf ranges touched by new keys — could
-   offer a middle ground but adds implementation complexity.
+1. **Bulk load / merge-rebuild for large sorted batches.** Build (or rebuild) the tree
+   bottom-up: stream-merge the incoming batch with the existing tree (`RangeIter`, already
+   sorted), pack leaves left-to-right to ~85%, build internal nodes bottom-up, then CAS to the
+   new root (the old page set becomes epoch-reclaimable, no concurrency-model changes). Worth it
+   when the batch is a large fraction (~>20%) of the tree; otherwise the per-key path is cheaper.
+   Crash-safe — the old tree stays intact until the final CAS. Expected impact (5,000 entries):
 
-   **Merge-rebuild design (not yet implemented):**
+   | Metric         | Per-key insert | Merge-rebuild |
+   |----------------|----------------|---------------|
+   | Pages written  | ~15,000        | ~129          |
+   | Disk footprint | ~20 MB         | ~516 KB       |
+   | Space amp      | ~269x          | ~6.7x         |
 
-   *Phase 1 — Merged stream.* Two sorted inputs: the existing tree (via
-   `RangeIter`, already in key order) and the incoming batch (sorted by key).
-   Merge them like merge sort's merge step: advance whichever has the smaller
-   key. On duplicate keys, the incoming value wins (upsert). Delete ops in
-   the batch cause the key to be skipped entirely. This is fully streaming —
-   only one entry from each side is held in memory at a time.
-
-   *Phase 2 — Build leaves left-to-right.* Walk the merged stream and pack
-   entries into leaf pages. Fill each leaf to ~85% capacity (leaving slack
-   for future individual inserts that don't warrant a full rebuild). When a
-   leaf is full, write it once via `storage.write_node_view()` and record
-   its first key and page ID as a separator for the parent level.
-
-   *Phase 3 — Build internal nodes bottom-up.* Take the separators from the
-   leaf level and pack them into internal pages the same way. The first
-   child pointer becomes `leftmost_child`; subsequent separators are packed
-   until the page is full. Repeat upward until a single root node remains.
-   Each internal page is written exactly once.
-
-   *Phase 4 — Commit.* CAS the metadata pointer with the new root page ID,
-   tree height (number of levels built), and entry count. The old tree's
-   entire page set becomes reclaimable via the epoch manager — no changes
-   to the concurrency model are needed.
-
-   Expected impact (5,000 entries, u64 keys, short values):
-
-   | Metric          | Per-key insert | Merge-rebuild |
-   |-----------------|---------------|---------------|
-   | Pages written   | ~15,000       | ~129          |
-   | Disk footprint  | ~20 MB        | ~516 KB       |
-   | Space amp       | ~269x         | ~6.7x         |
-
-   The improvement grows with batch size since per-key insert is
-   O(N × height) pages while merge-rebuild is O(N / fan-out) pages.
-
-   Crash safety: if the process crashes during the build, the old tree is
-   intact (metadata was never swapped). Orphaned new pages are leaked,
-   same as any failed COW transaction.
-
-   Key decision: when to use merge-rebuild vs per-key insert. A simple
-   heuristic is `batch_size > tree.len() * 0.2` — if the batch is more
-   than ~20% of the existing tree, rebuild; otherwise use the normal path.
-
-2. **Online compaction.** A background process that rewrites the data file,
-   discarding unreachable pages and packing live pages contiguously. This
-   reclaims space from accumulated debris without changing the write path.
-
-3. **Delta encoding / WAL hybrid.** Buffer small mutations in a write-ahead
-   log and apply them in bulk to pages periodically. This amortizes the
-   per-page overhead across many mutations, at the cost of more complex
-   recovery.
-
-4. **Page-level deduplication.** If two COW clones of the same page are
-   identical (e.g., an internal node rewritten with the same child pointers),
-   detect this and reuse the existing page. Requires content hashing.
+2. **Online compaction** — background rewrite of `data.db`, dropping unreachable pages and
+   packing live ones (see [Future improvements](#future-improvements)).
+3. **Delta / WAL hybrid** — buffer small mutations in a log and apply in bulk (amortises
+   per-page overhead; more complex recovery).
+4. **Page-level dedup** — detect and reuse an identical COW clone via content hashing.
 
 ---
 
 ## Concurrency bugs and fixes
 
-This section documents four concurrency bugs discovered during stress testing
-with concurrent writers, their root causes, and the fixes applied.
+Four concurrency bugs found during stress testing with concurrent writers — symptom, root
+cause, fix.
 
 ### 1. TOCTOU race in `EpochManager::pin()`
 
-**Symptom:** Under concurrent writes, the reclaimer could free pages that an
-active reader was about to traverse, causing stale reads or invariant violations.
+**Symptom:** the reclaimer freed pages an active reader was about to traverse (stale reads /
+invariant violations).
 
-**Root cause:** The original `pin()` loaded the global epoch and then, in a
-separate step, inserted the thread into the `active_readers` map. Between these
-two operations, a writer could call `oldest_active()`, see zero readers, and
-reclaim pages at the epoch the reader was about to register for.
+**Root cause:** `pin()` loaded the global epoch and *then*, as a separate step, registered the
+thread in `active_readers`. Between the two, a writer could call `oldest_active()`, see no
+readers, and reclaim the epoch the reader was about to register for:
 
 ```
-Reader thread                   Writer thread
-─────────────                   ─────────────
-epoch = global_epoch.load()     
-                                oldest_active() → no readers → reclaim epoch 5
-readers.insert(tid, epoch=5)    
-// too late — pages are freed
+Reader                            Writer
+epoch = global_epoch.load()
+                                  oldest_active() → no readers → reclaim epoch 5
+readers.insert(tid, epoch=5)      // too late — pages already freed
 ```
 
-**Fix:** The epoch load and reader registration now happen under the same mutex
-lock. A writer calling `oldest_active()` will either see the reader already
-registered (if it acquired the lock after the reader) or the reader will see the
-post-advance epoch (if the writer advanced before the reader acquired the lock).
+**Fix:** the epoch load and registration now happen under the *same* mutex lock — so a writer's
+`oldest_active()` either sees the reader already registered, or the reader sees the post-advance
+epoch.
 
-### 2. Nested epoch pin removing outer guard's registration
+### 2. Nested epoch pin removing the outer guard's registration
 
-**Symptom:** No observed failure in practice — this is a defensive fix.
+**Symptom:** none observed — a defensive fix.
 
-**Root cause:** `EpochManager` uses `HashMap<ThreadId, Epoch>` — one entry per
-thread. `pin()` calls `readers.insert(tid, epoch)` and `ReaderGuard::Drop` calls
-`readers.remove(tid)`. If a public method (e.g. `SharedBPlusTree::put`) pins the
-epoch and then calls an inner method (e.g. `put_inner`) that also pins, the
-situation is:
+**Root cause:** `active_readers` is a `HashMap<ThreadId, Epoch>` (one entry per thread). If an
+outer `pin()` and an inner `pin()` (e.g. `put` → `put_inner`) both register the same thread, the
+inner `ReaderGuard::Drop` calls `readers.remove(tid)` — erasing the entry while the **outer**
+guard is still live, so a concurrent `oldest_active()` sees no reader for that thread.
 
-1. Outer `pin()` inserts `(thread_7, epoch=5)`.
-2. Inner `pin()` inserts `(thread_7, epoch=5)` — no-op, same key/value.
-3. Inner `ReaderGuard` drops → `readers.remove(thread_7)`. **Entry is gone.**
-4. Outer guard is still alive, but the thread is no longer in the readers map.
-
-A concurrent writer calling `oldest_active()` at this point would see no reader
-for this thread and could reclaim pages the thread still references.
-
-In the current code this window is effectively zero — the inner method returns
-and the outer guard drops immediately after, with no page accesses in between.
-The fix is defensive: inner methods (`put_inner`, `get_inner`, `delete_inner`)
-no longer pin, and document "caller must hold an epoch guard". Pins are placed
-only at the outermost public entry points.
+**Fix:** inner methods (`put_inner` / `get_inner` / `delete_inner`) no longer pin (documented as
+"caller must hold a guard"); pins live only at the outermost public entry points.
 
 ### 3. Missing epoch guard in `WriteTransaction::commit`
 
-**Symptom:** Under concurrent writes, the `commit` method's tree walk could read
-freed pages, causing invariant violations ("expected internal node while updating
-parents") or silently reading garbage data.
+**Symptom:** `commit`'s tree walk read freed pages ("expected internal node" invariant violations,
+or garbage data).
 
-**Root cause:** `WriteTransaction::commit` replays buffered operations by calling
-`put_with_root` / `delete_with_root`, which delegate to inner methods that
-expect the caller to hold an epoch guard. The transaction's `commit` did not pin
-an epoch, so the root and all pages reachable from it could be reclaimed by a
-concurrent commit's GC pass while the transaction was walking them.
+**Root cause:** `commit` replays buffered ops via inner methods that *assume* the caller holds a
+guard — but `commit` didn't pin one, so a concurrent commit's GC could reclaim the root and its
+reachable pages mid-walk.
 
-**Fix:** The tree walk section of `commit` is now wrapped in an epoch guard. The
-guard is pinned before reading `initial_root_id` and dropped before calling
-`try_commit`, so the commit's own epoch advance and reclamation pass are not
-blocked by the pin.
+**Fix:** the tree-walk portion of `commit` is wrapped in an epoch guard, pinned before reading
+`initial_root_id` and dropped before `try_commit` (so the commit's own reclamation isn't blocked).
 
-### 4. ABA problem on `AtomicPtr<Metadata>`
+### 4. ABA problem on the metadata CAS (`AtomicPtr` → `AtomicU128`)
 
-**Symptom:** Under concurrent writes, keys were silently lost. A stress test with
-4 threads × 500 keys × 50 rounds consistently showed 1-5 missing keys per round.
+**Symptom:** silently lost keys — a 4-thread × 500-key × 50-round stress test lost 1–5 keys/round.
 
-**Root cause:** The CAS on `committed: AtomicPtr<Metadata>` compares raw pointer
-values (memory addresses), not the data they point to. After a successful CAS,
-the old metadata `Box` was freed immediately via `drop(Box::from_raw(old_ptr))`.
-This returned the heap address to the allocator, which could reuse it for a
-future `Box::new(Metadata)`, creating a classic ABA cycle:
+**Root cause (original design):** `committed` was an `AtomicPtr<Metadata>`; the CAS compared raw
+addresses, and the old `Box` was freed on success. The allocator could then hand the *same*
+address to a later `Box::new(Metadata)`, so a slow writer's CAS (`expected = old_addr`) would
+match a **recycled** pointer holding entirely different data — succeeding when it should fail and
+overwriting a newer tree with a stale root. Classic ABA: same address, different data.
 
-```
-Writer A                        Writer B                        Writer C
-────────                        ────────                        ────────
-reads committed → 0x7f00
-(saves as base_version)
-starts slow tree walk...
-                                reads committed → 0x7f00
-                                CAS(0x7f00 → 0x7f80) ✓
-                                drop(Box(0x7f00))
-                                // 0x7f00 is free
+**Fix (current design):** `committed` is now an `AtomicU128` holding a **packed word**
+`(root_id, height, txn_id)` instead of a pointer. `txn_id` increases monotonically, so every
+published word is unique and a stale `compare_exchange` (comparing the full 128-bit value) can
+never match a recycled one. ABA is eliminated at the source: **no heap pointers to free, no
+`retired_meta` list, no `unsafe impl Send`** — just an integer CAS.
 
-                                                                reads committed → 0x7f80
-                                                                Box::new(Metadata)
-                                                                // allocator returns 0x7f00!
-                                                                CAS(0x7f80 → 0x7f00) ✓
-                                                                // committed = 0x7f00 again
-
-CAS(expected=0x7f00, new=0x7f90)
-// committed is 0x7f00 (from C)
-// addresses match → CAS succeeds!
-// Writer A overwrites C's tree
-// with a root from a stale snapshot.
-// All of B's and C's keys are lost.
-```
-
-The ABA problem occurs because the CAS cannot distinguish between the original
-`0x7f00` (which Writer A based its work on) and the recycled `0x7f00` (which now
-holds Writer C's metadata). The pointer value is the same, but it points to
-completely different data.
-
-**Fix:** Old metadata pointers are never freed after a successful CAS. Instead,
-they are pushed into a `retired_meta: Mutex<Vec<RetiredPtr>>` list. Since the
-address is never returned to the allocator, it can never be reused for a new
-`Box<Metadata>`, and a stale writer's CAS will always fail (the committed
-pointer has moved to a genuinely new address). All retired pointers are freed
-when the `BPlusTree` is dropped.
-
-The `RetiredPtr` newtype wraps the raw `*mut Metadata` and implements `Send`
-so it can be stored in a `Mutex<Vec<_>>` on a `Send + Sync` struct.
-
-**Trade-off:** Retired metadata boxes (40 bytes each) accumulate for the
-lifetime of the tree — one per successful commit. For typical workloads this
-is negligible (10,000 commits = 400 KB). A future improvement could use a
-tagged pointer or generation counter to eliminate the ABA problem without
-retaining old allocations, but the current approach is simple and correct.
+**Trade-off:** `AtomicU128` isn't natively lock-free everywhere, so the engine uses
+`portable_atomic` (lock fallback only on targets without a 128-bit CAS; x86-64 and AArch64 have
+it). In return, the old design's per-commit pointer retention and raw-pointer `unsafe` are gone.
 
 ---
 
@@ -1148,7 +979,7 @@ retaining old allocations, but the current approach is simple and correct.
 ### Write-ahead log (WAL)
 
 COW provides crash safety without a WAL: old pages are never modified, and
-the A/B metadata pointer swap is the atomic commit point. The only gap is
+the A/B metadata slot swap is the atomic commit point. The only gap is
 **page leaks** — if the process crashes after the CAS but before `fdatasync`,
 newly allocated pages become unreachable from any root. These orphans waste
 space but never cause data loss, and a startup reachability scan could
@@ -1195,7 +1026,7 @@ single-leader log-shipping design:
 - The leader appends committed mutations to the WAL (already `fsync`'d for
   durability).
 - Followers tail the WAL stream, apply page writes to their local data file,
-  and update their metadata pointer to match.
+  and update their committed metadata to match.
 - Followers serve read-only queries from their local snapshot, providing
   read scaling and fault tolerance.
 
