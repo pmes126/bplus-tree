@@ -19,7 +19,7 @@ snapshot isolation. Where it differs:
 
 - **Multi-writer OCC:** LMDB and BoltDB serialise all writes behind a single
   writer lock. `bplus_store` lets multiple writers proceed in parallel and
-  resolves conflicts at commit time via CAS on the metadata pointer. Under
+  resolves conflicts at commit time via CAS on a 128-bit metadata word. Under
   low-to-moderate contention this gives near-linear write throughput scaling.
 - **No WAL:** crash safety comes from COW page immutability + A/B metadata
   slot alternation with CRC validation. No write-ahead log to tune, compact,
@@ -62,7 +62,7 @@ snapshot isolation. Where it differs:
 
 ```toml
 [dependencies]
-bplus_store = "0.4"
+bplus_store = "0.7.1"
 ```
 
 ### Build & test
@@ -158,84 +158,36 @@ txn.commit()?;  // atomic CAS; retries internally on conflict
 
 ## Multi-writer semantics (OCC)
 
-Multiple writers run in parallel:
-
-1. Capture a **base version** (committed metadata pointer).
-2. Apply writes on a staged tree (COW pages).
-3. **Commit** by CAS-ing the metadata pointer.
-
-If another writer published first, the transaction rebases from the latest root and
-retries (up to a configurable limit). Readers never block writers.
+Writers run in parallel: each captures the committed **128-bit metadata word**, applies its
+writes on a staged COW tree, and commits via `compare_exchange` on a single `AtomicU128`
+packing `(root_id, height, txn_id)`. If another writer published first, the transaction
+rebases from the latest root and retries (bounded). Readers never block writers, and the
+monotonic `txn_id` doubles as an ABA guard (no old-pointer retirement needed). Full protocol
+in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
 ## Durability and fsync
 
-Each commit follows a strict sequence:
+Each commit: (1) **CAS-publish** the new 128-bit metadata word (visible to in-process readers
+immediately); (2) **write** the new metadata to the inactive A/B slot; (3) **`fdatasync()`** once,
+flushing both the COW node pages and the metadata page.
 
-1. **CAS publish** — the new metadata pointer becomes visible to in-process readers
-   immediately (atomic swap, no disk I/O).
-2. **Write metadata page** — the new `(root_id, height, size, txn_id)` is written to the
-   inactive A/B metadata slot via positional `write_all_at()` (kernel page cache, not yet
-   durable).
-3. **`fdatasync()`** — a single `sync_data()` call flushes all dirty pages in the data
-   file to disk: both the COW node pages written during the transaction and the metadata
-   page from step 2.
-
-### Crash safety
-
-The **A/B metadata slot alternation** provides atomic commit semantics without a WAL.
-Each commit writes to `slot = txn_id % 2`, leaving the previous slot untouched. On
-recovery, `MetadataManager::read_active_meta` reads both slots and picks the one with
-the highest `txn_id` and a valid CRC32 checksum.
-
-- **Crash before `fdatasync()`** — the new metadata page may not be on disk. Recovery
-  reads the old slot, which is still valid. The tree rolls back to the prior commit.
-- **Torn write to new slot** — the CRC32 checksum detects it. Recovery falls back to
-  the old slot.
-- **Crash after `fdatasync()`** — both node pages and metadata are durable. Recovery
-  picks the new slot.
-
-### Why no WAL?
-
-COW + A/B metadata swap provides atomic commits without a write-ahead log — old
-pages are never modified, so there is nothing to undo. The only trade-off is that
-a crash between CAS and `fdatasync` can leak pages (allocated but unreachable);
-these waste space but never cause data loss. A WAL may be added in the future
-primarily as a **replication log**, where the per-commit `fsync` is unavoidable
-anyway.
-
-### Known side effect
-
-`sync_data()` operates on the entire file descriptor, not a byte range. This means a
-commit also flushes speculative COW pages written by other concurrent writers that have
-not yet committed. Those pages are harmless (orphaned if the writer never commits) but
-represent minor wasted I/O under concurrent write workloads. This is inherent to the
-single-file, shared page pool design and is not a correctness issue.
-
-`O_DIRECT` I/O (which bypasses the kernel page cache) is worth considering **only for
-RAM-constrained deployments**: its real benefit is removing the *double-caching* of pages
-held in both the `PagedNodeStorage` CLOCK-Pro cache and the kernel page cache, freeing that
-memory for the engine's own cache. It is **not a general optimisation** — it does not make
-I/O faster, it forfeits kernel read-ahead (so sequential scans would need application-level
-prefetch), it requires sector-aligned buffers, and it offers little when the working set
-already fits the existing cache. Durability still depends on `fdatasync` regardless. For
-this embedded, single-process engine it is generally not worthwhile.
+Crash safety comes from **A/B metadata-slot alternation + CRC32**, no WAL: a commit writes
+`slot = txn_id % 2`, leaving the previous slot intact, and recovery picks the slot with the
+highest `txn_id` and a valid CRC. A crash before `fdatasync` (or a torn write) simply rolls
+back to the prior commit — the only cost is possibly leaking a few unreachable pages (wasted
+space, never data loss). The `sync_data()` fd-flush behaviour and the `O_DIRECT` trade-off are
+covered in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
 ## Epoch-based reclamation
 
-Readers pin an **epoch** while walking a snapshot; writers retire old pages with the
-**current epoch** at commit. A reclaimer frees pages only after all readers older than
-that epoch have unpinned. No blocking, no use-after-free.
-
-1. **Pin**: reader grabs `epoch_now` and reads from the committed root.
-2. **Write**: writer builds a staged tree (COW), collects reclaimed node IDs.
-3. **Commit**: writer CAS-publishes new metadata `(root_id, height, size)`. On success,
-   tag each reclaimed page with `retire_epoch = epoch_now`.
-4. **GC**: compute `min_pinned` across threads; free any page with
-   `retire_epoch < min_pinned`.
+Readers pin an **epoch** while walking a snapshot; writers tag retired pages with the current
+epoch at commit; a reclaimer frees a page only once every reader older than its retire-epoch
+has unpinned. No locks on the read path, no use-after-free. Pin/GC details in
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
@@ -259,16 +211,14 @@ exists, freed page IDs are restored so they can be reused.
 
 ### Key components
 
-- **Superblock** (page 0): magic number, format version, generation counter, CRC-32C.
-- **Manifest**: append-only log of `CreateTree`, `RenameTree`, `DeleteTree`,
-  `Checkpoint` records. Each record is CRC-framed; truncated trailing records (crash
-  mid-write) are silently skipped, CRC mismatches are reported as corruption.
-- **Catalog**: in-memory map of `TreeId -> TreeMeta`, rebuilt by replaying the manifest.
-- **Per-tree metadata**: A/B alternating pages storing `(root_node_id, height, size, txn_id)`.
-  Commit writes to the inactive slot; readers always see a consistent pair.
-  Each page is CRC32-validated on read.
-- **File lock**: exclusive `flock` on `db.lock` prevents concurrent access from multiple
-  processes.
+- **Superblock** (page 0): magic, format version, generation counter, CRC-32C.
+- **Manifest**: append-only, CRC-framed log of tree-lifecycle records (`CreateTree`,
+  `RenameTree`, `DeleteTree`, `Checkpoint`); truncated trailing records are skipped, CRC
+  mismatches reported as corruption.
+- **Catalog**: in-memory `TreeId -> TreeMeta`, rebuilt from the manifest.
+- **Per-tree metadata**: CRC-validated A/B pages holding `(root_node_id, height, size, txn_id)`;
+  commit writes the inactive slot.
+- **File lock**: exclusive `flock` on `db.lock`.
 
 ---
 
@@ -297,80 +247,32 @@ benches/
   bench_insert.rs               # Criterion benchmarks
 ```
 
-### Layer overview (bottom to top)
+### Layers (bottom → top)
 
-**Page layer** (`page/`, `layout.rs`): fixed 4 KB slotted pages. Header &rarr; slot
-directory &rarr; packed data region. Leaf pages store `(key, value)` pairs; internal
-pages store `(key, right_child)` with `leftmost_child` in the header.
-
-**Storage layer** (`storage.rs`, `storage/`): `PageStorage` trait for raw page I/O;
-`NodeStorage` trait for encoded node I/O (pluggable encoding strategy).
-`FilePageStorage` is the concrete file-backed `PageStorage`.
-`PagedNodeStorage<S>` wraps any `PageStorage` into a `NodeStorage` with an
-in-memory read cache of decoded `NodeView`s. Cache correctness relies on COW
-immutability — a page ID's content never changes while the page is live.
-
-**Database layer** (`database.rs`, `database/`): `Database<S>` owns a
-`PagedNodeStorage<S>` for node encoding and an `Arc<S>` for raw metadata I/O (both
-share the same underlying storage instance). Manages the superblock, manifest, catalog,
-and tree lifecycle.
-
-**B+ tree core** (`bplustree/`): `BPlusTree` / `SharedBPlusTree` — search, insert,
-delete, commit with CAS. `WriteTransaction` buffers operations for batched atomic
-commits.
-
-**API layer** (`api.rs`, `api/`): `Db` wraps a `Database` in `Arc` and hands out
-typed `Tree<K, V>` handles. Storage is shared via `Arc`, so tree handles are
-independently owned and can be freely sent across threads. Purely synchronous.
+**page** (4 KB slotted pages) → **storage** (`PageStorage` raw I/O · `NodeStorage` encoded I/O ·
+`PagedNodeStorage` decoded-node cache) → **database** (`Database<S>`: superblock, manifest,
+catalog, tree lifecycle) → **bplustree** (`BPlusTree`: search / insert / delete / CAS-commit,
+`WriteTransaction` for batched commits) → **api** (`Db` hands out `Arc`-shared, synchronous
+`Tree<K, V>` handles). Each layer is written up in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
-## Design trade-offs: COW, sibling pointers, and batched writes
+## Design trade-offs
 
-### Why COW?
+The core choices — explained in depth in [ARCHITECTURE.md](ARCHITECTURE.md):
 
-Copy-on-write is the foundation of the concurrency model. Every write clones only the
-pages it touches (leaf + ancestors), then atomically publishes a new root via CAS on the
-metadata pointer. Readers never block writers because they see a consistent snapshot
-pinned at their epoch. This is the same approach used by LMDB, BoltDB, and redb in
-production.
-
-### Sibling pointers and range iteration
-
-Traditional B+ trees link leaves with `next`/`prev` pointers for fast sequential scans.
-Under COW this creates a cascade problem: COW-copying one leaf gives it a new page ID,
-which invalidates its left sibling's `next` pointer, forcing a COW-copy of that sibling
-too, and so on through the entire leaf chain.
-
-The standard solution (used by LMDB, BoltDB, redb) is to not use sibling pointers at
-all. Range iteration instead uses a **cursor** that maintains a stack of
-`(node_id, index)` frames from root to leaf. When a leaf is exhausted, the cursor pops
-up to the parent, advances the index, and descends back down. The cost is O(log n) per
-leaf transition in the worst case, but in practice the tree height is 3-5 even for
-millions of keys, and parent pages are hot in cache.
-
-This cursor-based iterator is implemented in `BPlusTreeIter` and exposed through
-`tree.range()` and `tree.range_from()`.
-
-### Batched writes
-
-The `WriteTransaction` buffers operations and replays them against the current root at
-commit time. If the CAS fails (another writer committed first), it rebases from the new
-root and retries. This is correct for the OCC model. Two potential improvements for
-large batches:
-
-- **Sort the batch by key** before replay, so leaf access is sequential and minimises
-  the number of distinct COW page copies.
-- **Bulk-load path** for initial data ingestion: build subtrees bottom-up rather than
-  inserting through the tree one key at a time.
-
-### Physical fullness and large values
-
-The tree handles both logical overflow (`keys_len() > max_keys`) and physical overflow
-(`PageFull` from the slotted page layer). Large values can fill a 4 KB page before
-reaching the tree order, triggering page splits at the physical level. Entries are
-validated upfront: `key_len + val_len` must not exceed `MAX_ENTRY_PAYLOAD` (2038 bytes),
-guaranteeing that at least two entries always fit per page so splits produce valid halves.
+- **COW** — every write clones only the touched pages (leaf + ancestors) and publishes a new
+  root by CAS; readers see a consistent epoch-pinned snapshot and never block. Same approach as
+  LMDB / BoltDB / redb.
+- **No sibling pointers** — `next`/`prev` links would cascade-invalidate under COW (a copied
+  leaf's new page ID breaks its sibling's pointer). Range scans instead use a **cursor** over a
+  root-to-leaf `(node_id, index)` stack (`BPlusTreeIter`); O(log n) per leaf transition, cheap
+  since height is 3–5 and parent pages stay hot.
+- **Batched OCC writes** — `WriteTransaction` buffers ops and replays against the current root,
+  retrying on CAS conflict (a future sort-by-key/bulk-load path would cut COW copies).
+- **Physical fullness** — large values can fill a 4 KB page before the tree order is reached,
+  splitting at the page level; entries are capped at `MAX_ENTRY_PAYLOAD` (2038 bytes) so two
+  always fit per page and splits produce valid halves.
 
 ### Where this design fits
 
@@ -427,9 +329,9 @@ guaranteeing that at least two entries always fit per page so splits produce val
 
 - **Configurable page size** — Currently hardcoded to 4 KB. Some workloads benefit from
   larger pages (16 KB, 64 KB) for fewer tree levels and better sequential throughput;
-  smaller pages reduce write amplification under update-heavy workloads. Making this
-  configurable requires storing the page size in the superblock and threading it through
-  the page layer.
+  smaller pages reduce write amplification under update-heavy workloads. The superblock
+  already records the page size (`page_size`); what remains is making `PAGE_SIZE` a
+  runtime value rather than a compile-time `const` and threading it through the page layer.
 
 - **Deferred value compaction on delete** — The slotted leaf page currently
   compacts the value arena on every delete. Under COW this is just in-memory
@@ -438,13 +340,12 @@ guaranteeing that at least two entries always fit per page so splits produce val
   fit, or before a merge) would avoid redundant repacking within a single
   transaction.
 
-- **RwLock-based metadata commit** — The current CAS-on-raw-pointer scheme
-  requires retiring old `Metadata` pointers into a leak list (`retired_meta`)
-  to prevent ABA. Switching the metadata slot to an `RwLock<Metadata>` eliminates
-  the pointer leak entirely: writers take an exclusive lock, readers a shared
-  lock, and there is no raw pointer to retire. The trade-off is slightly higher
-  per-operation overhead from the lock, but metadata commits are already
-  serialised by the page-level write path so contention should be negligible.
+- **Node merge / rebalancing on delete** — Deletes currently remove entries and compact
+  within a leaf, but underfull nodes are not merged with (or rebalanced against) a sibling.
+  Under delete-heavy workloads this leaves the tree with underfilled pages — extra height
+  and wasted space — and deviates from the classic B+tree minimum-occupancy invariant.
+  Implementing merge-on-underflow (borrow from a sibling, or merge two underfull nodes and
+  drop the separator key from the parent) restores occupancy and keeps the tree compact.
 
 - **Sharded epoch pinning** — `EpochManager::pin()`/`unpin()` currently acquire a
   central `Mutex<HashMap<ThreadId, Epoch>>` on every read operation. Under high reader
